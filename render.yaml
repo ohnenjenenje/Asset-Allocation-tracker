@@ -9,7 +9,7 @@ services:
       - key: PORT
         value: 10000
       - key: NODE_VERSION
-        value: 20.x
+        value: 22.x
       - key: MONGODB_URI
         sync: false
       - key: NEXT_PUBLIC_GEMINI_API_KEY
