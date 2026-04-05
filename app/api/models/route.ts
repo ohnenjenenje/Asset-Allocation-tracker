@@ -5,7 +5,13 @@ export async function GET() {
     const res = await fetch('https://openrouter.ai/api/v1/models');
     
     if (!res.ok) {
-      const err = await res.json();
+      let err;
+      const text = await res.text();
+      try {
+        err = JSON.parse(text);
+      } catch (e) {
+        err = { error: { message: `OpenRouter API error (${res.status}): ${text.substring(0, 100)}` } };
+      }
       return NextResponse.json(err, { status: res.status });
     }
 
