@@ -1,0 +1,63 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Stores user portfolio data, settings, and cached fund holdings",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "The user's Firebase Auth UID"
+        },
+        "assets": {
+          "type": "array",
+          "description": "List of assets owned by the user",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "symbol": { "type": "string" },
+              "name": { "type": "string" },
+              "quantity": { "type": "number" },
+              "entryPrice": { "type": "number" },
+              "currency": { "type": "string" },
+              "type": { "type": "string" },
+              "categoryPath": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            },
+            "required": ["id", "symbol", "name", "quantity", "entryPrice", "currency", "type"]
+          }
+        },
+        "fundHoldings": {
+          "type": "object",
+          "description": "Cached data for mutual funds and ETFs",
+          "additionalProperties": true
+        },
+        "settings": {
+          "type": "object",
+          "description": "User preferences and settings",
+          "properties": {
+            "idealAllocation": {
+              "type": "object",
+              "additionalProperties": { "type": "number" }
+            },
+            "searchSource": { "type": "string" },
+            "openRouterKey": { "type": "string" },
+            "aiProvider": { "type": "string" },
+            "googleModel": { "type": "string" },
+            "openrouterModel": { "type": "string" }
+          }
+        }
+      },
+      "required": ["uid"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User portfolio documents"
+    }
+  }
+}
