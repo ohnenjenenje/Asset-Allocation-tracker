@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
 import { GoogleAuth } from 'google-auth-library';
-import yahooFinance from 'yahoo-finance2';
+import yahooFinance from 'yahoo-finance2/dist/cjs/src/index.js';
 
-const yahoo = new yahooFinance();
+const yahoo = yahooFinance;
 
 export const dynamic = 'force-dynamic';
 
@@ -29,6 +29,88 @@ const getAuthToken = async () => {
   }
 };
 
+const MANUAL_MAP: Record<string, string> = {
+  '0P0001S0S9.BO': '151125', // Zerodha Nifty LargeMidcap 250
+  '0P0000XW0K.BO': '102146', // Edelweiss Liquid Fund - Retail
+  '0P0011MAX.BO': '120503',  // Axis Small Cap Fund
+};
+
+async function fetchTickertapeQuotes(symbols: string[]) {
+  const results: Record<string, any> = {};
+  const sidsToFetch: string[] = [];
+  const symbolToSid: Record<string, string> = {};
+
+  for (const sym of symbols) {
+    const lookupSym = MANUAL_MAP[sym] || sym;
+    if (lookupSym.endsWith('.NS') || lookupSym.endsWith('.BO')) {
+      const ticker = lookupSym.split('.')[0];
+      sidsToFetch.push(ticker);
+      symbolToSid[sym] = ticker;
+    } else if (/^\d+$/.test(lookupSym)) {
+      const sid = `MF_${lookupSym}`;
+      sidsToFetch.push(sid);
+      symbolToSid[sym] = sid;
+    } else if (lookupSym.startsWith('MF_')) {
+      sidsToFetch.push(lookupSym);
+      symbolToSid[sym] = lookupSym;
+    } else if (lookupSym.startsWith('0P')) {
+       // For 0P symbols, we might need to search for SID first
+       // But we'll skip for now and rely on Yahoo/MFAPI if not in MANUAL_MAP
+    }
+  }
+
+  if (sidsToFetch.length === 0) return results;
+
+  try {
+    const stockSids = sidsToFetch.filter(s => !s.startsWith('MF_'));
+    const mfSids = sidsToFetch.filter(s => s.startsWith('MF_'));
+
+    if (stockSids.length > 0) {
+      const res = await fetch(`https://api.tickertape.in/v2/stocks/quotes?sids=${stockSids.join(',')}`);
+      if (res.ok) {
+        const data = await res.json();
+        (data.data || []).forEach((q: any) => {
+          const sym = Object.keys(symbolToSid).find(k => symbolToSid[k] === q.sid);
+          if (sym) {
+            results[sym] = {
+              price: q.price,
+              name: q.name,
+              marketCap: q.mcap,
+              sector: q.sector,
+              quoteType: 'EQUITY',
+              sid: q.sid,
+              source: 'Tickertape'
+            };
+          }
+        });
+      }
+    }
+
+    for (const sid of mfSids) {
+      try {
+        const res = await fetch(`https://api.tickertape.in/mf/${sid}/portfolio`);
+        if (res.ok) {
+          const data = await res.json();
+          const q = data.data || {};
+          const sym = Object.keys(symbolToSid).find(k => symbolToSid[k] === sid);
+          if (sym && q.info) {
+            results[sym] = {
+              price: q.info.nav || q.nav,
+              name: q.info.name || q.name,
+              quoteType: 'MUTUALFUND',
+              sid: sid,
+              source: 'Tickertape'
+            };
+          }
+        }
+      } catch (e) {}
+    }
+  } catch (e) {
+    console.error("Tickertape bulk fetch error:", e);
+  }
+  return results;
+}
+
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
@@ -39,7 +121,15 @@ export async function GET(request: Request) {
     }
 
     const symbols = symbolsParam.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+    const refresh = searchParams.get('refresh') === 'true';
     
+    // Manual mapping for known problematic Yahoo symbols to AMFI codes
+    const MANUAL_MAP: Record<string, string> = {
+      '0P0001S0S9.BO': '152156', // Zerodha Nifty LargeMidcap 250
+      '0P0000XW0K.BO': '140196', // Edelweiss Liquid Fund - Direct Growth
+      '0P0011MAX.BO': '120503',  // Axis Small Cap Fund
+    };
+
     const token = await getAuthToken();
     const sheetId = process.env.GOOGLE_SHEET_ID;
 
@@ -50,7 +140,7 @@ export async function GET(request: Request) {
     }
 
     // 1. Read existing data
-    const getRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/A:G?valueRenderOption=UNFORMATTED_VALUE`, {
+    const getRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/A:I?valueRenderOption=UNFORMATTED_VALUE`, {
       headers: {
         'Authorization': `Bearer ${token}`
       }
@@ -94,26 +184,38 @@ export async function GET(request: Request) {
           quoteType: String(row[4] || 'EQUITY').replace(/^"|"$/g, ''),
           marketCap: typeof row[5] === 'number' ? row[5] : parseFloat(String(row[5] || '').replace(/[^0-9.-]+/g, '')),
           yahooSymbol: row[6] || null,
+          sector: row[7] || null,
+          source: row[8] || null,
         };
       }
     }
 
     // 2. Identify missing or broken symbols
     const missingSymbols = symbols.filter(s => !existingSymbols.has(s));
-    const brokenSymbols = Object.values(existingData).filter(d => {
-      const isMF = d.symbol.startsWith('0P') || /^\d+$/.test(d.symbol);
+    const brokenSymbols = symbols.filter(s => {
+      const d = existingData[s];
+      if (!d) return false;
+      const isMF = d.symbol.startsWith('0P') || /^\d+$/.test(d.symbol) || d.symbol.startsWith('MF_') || d.symbol === 'GOLD-INR-GRAM';
       const isPriceMissing = d.regularMarketPrice === null;
       const isMarketCapMissing = isNaN(d.marketCap);
       const isYahooSymbolMissing = isMF && !d.yahooSymbol;
-      return isPriceMissing || isMarketCapMissing || isYahooSymbolMissing;
-    }).map(d => d.symbol);
-    const symbolsToUpdate = [...new Set([...missingSymbols, ...brokenSymbols])];
+      const isSectorMissing = !isMF && !d.sector;
+      return isPriceMissing || isMarketCapMissing || isYahooSymbolMissing || isSectorMissing;
+    });
+    
+    let symbolsToUpdate = [...new Set([...missingSymbols, ...brokenSymbols])];
+    if (refresh) {
+      symbolsToUpdate = [...new Set([...symbolsToUpdate, ...symbols])];
+    }
 
     console.log("Missing:", missingSymbols);
     console.log("Broken (price or market cap):", brokenSymbols);
     console.log("To Update:", symbolsToUpdate);
 
-    // 3. Append or update symbols
+    // 3. Fetch data from Tickertape for Indian assets (Stocks first, MFs as secondary)
+    const ttResults = await fetchTickertapeQuotes(symbolsToUpdate);
+    
+    // 4. Append or update symbols
     if (symbolsToUpdate.length > 0) {
       const getGFinanceSymbol = (sym: string) => {
         if (sym === 'INR=X') return 'CURRENCY:USDINR';
@@ -132,162 +234,307 @@ export async function GET(request: Request) {
         return sym;
       };
 
-      // Fetch prices for MFs if needed
-      const mfPrices: Record<string, { price: number | null, name: string | null, yahooSymbol: string | null }> = {};
-      for (const sym of symbolsToUpdate) {
-        const isMF = sym.startsWith('0P') || /^\d+$/.test(sym);
+      // Fetch prices and sectors for symbols to update
+      const mfPrices: Record<string, { price: number | null, name: string | null, yahooSymbol: string | null, sector: string | null, source?: string }> = {};
+      const stockSectors: Record<string, string | null> = {};
+      const stockMarketCaps: Record<string, number | null> = {};
+      const stockSources: Record<string, string> = {};
+
+      await Promise.all(symbolsToUpdate.map(async (sym) => {
+        if (sym === 'GOLD-INR-GRAM') {
+          try {
+            const quote = await yahoo.quote('XAUINR=X') as any;
+            if (quote && quote.regularMarketPrice) {
+               mfPrices[sym] = {
+                 price: quote.regularMarketPrice / 31.1034768,
+                 name: 'Physical Gold 24K (Per Gram)',
+                 yahooSymbol: 'XAUINR=X',
+                 sector: 'Precious Metals',
+                 source: 'Yahoo Finance (Calculated)'
+               };
+            }
+          } catch(e) {
+            console.error('Failed to fetch gold price', e);
+          }
+          return;
+        }
+
+        const lookupSym = MANUAL_MAP[sym] || sym;
+        const isMF = lookupSym.startsWith('0P') || /^\d+$/.test(lookupSym) || lookupSym.startsWith('MF_') || lookupSym === 'GOLD-INR-GRAM';
+        
+        // If it's a Mutual Fund, prioritize MFAPI
         if (isMF) {
           try {
-            if (/^\d+$/.test(sym)) {
-              const res = await fetch(`https://api.mfapi.in/mf/${sym}`);
+            let mfapiSuccess = false;
+            let schemeName = '';
+            
+            const amfiCodeMatch = lookupSym.match(/^(?:MF_)?(\d+)$/i);
+            if (amfiCodeMatch) {
+              const amfiCode = amfiCodeMatch[1];
+              const res = await fetch(`https://api.mfapi.in/mf/${amfiCode}`);
               if (res.ok) {
                 const data = await res.json();
                 if (data.data && data.data.length > 0) {
-                  const schemeName = data.meta.scheme_name;
+                  schemeName = data.meta.scheme_name;
                   mfPrices[sym] = {
                     price: parseFloat(data.data[0].nav),
                     name: schemeName,
-                    yahooSymbol: null
+                    yahooSymbol: sym.startsWith('0P') ? sym : null,
+                    sector: null,
+                    source: 'MFAPI'
                   };
-
-                  // Try to find Yahoo symbol mapping
-                  try {
-                    // Clean up the scheme name for better search results
-                    const cleanName = schemeName
-                      .replace(/Direct Plan/gi, '')
-                      .replace(/Regular Plan/gi, '')
-                      .replace(/Direct/gi, '')
-                      .replace(/Regular/gi, '')
-                      .replace(/Growth/gi, '')
-                      .replace(/IDCW/gi, '')
-                      .replace(/Dividend/gi, '')
-                      .replace(/Option/gi, '')
-                      .replace(/Plan/gi, '')
-                      .replace(/Scheme/gi, '')
-                      .replace(/Index Fund/gi, '')
-                      .replace(/Fund/gi, '')
-                      .replace(/Index/gi, '')
-                      .replace(/-/g, ' ')
-                      .replace(/\s+/g, ' ')
-                      .trim();
-                    
-                    console.log(`Searching Yahoo for MF: ${cleanName} (original: ${schemeName})`);
-                    const ySearch = await yahoo.search(cleanName, { quotesCount: 10 }) as any;
-                    const match = ySearch.quotes.find((q: any) => 
-                      (q.quoteType === 'MUTUALFUND' || q.typeDisp === 'Mutual Fund') && 
-                      (q.symbol.startsWith('0P') || q.symbol.includes('.BO') || q.symbol.includes('.NS'))
-                    );
-                    
-                    if (match) {
-                      mfPrices[sym].yahooSymbol = match.symbol;
-                      console.log(`Successfully mapped ${sym} (${schemeName}) to Yahoo symbol ${match.symbol}`);
-                    } else {
-                      // Try one more time with even simpler name
-                      const simplerName = cleanName.split(' ').slice(0, 3).join(' ');
-                      console.log(`Retrying Yahoo search with simpler name: ${simplerName}`);
-                      const ySearch2 = await yahoo.search(simplerName, { quotesCount: 10 }) as any;
-                      const match2 = ySearch2.quotes.find((q: any) => 
-                        (q.quoteType === 'MUTUALFUND' || q.typeDisp === 'Mutual Fund') && 
-                        (q.symbol.startsWith('0P') || q.symbol.includes('.BO') || q.symbol.includes('.NS'))
-                      );
-                      if (match2) {
-                        mfPrices[sym].yahooSymbol = match2.symbol;
-                        console.log(`Successfully mapped ${sym} (simpler) to Yahoo symbol ${match2.symbol}`);
-                      } else {
-                        console.warn(`No Yahoo symbol found for ${schemeName}`);
+                  mfapiSuccess = true;
+                }
+              }
+            }
+            
+            // If direct AMFI failed or wasn't provided, try search
+            if (!mfapiSuccess) {
+              let fundName = existingData[sym]?.shortName;
+              if (!fundName || fundName === sym) {
+                // Try to get name from Tickertape if available
+                if (ttResults[sym]) {
+                  fundName = ttResults[sym].name;
+                }
+              }
+              
+              if (fundName) {
+                // Preserve Growth and IDCW as they are critical for identifying the correct fund variant
+                const cleanName = fundName
+                  .replace(/Direct Plan/gi, '')
+                  .replace(/Regular Plan/gi, '')
+                  .replace(/Option/gi, '')
+                  .replace(/Plan/gi, '')
+                  .replace(/Scheme/gi, '')
+                  .replace(/Index Fund/gi, '')
+                  .replace(/Fund/gi, '')
+                  .replace(/Index/gi, '')
+                  .replace(/-/g, ' ')
+                  .replace(/\s+/g, ' ')
+                  .trim();
+                  
+                const searchRes = await fetch(`https://api.mfapi.in/mf/search?q=${encodeURIComponent(cleanName)}`);
+                if (searchRes.ok) {
+                  const searchData = await searchRes.json();
+                  if (searchData && searchData.length > 0) {
+                    const amfiCode = searchData[0].schemeCode;
+                    const detailRes = await fetch(`https://api.mfapi.in/mf/${amfiCode}`);
+                    if (detailRes.ok) {
+                      const detailData = await detailRes.json();
+                      if (detailData.data && detailData.data.length > 0) {
+                        schemeName = detailData.meta.scheme_name;
+                        mfPrices[sym] = {
+                          price: parseFloat(detailData.data[0].nav),
+                          name: schemeName,
+                          yahooSymbol: sym.startsWith('0P') ? sym : null,
+                          sector: null,
+                          source: 'MFAPI'
+                        };
+                        mfapiSuccess = true;
                       }
                     }
-                  } catch (yErr) {
-                    console.warn(`Yahoo search failed for ${schemeName}`, yErr);
                   }
                 }
               }
-            } else {
-              const result = await yahoo.quote(sym) as any;
-              if (result && result.regularMarketPrice) {
-                mfPrices[sym] = {
-                  price: result.regularMarketPrice,
-                  name: result.shortName || result.longName || sym,
-                  yahooSymbol: sym
-                };
-              }
+            }
+
+            // Fallback to Tickertape if MFAPI failed
+            if (!mfapiSuccess && ttResults[sym]) {
+              const tt = ttResults[sym];
+              mfPrices[sym] = {
+                price: tt.price,
+                name: tt.name,
+                yahooSymbol: sym.startsWith('0P') ? sym : null,
+                sector: null,
+                source: tt.source || 'Tickertape'
+              };
+              mfapiSuccess = true;
+            }
+
+            // Fallback to Yahoo Finance if both failed
+            if (!mfapiSuccess) {
+              try {
+                const result = await yahoo.quote(sym) as any;
+                if (result && result.regularMarketPrice) {
+                  mfPrices[sym] = {
+                    price: result.regularMarketPrice,
+                    name: result.shortName || result.longName || sym,
+                    yahooSymbol: sym,
+                    sector: null,
+                    source: 'Yahoo Finance'
+                  };
+                }
+              } catch(e) {}
+            }
+
+            // If we succeeded with MFAPI (either direct AMFI or via search), try to find Yahoo symbol mapping if missing
+            if (mfapiSuccess && !mfPrices[sym].yahooSymbol && schemeName) {
+              try {
+                const cleanName = schemeName
+                  .replace(/Direct Plan/gi, '')
+                  .replace(/Regular Plan/gi, '')
+                  .replace(/Direct/gi, '')
+                  .replace(/Regular/gi, '')
+                  .replace(/Growth/gi, '')
+                  .replace(/IDCW/gi, '')
+                  .replace(/Dividend/gi, '')
+                  .replace(/Option/gi, '')
+                  .replace(/Plan/gi, '')
+                  .replace(/Scheme/gi, '')
+                  .replace(/Index Fund/gi, '')
+                  .replace(/Fund/gi, '')
+                  .replace(/Index/gi, '')
+                  .replace(/-/g, ' ')
+                  .replace(/\s+/g, ' ')
+                  .trim();
+                
+                const ySearch = await yahoo.search(cleanName, { quotesCount: 10 }) as any;
+                const match = ySearch.quotes.find((q: any) => 
+                  (q.quoteType === 'MUTUALFUND' || q.typeDisp === 'Mutual Fund') && 
+                  (q.symbol.startsWith('0P') || q.symbol.includes('.BO') || q.symbol.includes('.NS'))
+                );
+                
+                if (match) {
+                  mfPrices[sym].yahooSymbol = match.symbol;
+                } else {
+                  const simplerName = cleanName.split(' ').slice(0, 3).join(' ');
+                  const ySearch2 = await yahoo.search(simplerName, { quotesCount: 10 }) as any;
+                  const match2 = ySearch2.quotes.find((q: any) => 
+                    (q.quoteType === 'MUTUALFUND' || q.typeDisp === 'Mutual Fund') && 
+                    (q.symbol.startsWith('0P') || q.symbol.includes('.BO') || q.symbol.includes('.NS'))
+                  );
+                  if (match2) {
+                    mfPrices[sym].yahooSymbol = match2.symbol;
+                  }
+                }
+              } catch (yErr) {}
             }
           } catch (e) {
             console.error(`Failed to fetch MF price for ${sym}`, e);
           }
+          return;
         }
-      }
+
+        // For non-MFs (Stocks), use Tickertape data if available
+        if (ttResults[sym]) {
+          const tt = ttResults[sym];
+          stockMarketCaps[sym] = tt.marketCap;
+          stockSectors[sym] = tt.sector;
+          stockSources[sym] = tt.source || 'Tickertape';
+          return;
+        }
+
+        // Fallback to Yahoo for Stocks
+        try {
+          const quote = await yahoo.quote(sym) as any;
+          if (quote && quote.marketCap) {
+            stockMarketCaps[sym] = quote.marketCap;
+          }
+          const summary = await yahoo.quoteSummary(sym, { modules: ['assetProfile'] }) as any;
+          if (summary && summary.assetProfile && summary.assetProfile.sector) {
+            stockSectors[sym] = summary.assetProfile.sector;
+          }
+          stockSources[sym] = 'Yahoo Finance';
+        } catch (e: any) {
+          // Silent fail for common errors
+        }
+      }));
 
       // If the sheet is completely empty, add headers first
       if (rows.length === 0) {
-        await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/A1:G1:append?valueInputOption=USER_ENTERED`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            values: [['Symbol', 'Price', 'Name', 'Currency', 'Type', 'MarketCap', 'YahooSymbol']]
-          })
-        });
-      } else if (rows[0].length < 7) {
-        // Update headers if missing the 7th column
-        await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/A1:G1?valueInputOption=USER_ENTERED`, {
+        const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/A1:I1?valueInputOption=USER_ENTERED`, {
           method: 'PUT',
           headers: {
             'Authorization': `Bearer ${token}`,
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({
-            values: [['Symbol', 'Price', 'Name', 'Currency', 'Type', 'MarketCap', 'YahooSymbol']]
+            values: [['Symbol', 'Price', 'Name', 'Currency', 'Type', 'MarketCap', 'YahooSymbol', 'Sector', 'Source']]
           })
         });
+        if (!res.ok) throw new Error(`Failed to append headers: ${res.status} ${await res.text()}`);
+      } else if (rows[0].length < 9) {
+        // Update headers if missing the 9th column
+        const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/A1:I1?valueInputOption=USER_ENTERED`, {
+          method: 'PUT',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            values: [['Symbol', 'Price', 'Name', 'Currency', 'Type', 'MarketCap', 'YahooSymbol', 'Sector', 'Source']]
+          })
+        });
+        if (!res.ok) throw new Error(`Failed to update headers: ${res.status} ${await res.text()}`);
       }
 
-      // Update broken symbols in place using batchUpdate
+      // Update symbols in place using batchUpdate
       const updateData: any[] = [];
-      for (const sym of brokenSymbols) {
+      for (const sym of symbolsToUpdate) {
         const rowIndex = rows.findIndex((r: any) => (typeof r[0] === 'string' ? r[0].toUpperCase() : r[0]) === sym);
         if (rowIndex >= 0) {
           const gSym = getGFinanceSymbol(sym);
           const rowNumber = rowIndex + 1;
-          const isMF = sym.startsWith('0P') || /^\d+$/.test(sym);
-          const isIndian = sym.endsWith('.NS') || sym.endsWith('.BO');
+          const isMF = sym.startsWith('0P') || /^\d+$/.test(sym) || sym.startsWith('MF_') || sym === 'GOLD-INR-GRAM';
+          const isIndian = sym.endsWith('.NS') || sym.endsWith('.BO') || sym === 'GOLD-INR-GRAM';
           const isUsdAsset = sym.endsWith('-USD') || (!sym.includes('.') && !isMF);
           
           let priceFormula = gSym.startsWith('CURRENCY:') ? `=IFNA(GOOGLEFINANCE("${gSym}"), "")` : `=IFNA(GOOGLEFINANCE("${gSym}", "price"), "")`;
           let nameFormula = `=IFNA(GOOGLEFINANCE("${gSym}", "name"), "${sym}")`;
           let yahooSymbol = existingData[sym]?.yahooSymbol || "";
+          let sector = existingData[sym]?.sector || "";
+          let source = existingData[sym]?.source || "";
           
           if (isMF && mfPrices[sym]) {
             priceFormula = String(mfPrices[sym].price);
             nameFormula = mfPrices[sym].name || sym;
             yahooSymbol = mfPrices[sym].yahooSymbol || yahooSymbol;
+            source = mfPrices[sym].source || source;
+          } else if (!isMF && stockSectors[sym]) {
+            sector = stockSectors[sym] || sector;
+          }
+
+          // If we have Tickertape data, use it to override formulas for Refresh
+          if (ttResults[sym]) {
+            const tt = ttResults[sym];
+            priceFormula = String(tt.price);
+            nameFormula = tt.name;
+            if (tt.sector) sector = tt.sector;
+            source = tt.source || source;
+          }
+
+          if (!source && stockSources[sym]) {
+            source = stockSources[sym];
           }
 
           let currencyFormula = `=IFNA(GOOGLEFINANCE("${gSym}", "currency"), "INR")`;
           if (isMF || isIndian) currencyFormula = `INR`;
           else if (isUsdAsset) currencyFormula = `USD`;
 
-          const typeFormula = isMF ? `MUTUALFUND` : `EQUITY`;
+          const typeFormula = sym === 'GOLD-INR-GRAM' ? `COMMODITY` : (isMF ? `MUTUALFUND` : `EQUITY`);
+          if (sym === 'GOLD-INR-GRAM') sector = 'Precious Metals';
+          
+          const fallbackMarketCap = stockMarketCaps[sym] ? stockMarketCaps[sym] : '""';
           
           updateData.push({
-            range: `A${rowNumber}:G${rowNumber}`,
+            range: `A${rowNumber}:I${rowNumber}`,
             values: [[
               sym,
               priceFormula,
               nameFormula,
               currencyFormula,
               typeFormula,
-              `=IFNA(GOOGLEFINANCE("${gSym}", "marketcap"), "")`,
-              yahooSymbol
+              `=IFNA(GOOGLEFINANCE("${gSym}", "marketcap"), ${fallbackMarketCap})`,
+              yahooSymbol,
+              sector,
+              source
             ]]
           });
         }
       }
 
       if (updateData.length > 0) {
-        await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values:batchUpdate`, {
+        const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values:batchUpdate`, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${token}`,
@@ -298,31 +545,50 @@ export async function GET(request: Request) {
             data: updateData
           })
         });
+        if (!res.ok) throw new Error(`Failed to batch update: ${res.status} ${await res.text()}`);
       }
 
       // Append missing symbols
       if (missingSymbols.length > 0) {
         const appendData = missingSymbols.map(sym => {
           const gSym = getGFinanceSymbol(sym);
-          const isMF = sym.startsWith('0P') || /^\d+$/.test(sym);
-          const isIndian = sym.endsWith('.NS') || sym.endsWith('.BO');
+          const isMF = sym.startsWith('0P') || /^\d+$/.test(sym) || sym.startsWith('MF_') || sym === 'GOLD-INR-GRAM';
+          const isIndian = sym.endsWith('.NS') || sym.endsWith('.BO') || sym === 'GOLD-INR-GRAM';
           const isUsdAsset = sym.endsWith('-USD') || (!sym.includes('.') && !isMF);
           
           let priceFormula = gSym.startsWith('CURRENCY:') ? `=IFNA(GOOGLEFINANCE("${gSym}"), "")` : `=IFNA(GOOGLEFINANCE("${gSym}", "price"), "")`;
           let nameFormula = `=IFNA(GOOGLEFINANCE("${gSym}", "name"), "${sym}")`;
           let yahooSymbol = "";
+          let sector = "";
+          let source = "";
           
           if (isMF && mfPrices[sym]) {
             priceFormula = String(mfPrices[sym].price);
             nameFormula = mfPrices[sym].name || sym;
             yahooSymbol = mfPrices[sym].yahooSymbol || "";
+            source = mfPrices[sym].source || "";
+          } else if (!isMF && stockSectors[sym]) {
+            sector = stockSectors[sym] || "";
+            source = stockSources[sym] || "";
+          }
+
+          // If we have Tickertape data, use it
+          if (ttResults[sym]) {
+            const tt = ttResults[sym];
+            priceFormula = String(tt.price);
+            nameFormula = tt.name;
+            if (tt.sector) sector = tt.sector;
+            source = tt.source || source;
           }
 
           let currencyFormula = `=IFNA(GOOGLEFINANCE("${gSym}", "currency"), "INR")`;
           if (isMF || isIndian) currencyFormula = `INR`;
           else if (isUsdAsset) currencyFormula = `USD`;
 
-          const typeFormula = isMF ? `MUTUALFUND` : `EQUITY`;
+          const typeFormula = sym === 'GOLD-INR-GRAM' ? `COMMODITY` : (isMF ? `MUTUALFUND` : `EQUITY`);
+          if (sym === 'GOLD-INR-GRAM') sector = 'Precious Metals';
+          
+          const fallbackMarketCap = stockMarketCaps[sym] ? stockMarketCaps[sym] : '""';
           
           return [
             sym,
@@ -330,12 +596,14 @@ export async function GET(request: Request) {
             nameFormula,
             currencyFormula,
             typeFormula,
-            `=IFNA(GOOGLEFINANCE("${gSym}", "marketcap"), "")`,
-            yahooSymbol
+            `=IFNA(GOOGLEFINANCE("${gSym}", "marketcap"), ${fallbackMarketCap})`,
+            yahooSymbol,
+            sector,
+            source
           ];
         });
 
-        await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/A:G:append?valueInputOption=USER_ENTERED`, {
+        const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/A:I:append?valueInputOption=USER_ENTERED`, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${token}`,
@@ -345,31 +613,56 @@ export async function GET(request: Request) {
             values: appendData
           })
         });
+        if (!res.ok) throw new Error(`Failed to append missing symbols: ${res.status} ${await res.text()}`);
       }
 
       symbolsToUpdate.forEach(sym => {
-        const isMF = sym.startsWith('0P') || /^\d+$/.test(sym);
+        const isMF = sym.startsWith('0P') || /^\d+$/.test(sym) || sym.startsWith('MF_') || sym === 'GOLD-INR-GRAM';
+        const isIndian = sym.endsWith('.NS') || sym.endsWith('.BO') || sym === 'GOLD-INR-GRAM';
+        
+        let source = existingData[sym]?.source || "";
+        if (isMF && mfPrices[sym]) {
+          source = mfPrices[sym].source || source;
+        } else if (!isMF && stockSources[sym]) {
+          source = stockSources[sym] || source;
+        }
+        if (ttResults[sym]) {
+          source = ttResults[sym].source || source;
+        }
+
         if (!existingData[sym]) {
           existingData[sym] = {
             symbol: sym,
             regularMarketPrice: mfPrices[sym]?.price || null,
             shortName: mfPrices[sym]?.name || sym,
-            currency: isMF ? 'INR' : (sym.endsWith('.NS') || sym.endsWith('.BO') ? 'INR' : 'USD'),
-            quoteType: isMF ? 'MUTUALFUND' : 'EQUITY',
+            currency: isMF ? 'INR' : (isIndian ? 'INR' : 'USD'),
+            quoteType: sym === 'GOLD-INR-GRAM' ? 'COMMODITY' : (isMF ? 'MUTUALFUND' : 'EQUITY'),
             marketCap: null,
             yahooSymbol: mfPrices[sym]?.yahooSymbol || null,
+            sector: sym === 'GOLD-INR-GRAM' ? 'Precious Metals' : (isMF ? null : (stockSectors[sym] || null)),
+            source: source || null
           };
         } else {
-          if (isMF || sym.endsWith('.NS') || sym.endsWith('.BO')) {
+          existingData[sym].source = source || existingData[sym].source;
+          if (isIndian) {
             existingData[sym].currency = 'INR';
-            if (isMF) {
-              existingData[sym].quoteType = 'MUTUALFUND';
-              if (mfPrices[sym]) {
-                existingData[sym].regularMarketPrice = mfPrices[sym].price;
-                existingData[sym].shortName = mfPrices[sym].name;
-                existingData[sym].yahooSymbol = mfPrices[sym].yahooSymbol || existingData[sym].yahooSymbol;
-              }
+          }
+          if (sym === 'GOLD-INR-GRAM') {
+            existingData[sym].quoteType = 'COMMODITY';
+            existingData[sym].sector = 'Precious Metals';
+            if (mfPrices[sym]) {
+              existingData[sym].regularMarketPrice = mfPrices[sym].price;
+              existingData[sym].shortName = mfPrices[sym].name;
             }
+          } else if (isMF) {
+            existingData[sym].quoteType = 'MUTUALFUND';
+            if (mfPrices[sym]) {
+              existingData[sym].regularMarketPrice = mfPrices[sym].price;
+              existingData[sym].shortName = mfPrices[sym].name;
+              existingData[sym].yahooSymbol = mfPrices[sym].yahooSymbol || existingData[sym].yahooSymbol;
+            }
+          } else {
+            existingData[sym].sector = stockSectors[sym] || existingData[sym].sector;
           }
         }
       });
