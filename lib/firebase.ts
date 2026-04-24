@@ -1,5 +1,5 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, createUserWithEmailAndPassword, signInWithEmailAndPassword, sendPasswordResetEmail as firebaseSendPasswordResetEmail } from 'firebase/auth';
 import { getFirestore, doc, getDoc, setDoc, updateDoc, onSnapshot, getDocFromServer, setLogLevel } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
@@ -56,9 +56,9 @@ export const signInWithEmail = async (email: string, password: string) => {
   }
 };
 
-export const resetPassword = async (email: string) => {
+export const sendPasswordResetEmail = async (email: string) => {
   try {
-    await sendPasswordResetEmail(auth, email);
+    await firebaseSendPasswordResetEmail(auth, email);
   } catch (error) {
     console.error("Error sending password reset email", error);
     throw error;

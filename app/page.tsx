@@ -22,6 +22,7 @@ type Asset = {
   type: string;
   categoryPath?: string[];
   exchange?: string;
+  isGroup?: boolean;
 };
 
 type PriceData = {
@@ -294,7 +295,7 @@ export default function Dashboard() {
     setIsSigningIn(true);
     setAuthError('');
     try {
-      await resetPassword(emailAuthInput);
+      await sendPasswordResetEmail(emailAuthInput);
       setAuthError('Password reset email sent. Please check your inbox.');
       setIsResetMode(false);
     } catch (err: any) {
