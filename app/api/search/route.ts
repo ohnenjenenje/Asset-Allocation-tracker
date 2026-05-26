@@ -347,16 +347,35 @@ export async function GET(request: Request) {
       });
     }
 
-    if (q.toLowerCase().includes('gold') || q.toLowerCase().includes('aura')) {
-      combined.unshift({
-        symbol: 'GOLD-INR-GRAM',
-        shortname: 'Physical Gold 24K (Per Gram)',
-        longname: 'Physical Gold 24K (Price per Gram in INR)',
-        quoteType: 'COMMODITY',
-        source: 'Calculated (XAUINR)'
-      });
+    if (q.toLowerCase().includes('gold') || q.toLowerCase().includes('silver') || q.toLowerCase().includes('aura') || q.toLowerCase().includes('cash')) {
+      if (q.toLowerCase().includes('gold') || q.toLowerCase().includes('aura')) {
+        combined.unshift({
+          symbol: 'GOLD-INR-GRAM',
+          shortname: 'Physical Gold 24K (Per Gram)',
+          longname: 'Physical Gold 24K (Price per Gram in INR)',
+          quoteType: 'COMMODITY',
+          source: 'Calculated (XAUINR)'
+        });
+      }
+      if (q.toLowerCase().includes('silver')) {
+        combined.unshift({
+          symbol: 'SILVER-INR-GRAM',
+          shortname: 'Physical Silver (Per Gram)',
+          longname: 'Physical Silver (Price per Gram in INR)',
+          quoteType: 'COMMODITY',
+          source: 'Calculated (XAGINR)'
+        });
+      }
+      if (q.toLowerCase().includes('cash')) {
+        combined.unshift({
+          symbol: 'CASH-INR',
+          shortname: 'Cash in Hand (INR)',
+          longname: 'Cash in Hand (INR)',
+          quoteType: 'CASH',
+          source: 'Manual'
+        });
+      }
     }
-
     if (q.toLowerCase().includes('edelweiss liquid fund')) {
       combined.unshift({
         symbol: '0P0001BA2H.BO',

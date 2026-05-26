@@ -338,10 +338,11 @@ export default function Dashboard() {
     if (category.includes('>')) return category;
     const upper = category.toUpperCase().trim();
     if (upper === 'EQUITY' || upper === 'STOCK') return 'Equities';
+    if (upper === 'DOMESTIC EQUITY' || upper === 'GLOBAL EQUITY') return upper.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
     if (upper === 'MUTUALFUND' || upper === 'ETF') return 'Mutual Funds';
     if (upper === 'CRYPTOCURRENCY' || upper === 'CRYPTO') return 'Crypto';
     if (upper === 'DEBT' || upper === 'FIXED INCOME') return 'Fixed Income';
-    if (upper === 'CASH') return 'Cash';
+    if (upper.includes('CASH')) return 'Cash';
     if (upper === 'GOLD' || upper === 'SILVER' || upper === 'COMMODITY' || upper === 'COMMODITIES') return 'Commodities';
     return category;
   };
@@ -755,7 +756,7 @@ export default function Dashboard() {
       } else {
         symbols = symbols.filter(s => {
           if (!pricesRef.current[s]) return true;
-          if (s === 'GOLD-INR-GRAM' || s === 'SILVER-INR-GRAM') return false;
+          if (s === 'GOLD-INR-GRAM' || s === 'SILVER-INR-GRAM' || s === 'CASH-INR') return false;
           return true;
         });
       }
@@ -1167,7 +1168,7 @@ export default function Dashboard() {
     setSearchQuery(asset.name);
     setQuantity(asset.quantity.toString());
     setEntryPrice(asset.entryPrice.toString());
-    if (asset.symbol === 'GOLD-INR-GRAM') {
+    if (asset.symbol === 'GOLD-INR-GRAM' || asset.symbol === 'SILVER-INR-GRAM' || asset.symbol === 'CASH-INR') {
       setInvestedValueInput((asset.entryPrice * asset.quantity).toFixed(2).toString());
     }
     setManualPrice(asset.manualPrice ? asset.manualPrice.toString() : '');
@@ -2113,13 +2114,25 @@ export default function Dashboard() {
       }
     }
     
+    const isDomestic = (asset: any) => {
+      if (asset.symbol.endsWith('.NS') || asset.symbol.endsWith('.BO')) return true;
+      if (asset.exchange === 'NSE' || asset.exchange === 'BSE') return true;
+      return false;
+    };
+
     let finalCategory = topCategory;
+    if (finalCategory === 'Equities') {
+      finalCategory = isDomestic(asset) ? 'Domestic Equity' : 'Global Equity';
+    }
+    
     if (finalCategory === 'Mutual Funds') {
       const catName = (fundHoldings[asset.symbol]?.categoryName || '').toLowerCase();
       if (catName.includes('debt') || catName.includes('bond') || catName.includes('liquid') || catName.includes('fixed')) {
         finalCategory = 'Fixed Income';
       } else {
-        finalCategory = 'Equities'; // Fallback if no allocation data and not obviously debt
+        const assetName = asset.name.toLowerCase();
+        const isGlobalFund = assetName.includes('off-shore') || assetName.includes('china') || assetName.includes('global') || assetName.includes('international');
+        finalCategory = isGlobalFund ? 'Global Equity' : 'Domestic Equity';
       }
     } else if (finalCategory === 'Commodities') {
       finalCategory = 'Commodities > ' + getCommoditySubCategory(asset);
@@ -2143,7 +2156,7 @@ export default function Dashboard() {
     ...allocationData.map(item => item.name)
   ]));
 
-  const allocationAnalysis = allCategories.map(category => {
+  const allocationAnalysisTemp = allCategories.map(category => {
     const currentItem = allocationData.find(item => item.name === category);
     const currentValue = currentItem ? currentItem.value : 0;
     const currentPercentage = totalCurrentValue > 0 ? (currentValue / totalCurrentValue) * 100 : 0;
@@ -2162,6 +2175,28 @@ export default function Dashboard() {
       constituents
     };
   }).sort((a, b) => b.currentValue - a.currentValue);
+
+  const domesticEquity = allocationAnalysisTemp.find(a => a.category === 'Domestic Equity');
+  const globalEquity = allocationAnalysisTemp.find(a => a.category === 'Global Equity');
+  
+  const allocationAnalysis = allocationAnalysisTemp.filter(a => a.category !== 'Domestic Equity' && a.category !== 'Global Equity' && a.category !== 'Equities');
+
+  if (domesticEquity || globalEquity) {
+    const equityItem = {
+      category: 'Equities',
+      currentValue: (domesticEquity?.currentValue || 0) + (globalEquity?.currentValue || 0),
+      currentPercentage: (domesticEquity?.currentPercentage || 0) + (globalEquity?.currentPercentage || 0),
+      idealPercentage: (idealAllocation['Equities'] || 0), // Use total ideal
+      diffPercentage: 0, // Calculated later
+      diffValue: 0, // Calculated later
+      isParent: true,
+      subCategories: [domesticEquity, globalEquity].filter(Boolean) as any[]
+    };
+    equityItem.diffPercentage = equityItem.currentPercentage - equityItem.idealPercentage;
+    equityItem.diffValue = (equityItem.diffPercentage / 100) * totalCurrentValue;
+    
+    allocationAnalysis.unshift(equityItem);
+  }
 
   const underlyingExposure: Record<string, { 
     symbol: string, 
@@ -3897,7 +3932,7 @@ export default function Dashboard() {
                                       isFetching={isLoadingPrices && !priceData} 
                                       symbol={item.symbol} 
                                     />
-                                    {(item.symbol === 'GOLD-INR-GRAM' || item.symbol === 'SILVER-INR-GRAM') && !isGroupHead && (
+                                    {(item.symbol === 'GOLD-INR-GRAM' || item.symbol === 'SILVER-INR-GRAM' || item.symbol === 'CASH-INR') && !isGroupHead && (
                                       <button 
                                         onClick={(e) => {
                                           e.stopPropagation();
@@ -4434,7 +4469,7 @@ export default function Dashboard() {
               )}
 
               {selectedResult && (
-                <div className={`grid ${selectedResult?.symbol === 'GOLD-INR-GRAM' ? 'grid-cols-3' : 'grid-cols-2'} gap-4`}>
+                <div className={`grid ${selectedResult?.symbol === 'GOLD-INR-GRAM' || selectedResult?.symbol === 'SILVER-INR-GRAM' || selectedResult?.symbol === 'CASH-INR' ? 'grid-cols-3' : 'grid-cols-2'} gap-4`}>
                   <div>
                     <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">Quantity</label>
                     <input 
@@ -4445,7 +4480,7 @@ export default function Dashboard() {
                       value={quantity}
                       onChange={(e) => {
                         setQuantity(e.target.value);
-                        if (selectedResult?.symbol === 'GOLD-INR-GRAM') {
+                        if (selectedResult?.symbol === 'GOLD-INR-GRAM' || selectedResult?.symbol === 'SILVER-INR-GRAM' || selectedResult?.symbol === 'CASH-INR') {
                             const val = parseFloat(e.target.value);
                             const price = parseFloat(entryPrice);
                             if (!isNaN(val) && !isNaN(price)) {
@@ -4456,7 +4491,7 @@ export default function Dashboard() {
                       placeholder="e.g. 10"
                     />
                   </div>
-                  {selectedResult?.symbol === 'GOLD-INR-GRAM' && (
+                  {(selectedResult?.symbol === 'GOLD-INR-GRAM' || selectedResult?.symbol === 'SILVER-INR-GRAM' || selectedResult?.symbol === 'CASH-INR') && (
                     <div>
                         <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">Invested Value</label>
                         <input                
@@ -4488,7 +4523,7 @@ export default function Dashboard() {
                         value={entryPrice}
                         onChange={(e) => {
                           setEntryPrice(e.target.value);
-                          if (selectedResult?.symbol === 'GOLD-INR-GRAM') {
+                          if (selectedResult?.symbol === 'GOLD-INR-GRAM' || selectedResult?.symbol === 'SILVER-INR-GRAM' || selectedResult?.symbol === 'CASH-INR') {
                              const price = parseFloat(e.target.value);
                              const qty = parseFloat(quantity);
                              if (!isNaN(price) && !isNaN(qty)) {

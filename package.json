@@ -12,6 +12,7 @@
     "@google/genai": "^1.48.0",
     "ccxt": "^4.5.50",
     "clsx": "^2.1.1",
+    "dotenv": "^17.4.2",
     "firebase": "^12.11.0",
     "google-auth-library": "^10.6.2",
     "lucide-react": "^0.469.0",
