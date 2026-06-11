@@ -91,6 +91,52 @@ export async function GET(request: Request) {
     let targetSymbol = symbol;
     let tickertapeData: any = null; // Left for compatibility flow, but it won't be filled by TT.
 
+    // --- UPVALY FINAPI INTEGRATION (Primary Fetch) ---
+    const isMutualFund = symbol.startsWith('MF_') || /^\d{5,6}$/.test(symbol);
+    const schemeCode = symbol.replace('MF_', '');
+
+    if (isMutualFund) {
+      try {
+        const upvalyRes = await fetch(`https://finapi.upvaly.com/api/mf/scheme-code/${schemeCode}`, {
+          next: { revalidate: 86400 } // Cache for 24 hours
+        });
+        
+        if (upvalyRes.ok) {
+          const upvalyData = await upvalyRes.json();
+          if (upvalyData.status === 'success' && upvalyData.data) {
+            const d = upvalyData.data;
+            
+            // Map to existing frontend format and return immediately
+            return NextResponse.json({
+              source: 'Upvaly FinAPI',
+              symbol: symbol,
+              categoryName: d.schemeCategory || null,
+              assetAllocation: {
+                equity: parseFloat(d.portfolio?.assetAllocation?.equityAllocation || "0"),
+                debt: parseFloat(d.portfolio?.assetAllocation?.debtAllocation || "0"),
+                cash: parseFloat(d.portfolio?.assetAllocation?.cashAllocation || "0"),
+                other: parseFloat(d.portfolio?.assetAllocation?.otherAllocation || "0")
+              },
+              sectorWeightings: (d.sectors || []).map((s: any) => ({
+                sector: s.sector,
+                percentage: parseFloat(s.weightage)
+              })),
+              holdings: (d.holdings || []).map((h: any) => ({
+                symbol: h.name, 
+                holdingName: h.name,
+                holdingPercent: parseFloat(h.weightage) / 100
+              }))
+            });
+          }
+        }
+      } catch (e) {
+        console.error(`Upvaly fetch failed for ${schemeCode}:`, e);
+        // Let it fall through to Yahoo Finance fallback below
+      }
+    }
+    // --- END UPVALY INTEGRATION ---
+
+
     let isMapped = false;
     let lookupSymbol = symbol;
 
