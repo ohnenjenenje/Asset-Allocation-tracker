@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { binance } from 'ccxt';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET() {
   const apiKey = process.env.BINANCE_API_KEY;
   const secret = process.env.BINANCE_SECRET;

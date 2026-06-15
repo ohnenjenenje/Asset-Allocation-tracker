@@ -104,6 +104,8 @@ export async function GET(request: Request) {
       '0P0000XW0K.BO': '140196', // Edelweiss Liquid Fund - Direct Growth
       '0P0011MAX.BO': '120503',  // Axis Small Cap Fund
       'MF_101762': '118955',    // HDFC Flexi Cap Fund - Direct Growth
+      '0P0000XV5G.BO': '140243', // Edelweiss Greater China - Direct
+      '0P0000KYO9.BO': '140242', // Edelweiss Greater China - Regular
       'JPPOWER.BO': 'JPPOWER.NS', // JaiPrakash Power Ventures
     };
 
@@ -285,15 +287,14 @@ export async function GET(request: Request) {
 
                // Base conversion: (USD / Troy Ounce) -> (USD / Gram) -> (INR / Gram)
                let finalInrPrice = (priceUsd / troyOunceInGrams) * usdToInr;
-               
-               // Add Domestic Indian Premium + Import Duty + GST
-               // (derived to match Indian Retail 15457.94 INR/g tracking internationally)
+                
+               // Import Duty (15%: 10% BCD + 5% AIDC, effective May 2026) + GST (3%)
+               const importDutyRate = 0.15;
+               const gstRate = 0.03;
                if (sym === 'GOLD-INR-GRAM') {
-                 // ~7.63% markup (import duty + 3% GST + local premium)
-                 finalInrPrice *= 1.07633;
+                 finalInrPrice *= (1 + importDutyRate) * (1 + gstRate);
                } else if (sym === 'SILVER-INR-GRAM') {
-                 // ~11.83% markup
-                 finalInrPrice *= 1.11837;
+                 finalInrPrice *= (1 + importDutyRate) * (1 + gstRate);
                }
                
                mfPrices[sym] = {

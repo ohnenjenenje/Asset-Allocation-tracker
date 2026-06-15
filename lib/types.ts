@@ -6,6 +6,7 @@ export type Asset = {
   entryPrice: number;
   manualPrice?: number;
   manualSector?: string;
+  purchaseDate?: string;
   currency: string;
   type: string;
   categoryPath?: string[];

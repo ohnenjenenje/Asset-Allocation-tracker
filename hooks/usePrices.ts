@@ -10,23 +10,25 @@ export function usePrices(assets: Asset[], fundHoldings: Record<string, any>) {
   }, [prices]);
 
   const [isLoadingPrices, setIsLoadingPrices] = useState(false);
+  const [priceProgress, setPriceProgress] = useState<{ done: number; total: number } | null>(null);
 
   const fetchPrices = useCallback(async (forceRefresh = false, specificSymbols?: string[]) => {
     if (assets.length === 0) return;
     
     setIsLoadingPrices(true);
+    setPriceProgress(null);
     try {
       const symbolsSet = new Set<string>();
-      assets.forEach(a => symbolsSet.add(a.symbol));
+      assets.forEach(a => {
+        // Structurally isolate manual assets and pure cash from the API fetcher
+        if (a.manualPrice !== undefined && a.manualPrice !== null && String(a.manualPrice).trim() !== '') return;
+        if (a.symbol === 'CASH-INR' || a.type === 'Cash') return;
+        if (a.symbol) symbolsSet.add(a.symbol);
+      });
       // Binance assets are priced immediately on fetch, no need for Yahoo
       symbolsSet.add('INR=X');
 
-      Object.values(fundHoldings).forEach(fundData => {
-        const holdings = Array.isArray(fundData) ? fundData : (fundData?.holdings || []);
-        holdings.forEach((h: any) => {
-          if (h.symbol) symbolsSet.add(h.symbol);
-        });
-      });
+
 
       let symbols = Array.from(symbolsSet);
       
@@ -50,18 +52,19 @@ export function usePrices(assets: Asset[], fundHoldings: Record<string, any>) {
       const newPrices: Record<string, PriceData> = {};
       
       const chunkSize = 8;
+      const totalSymbols = symbols.length;
       for (let i = 0; i < symbols.length; i += chunkSize) {
-        // Wait between chunks to prevent overwhelming the API
         if (i > 0) await new Promise(r => setTimeout(r, 1200));
         
         const chunk = symbols.slice(i, i + chunkSize);
+        setPriceProgress({ done: Math.min(i + chunkSize, totalSymbols), total: totalSymbols });
         
         let retries = 5; // Increased retries
         let success = false;
         
         while (retries >= 0 && !success) {
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout per chunk
+          const timeoutId = setTimeout(() => controller.abort(), 60000); // 20s timeout per chunk
           
           try {
             const res = await fetch(`/api/price?symbols=${encodeURIComponent(chunk.join(','))}${forceRefresh ? '&refresh=true' : ''}`, {
@@ -134,8 +137,9 @@ export function usePrices(assets: Asset[], fundHoldings: Record<string, any>) {
       console.error("Failed to fetch prices", error);
     } finally {
       setIsLoadingPrices(false);
+      setPriceProgress(null);
     }
-  }, [assets, fundHoldings]);
+  }, [assets]);
 
   useEffect(() => {
     if (assets.length > 0) {
@@ -147,5 +151,5 @@ export function usePrices(assets: Asset[], fundHoldings: Record<string, any>) {
     }
   }, [assets, fetchPrices]);
 
-  return { prices, setPrices, isLoadingPrices, fetchPrices };
+  return { prices, setPrices, isLoadingPrices, priceProgress, fetchPrices };
 }

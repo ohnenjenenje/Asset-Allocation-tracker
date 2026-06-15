@@ -15,8 +15,9 @@ export function usePortfolioData(
 
   const [idealAllocation, setIdealAllocation] = useState<Record<string, number>>({
     'Equities': 60,
-    'Fixed Income': 20,
-    'Crypto': 10,
+    'Debt and Fixed': 20,
+    'Commodities': 5,
+    'Crypto': 5,
     'Cash': 10,
   });
 
@@ -226,7 +227,30 @@ export function usePortfolioData(
     setIsSettingsOpen(false);
   };
 
+
+  const forceRefreshHoldings = () => {
+    const newHoldings = { ...fundHoldings };
+    let changed = false;
+    assets.forEach(asset => {
+      const type = (asset.type || '').toUpperCase();
+      const nameLower = (asset.name || '').toLowerCase();
+      const symLower = (asset.symbol || '').toLowerCase();
+      const isLikelyETF = type === 'ETF' || nameLower.includes('etf') || nameLower.includes('bees') || symLower.includes('bees') || symLower === 'alpha.ns' || symLower === 'alpha.bo';
+      const isFund = type === 'MUTUALFUND' || isLikelyETF;
+      
+      if (isFund && newHoldings[asset.symbol]) {
+        delete newHoldings[asset.symbol];
+        loadingHoldings.current[asset.symbol] = false;
+        changed = true;
+      }
+    });
+    if (changed) {
+      setFundHoldings(newHoldings);
+    }
+  };
+
   useEffect(() => {
+
     if (!isAuthReady || !user) return;
 
     const userRef = doc(db, 'users', user.uid);
@@ -375,8 +399,18 @@ export function usePortfolioData(
 
   useEffect(() => {
     assets.forEach(asset => {
-      const needsFetch = (asset.type === 'MUTUALFUND' || asset.type === 'ETF') && 
-        !fundHoldings[asset.symbol] && 
+      const existing = fundHoldings[asset.symbol];
+      const hasStaleFields = existing?.assetAllocation && !('stockPosition' in existing.assetAllocation);
+      const missingMarketCap = existing && !('marketCapWeightage' in existing);
+      
+      const type = (asset.type || '').toUpperCase();
+      const nameLower = (asset.name || '').toLowerCase();
+      const symLower = (asset.symbol || '').toLowerCase();
+      const isLikelyETF = type === 'ETF' || nameLower.includes('etf') || nameLower.includes('bees') || symLower.includes('bees') || symLower === 'alpha.ns' || symLower === 'alpha.bo';
+      const isFund = type === 'MUTUALFUND' || isLikelyETF;
+
+      const needsFetch = isFund && 
+        (!existing || hasStaleFields || missingMarketCap) && 
         !loadingHoldings.current[asset.symbol];
         
       if (needsFetch) {
@@ -445,5 +479,6 @@ export function usePortfolioData(
     handleRestoreFromMongo,
     handleImportData,
     saveOpenRouterKey,
+    forceRefreshHoldings,
   };
 }

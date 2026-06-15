@@ -1,12 +1,14 @@
 import { NextResponse } from 'next/server';
 import crypto from 'crypto';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET() {
   const apiKey = process.env.COINDCX_API_KEY;
   const secret = process.env.COINDCX_SECRET;
 
   if (!apiKey || !secret) {
-    return NextResponse.json([]);
+    return NextResponse.json({ error: 'Missing keys', keyLen: apiKey?.length, secretLen: secret?.length });
   }
 
   try {
@@ -72,8 +74,7 @@ export async function GET() {
 
     return NextResponse.json(cryptoAssets);
   } catch (error: any) {
-    // Silently handle errors (like 401 Unauthorized) to prevent breaking the dashboard
-    // No logging to keep server console clean if credentials aren't fully active.
-    return NextResponse.json([]);
+    console.error('CoinDCX API Error:', error);
+    return NextResponse.json({ error: error.message });
   }
 }

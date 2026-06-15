@@ -30,6 +30,8 @@ interface AddAssetModalProps {
   setManualPrice: (val: string) => void;
   manualSector: string;
   setManualSector: (val: string) => void;
+  purchaseDate: string;
+  setPurchaseDate: (val: string) => void;
   handleAddAsset: () => void;
 }
 
@@ -60,6 +62,8 @@ export default function AddAssetModal({
   setManualPrice,
   manualSector,
   setManualSector,
+  purchaseDate,
+  setPurchaseDate,
   handleAddAsset,
 }: AddAssetModalProps) {
   if (!isAddModalOpen) return null;
@@ -354,6 +358,19 @@ export default function AddAssetModal({
                 </div>
               </div>
               <p className="text-[10px] text-zinc-500 mt-1">Use this if the market price (LTP) is not available or incorrect.</p>
+            </div>
+          )}
+
+          {selectedResult && (
+            <div>
+              <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">Purchase Date</label>
+              <input 
+                type="date" 
+                className="w-full px-4 py-2.5 border border-zinc-300 dark:border-zinc-700 rounded-xl bg-white dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 focus:ring-2 focus:ring-blue-500 outline-none transition-shadow"
+                value={purchaseDate}
+                onChange={(e) => setPurchaseDate(e.target.value)}
+              />
+              <p className="text-[10px] text-zinc-500 mt-1">Used for LTCG/STCG tax estimation.</p>
             </div>
           )}
 

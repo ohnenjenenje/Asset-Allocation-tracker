@@ -25,26 +25,26 @@ export const normalizeCategory = (category?: string) => {
   if (upper === 'DOMESTIC EQUITY' || upper === 'GLOBAL EQUITY') return upper.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
   if (upper === 'MUTUALFUND' || upper === 'ETF') return 'Mutual Funds';
   if (upper === 'CRYPTOCURRENCY' || upper === 'CRYPTO') return 'Crypto';
-  if (upper === 'DEBT' || upper === 'FIXED INCOME') return 'Fixed Income';
+  if (upper === 'DEBT' || upper === 'FIXED INCOME' || upper === 'BOND' || upper === 'BONDS') return 'Debt and Fixed';
   if (upper.includes('CASH')) return 'Cash';
   if (upper === 'GOLD' || upper === 'SILVER' || upper === 'COMMODITY' || upper === 'COMMODITIES') return 'Commodities';
   return category;
 };
 
 export const getCommoditySubCategory = (asset: { name: string; symbol: string }) => {
-  const name = asset.name.toLowerCase();
-  const symbol = asset.symbol.toLowerCase();
+  const name = (asset.name || '').toLowerCase();
+  const symbol = (asset.symbol || '').toLowerCase();
   if (name.includes('gold') || symbol.includes('gold')) return 'Gold';
   if (name.includes('silver') || symbol.includes('silver')) return 'Silver';
   return 'Other Commodities';
 };
 
 export const getCapCategory = (name: string, categoryName?: string) => {
-  const lowerName = name.toLowerCase();
+  const lowerName = (name || '').toLowerCase();
   const lowerCat = (categoryName || '').toLowerCase();
   if (lowerName.includes('small') || lowerCat.includes('small')) return 'Small Cap';
   if (lowerName.includes('mid') || lowerCat.includes('mid')) return 'Mid Cap';
-  if (lowerName.includes('large') || lowerCat.includes('large') || lowerName.includes('bluechip') || lowerCat.includes('bluechip')) return 'Large Cap';
+  if (lowerName.includes('large') || lowerCat.includes('large') || lowerName.includes('bluechip') || lowerCat.includes('bluechip') || lowerName.includes('nifty 50') || lowerName.includes('sensex') || lowerName.includes('nifty bees') || lowerName.includes('alphaetf')) return 'Large Cap';
   if (lowerName.includes('flexi') || lowerCat.includes('flexi')) return 'Flexi Cap';
   if (lowerName.includes('multi') || lowerCat.includes('multi')) return 'Multi Cap';
   if (lowerName.includes('elss') || lowerCat.includes('elss') || lowerName.includes('tax') || lowerCat.includes('tax')) return 'ELSS';
@@ -52,10 +52,9 @@ export const getCapCategory = (name: string, categoryName?: string) => {
 };
 
 export const normalizeGroup = (cat: string) => {
-  if (cat.includes('Equities >')) return 'Equities';
-  if (cat.includes('Commodities >')) return 'Commodities';
-  if (cat.includes('Mutual Funds >')) return 'Mutual Funds';
-  return cat;
+  // We now fully support N-level hierarchy, so we preserve the full path.
+  // Legacy cleanup for trailing spaces just in case:
+  return cat.trim();
 };
 
 export const formatCompact = (val: number) => {

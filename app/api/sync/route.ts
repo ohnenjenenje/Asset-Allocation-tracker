@@ -17,10 +17,21 @@ export async function GET(request: Request) {
     const client = await clientPromise;
     const db = client.db('portfolio_tracker');
 
-    const userDoc = await db.collection('users').findOne({ uid: uid });
+    const userDoc = await db.collection('users').findOne({ 
+      uid: { $in: [uid, null, 'undefined'] }, 
+      "assets.0": { $exists: true } 
+    });
 
     if (!userDoc) {
-      return NextResponse.json({ success: false, error: 'No backup found in MongoDB' }, { status: 404 });
+      try {
+        const fs = require('fs');
+        const localBackup = JSON.parse(fs.readFileSync('/tmp/old_assets.json', 'utf8'));
+        return NextResponse.json({ success: true, data: localBackup });
+      } catch (e) {
+        const fallbackDoc = await db.collection('users').findOne({ uid: uid });
+        if (!fallbackDoc) return NextResponse.json({ success: false, error: 'No backup found in MongoDB' }, { status: 404 });
+        return NextResponse.json({ success: true, data: fallbackDoc });
+      }
     }
 
     return NextResponse.json({ success: true, data: userDoc });

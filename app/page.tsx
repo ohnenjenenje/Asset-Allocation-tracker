@@ -21,6 +21,7 @@ import DeleteConfirmModal from '@/components/modals/DeleteConfirmModal';
 import { Asset, PriceData, ChatMessage } from '@/lib/types';
 import { COLORS } from '@/lib/constants';
 import { guessCurrency, getConvertedPrice, normalizeCategory, getCommoditySubCategory, getCapCategory, normalizeGroup, formatCompact, getBaseCryptoSymbol, isSameCrypto } from '@/lib/portfolio-utils';
+import { calculateTax, formatHoldingPeriod } from '@/lib/tax-utils';
 import { useAuth } from '@/hooks/useAuth';
 import { usePrices } from '@/hooks/usePrices';
 import { usePortfolioData } from '@/hooks/usePortfolioData';
@@ -141,7 +142,10 @@ export default function Dashboard() {
 
   const getRunningOperations = () => {
     const operations: string[] = [];
-    if (isLoadingPrices) operations.push('Updating Prices');
+    if (isLoadingPrices) {
+      const progress = priceProgress ? ` (${priceProgress.done}/${priceProgress.total})` : '';
+      operations.push(`Updating Prices${progress}`);
+    }
     if (isAiTyping) operations.push('AI Thinking');
     const loadingHoldingsValues = Object.values(loadingHoldings.current);
     if (loadingHoldingsValues.some(v => v)) operations.push('Loading Holdings');
@@ -152,6 +156,7 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState<'portfolio' | 'screener'>('portfolio');
   const [isAllocationSettingsOpen, setIsAllocationSettingsOpen] = useState(false);
   const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({ 'Total Portfolio': true });
+  const [expandedTableCategories, setExpandedTableCategories] = useState<Record<string, boolean>>({ 'Equities': true, 'Mutual Funds': true, 'Crypto': true, 'Commodities': true, 'Debt and Fixed': true, 'Cash': true, 'Other / Uncategorized': true, 'Total Portfolio': true });
   const [expandedSymbols, setExpandedSymbols] = useState<Record<string, boolean>>({});
   const [expandedSectors, setExpandedSectors] = useState<Record<string, boolean>>({});
   const [expandedMarketCaps, setExpandedMarketCaps] = useState<Record<string, boolean>>({});
@@ -191,7 +196,7 @@ export default function Dashboard() {
     googleModel, setGoogleModel,
     isSettingsOpen, setIsSettingsOpen,
     restoreStatus, syncToDb,
-    handleExportData, handleImportData, handleRestoreFromMongo
+    handleExportData, handleImportData, handleRestoreFromMongo, forceRefreshHoldings
   } = usePortfolioData(user, isAuthReady);
 
   const { prices, setPrices, isLoadingPrices, fetchPrices } = usePrices(assets, fundHoldings);
@@ -899,7 +904,7 @@ export default function Dashboard() {
               <LogOut className="w-5 h-5" />
             </button>
             <button 
-              onClick={() => fetchPrices(true)}
+              onClick={() => { fetchPrices(true); forceRefreshHoldings(); }}
               disabled={isLoadingPrices || assets.length === 0}
               className="p-2 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors disabled:opacity-50"
               title="Refresh All Data"
@@ -1161,7 +1166,7 @@ export default function Dashboard() {
                                           <div>
                                             <div className="text-[9px] uppercase tracking-wider text-zinc-400 font-bold mb-1">Underlying Stocks in {entry.name}</div>
                                             <div className="space-y-1">
-                                              {c.subHoldings.sort((a: any, b: any) => b.value - a.value).map((sh: any) => (
+                                              {[...(c.subHoldings || [])].sort((a: any, b: any) => b.value - a.value).map((sh: any) => (
                                                 <div key={sh.symbol || sh.name} className="flex justify-between items-center text-[10px] text-zinc-500 dark:text-zinc-400">
                                                   <span className="truncate max-w-[150px]">{sh.name}</span>
                                                   <span>₹{sh.value.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
@@ -1174,7 +1179,7 @@ export default function Dashboard() {
                                           <div>
                                             <div className="text-[9px] uppercase tracking-wider text-zinc-400 font-bold mb-1">Remaining Fund Allocation</div>
                                             <div className="space-y-1">
-                                              {c.otherAllocations.sort((a: any, b: any) => b.value - a.value).map((oa: any) => (
+                                              {[...(c.otherAllocations || [])].sort((a: any, b: any) => b.value - a.value).map((oa: any) => (
                                                 <div key={oa.name} className="flex justify-between items-center text-[10px] text-zinc-500 dark:text-zinc-400">
                                                   <span className="truncate max-w-[150px]">{oa.name}</span>
                                                   <span>₹{oa.value.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
@@ -1330,7 +1335,7 @@ export default function Dashboard() {
                                         <div>
                                           <div className="text-[9px] uppercase tracking-wider text-zinc-400 font-bold mb-1">Remaining Fund Allocation</div>
                                           <div className="space-y-1">
-                                            {c.otherAllocations.sort((a: any, b: any) => b.value - a.value).map((oa: any) => (
+                                            {[...(c.otherAllocations || [])].sort((a: any, b: any) => b.value - a.value).map((oa: any) => (
                                               <div key={oa.name} className="flex justify-between items-center text-[10px] text-zinc-500 dark:text-zinc-400">
                                                 <span className="truncate max-w-[150px]">{oa.name}</span>
                                                 <span>₹{oa.value.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
@@ -1489,7 +1494,7 @@ export default function Dashboard() {
                                   Edit Sectors
                                 </button>
                               </div>
-                              {(fundHoldings[entry.constituents[0]?.symbol]?.sectorWeightings || []).sort((a: any, b: any) => b.percentage - a.percentage).map((sw: any) => (
+                              {[...(fundHoldings[entry.constituents[0]?.symbol]?.sectorWeightings || [])].sort((a: any, b: any) => b.percentage - a.percentage).map((sw: any) => (
                                 <div key={sw.sector} className="flex justify-between items-center text-xs text-zinc-600 dark:text-zinc-400 mb-1">
                                   <span className="truncate max-w-[180px]">{sw.sector}</span>
                                   <span className="font-medium">{sw.percentage}%</span>
@@ -2042,12 +2047,12 @@ export default function Dashboard() {
                       return (
                         <Fragment key={asset.id}>
                           {showHeader && (() => {
-                            const isExpanded = expandedCategories[currentCategory];
+                            const isExpanded = expandedTableCategories[currentCategory];
                             if (isExpanded) {
                               return (
                                 <tr 
                                   className="bg-zinc-100/50 dark:bg-zinc-800/30 border-t border-zinc-200 dark:border-zinc-800 cursor-pointer"
-                                  onClick={() => setExpandedCategories(prev => ({ ...prev, [currentCategory]: !prev[currentCategory] }))}
+                                  onClick={() => setExpandedTableCategories(prev => ({ ...prev, [currentCategory]: !prev[currentCategory] }))}
                                 >
                                   <td colSpan={8} className="px-6 py-2 text-[10px] font-bold uppercase tracking-widest text-zinc-500 dark:text-zinc-400 flex items-center gap-2">
                                     <ChevronDown className="w-3 h-3" />
@@ -2062,7 +2067,7 @@ export default function Dashboard() {
                               return (
                                 <tr 
                                   className="bg-zinc-50/50 dark:bg-zinc-900/50 border-t border-zinc-200 dark:border-zinc-800 cursor-pointer hover:bg-zinc-100/50 dark:hover:bg-zinc-800/50 transition-colors"
-                                  onClick={() => setExpandedCategories(prev => ({ ...prev, [currentCategory]: true }))}
+                                  onClick={() => setExpandedTableCategories(prev => ({ ...prev, [currentCategory]: true }))}
                                 >
                                   <td className="px-6 py-4 font-bold text-zinc-700 dark:text-zinc-300">
                                     <div className="flex items-center gap-2"><ChevronRight className="w-4 h-4 text-zinc-400" />{currentCategory}</div>
@@ -2091,10 +2096,10 @@ export default function Dashboard() {
                             }
                           })()}
 
-                          {expandedCategories[currentCategory] && (() => {
+                          {expandedTableCategories[currentCategory] && (() => {
                             const isSmall = isSmallCrypto(asset);
                             const prevIsSmall = index > 0 && isSmallCrypto(renderAssets[index - 1]);
-                            const isSmallCryptoExpanded = expandedCategories['SmallCrypto'];
+                            const isSmallCryptoExpanded = expandedTableCategories['SmallCrypto'];
                             const renderRow = !isSmall || isSmallCryptoExpanded;
                             
                             return (
@@ -2103,7 +2108,7 @@ export default function Dashboard() {
                                   isSmallCryptoExpanded ? (
                                     <tr 
                                       className="bg-zinc-100/30 dark:bg-zinc-800/10 border-t border-zinc-200/50 dark:border-zinc-800/50 cursor-pointer"
-                                      onClick={() => setExpandedCategories(prev => ({ ...prev, 'SmallCrypto': !prev['SmallCrypto'] }))}
+                                      onClick={() => setExpandedTableCategories(prev => ({ ...prev, 'SmallCrypto': !prev['SmallCrypto'] }))}
                                     >
                                       <td colSpan={8} className="px-6 py-2 pl-10 text-[10px] font-bold uppercase tracking-widest text-zinc-500 dark:text-zinc-400 flex items-center gap-2">
                                         <ChevronDown className="w-3 h-3" /> Others (Crypto &lt; ₹10)
@@ -2112,7 +2117,7 @@ export default function Dashboard() {
                                   ) : (
                                     <tr 
                                       className="bg-zinc-50/30 dark:bg-zinc-900/30 border-t border-zinc-200/50 dark:border-zinc-800/50 cursor-pointer hover:bg-zinc-100/50 dark:hover:bg-zinc-800/50 transition-colors"
-                                      onClick={() => setExpandedCategories(prev => ({ ...prev, 'SmallCrypto': true }))}
+                                      onClick={() => setExpandedTableCategories(prev => ({ ...prev, 'SmallCrypto': true }))}
                                     >
                                       <td className="px-6 py-3 pl-10 font-bold text-zinc-600 dark:text-zinc-400">
                                         <div className="flex items-center gap-2 text-xs"><ChevronRight className="w-3 h-3 text-zinc-400" /> Others (Crypto &lt; ₹10)</div>
@@ -2151,10 +2156,10 @@ export default function Dashboard() {
                     <Fragment>
                       <tr 
                         className="bg-zinc-100 dark:bg-zinc-900 font-bold border-t-2 border-zinc-200 dark:border-zinc-800 cursor-pointer hover:bg-zinc-200 dark:hover:bg-zinc-800 transition-colors"
-                        onClick={() => setExpandedCategories(prev => ({ ...prev, 'Total Portfolio': !prev['Total Portfolio'] }))}
+                        onClick={() => setExpandedTableCategories(prev => ({ ...prev, 'Total Portfolio': !prev['Total Portfolio'] }))}
                       >
                         <td className="px-6 py-4 text-zinc-900 dark:text-zinc-100 uppercase tracking-wider text-xs flex items-center gap-2">
-                          {expandedCategories['Total Portfolio'] ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                          {expandedTableCategories['Total Portfolio'] ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
                           Total Portfolio
                         </td>
                         <td className="px-6 py-4 text-right">
@@ -2176,7 +2181,7 @@ export default function Dashboard() {
                         </td>
                         <td className="px-6 py-4"></td>
                       </tr>
-                      {expandedCategories['Total Portfolio'] && (
+                      {expandedTableCategories['Total Portfolio'] && (
                         <tr className="bg-zinc-50 dark:bg-zinc-950/50">
                           <td colSpan={8} className="px-6 py-6">
                             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

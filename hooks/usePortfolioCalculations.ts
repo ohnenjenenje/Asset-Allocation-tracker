@@ -155,7 +155,7 @@ export function usePortfolioCalculations({
       if (catName.includes('debt') || catName.includes('bond') || catName.includes('liquid') || catName.includes('fixed')) {
         finalCategory = 'Fixed Income';
       } else {
-        const assetName = asset.name.toLowerCase();
+        const assetName = (asset.name || '').toLowerCase();
         const isGlobalFund = assetName.includes('off-shore') || assetName.includes('china') || assetName.includes('global') || assetName.includes('international');
         finalCategory = isGlobalFund ? 'Global Equity' : 'Domestic Equity';
       }
@@ -629,6 +629,47 @@ export function usePortfolioCalculations({
        cap = getCapCategory(asset.name, fundData?.categoryName) || 'Other / Uncategorized';
     }
 
+    let defaultCap = 'Other / Uncategorized';
+    if (type === 'EQUITY' || type === 'STOCK') {
+       if (priceData?.marketCap) {
+         const capInUsd = currentCurrency === 'INR' ? priceData.marketCap / usdToInr : priceData.marketCap;
+         if (capInUsd >= 10_000_000_000) defaultCap = 'Large Cap';
+         else if (capInUsd >= 2_000_000_000) defaultCap = 'Mid Cap';
+         else defaultCap = 'Small Cap';
+       } else {
+         defaultCap = getCapCategory(asset.name) || 'Other / Uncategorized';
+       }
+    } else {
+       defaultCap = getCapCategory(asset.name, fundData?.categoryName) || 'Other / Uncategorized';
+    }
+
+    const distributeSectorToCap = (sName: string, sValue: number) => {
+      const mcap = fundData?.marketCapWeightage;
+      const isLikelyETF = type === 'ETF' || (asset.name || '').toLowerCase().includes('etf') || (asset.name || '').toLowerCase().includes('bees') || (asset.symbol || '').toLowerCase().includes('bees') || (asset.symbol || '').toLowerCase().includes('alpha');
+      const isDirectLoc = (type === 'EQUITY' || type === 'STOCK') && !isLikelyETF;
+
+      if (!isDirectLoc && mcap && (Number(mcap.largeCap) > 0 || Number(mcap.midCap) > 0 || Number(mcap.smallCap) > 0)) {
+        const large = Number(mcap.largeCap) || 0;
+        const mid = Number(mcap.midCap) || 0;
+        const small = Number(mcap.smallCap) || 0;
+        const others = Number(mcap.others) || 0;
+        const totalWeight = large + mid + small + others;
+        
+        const add = (c: string, weight: number) => {
+          if (weight <= 0) return;
+          if (!sectorByMarketCap[c]) sectorByMarketCap[c] = {};
+          sectorByMarketCap[c][sName] = (sectorByMarketCap[c][sName] || 0) + sValue * (weight / totalWeight);
+        };
+        add('Large Cap', large);
+        add('Mid Cap', mid);
+        add('Small Cap', small);
+        add('Other / Uncategorized', others);
+      } else {
+        if (!sectorByMarketCap[defaultCap]) sectorByMarketCap[defaultCap] = {};
+        sectorByMarketCap[defaultCap][sName] = (sectorByMarketCap[defaultCap][sName] || 0) + sValue;
+      }
+    };
+
     if (sectors.length > 0 && !asset.manualSector) {
       let mappedSectorValue = 0;
       sectors.forEach((s: any) => {
@@ -655,8 +696,7 @@ export function usePortfolioCalculations({
         if (nonEquity > 0) otherAllocations.push({ name: 'Non-Equity / Debt', value: nonEquity });
 
         addToSector(sectorName, val, false, asset.name, asset.symbol, otherAllocations);
-        if (!sectorByMarketCap[cap]) sectorByMarketCap[cap] = {};
-        sectorByMarketCap[cap][sectorName] = (sectorByMarketCap[cap][sectorName] || 0) + val;
+        distributeSectorToCap(sectorName, val);
       });
 
       if (unmappedSector > 0) {
@@ -669,15 +709,14 @@ export function usePortfolioCalculations({
         if (nonEquity > 0) otherAllocations.push({ name: 'Non-Equity / Debt', value: nonEquity });
 
         addToSector(sectorName, unmappedSector, false, `Unmapped Equity (${asset.name})`, `${asset.symbol}-unmapped`, otherAllocations);
-        if (!sectorByMarketCap[cap]) sectorByMarketCap[cap] = {};
-        sectorByMarketCap[cap][sectorName] = (sectorByMarketCap[cap][sectorName] || 0) + unmappedSector;
+        distributeSectorToCap(sectorName, unmappedSector);
       }
     } else {
       const sectorName = asset.manualSector || prices[asset.symbol]?.sector || 'Other / Uncategorized';
-      const isDirect = type === 'EQUITY' || type === 'STOCK';
-      addToSector(sectorName, equityValue, isDirect, asset.name, asset.symbol);
-      if (!sectorByMarketCap[cap]) sectorByMarketCap[cap] = {};
-      sectorByMarketCap[cap][sectorName] = (sectorByMarketCap[cap][sectorName] || 0) + equityValue;
+      const isLikelyETF = type === 'ETF' || (asset.name || '').toLowerCase().includes('etf') || (asset.name || '').toLowerCase().includes('bees') || (asset.symbol || '').toLowerCase().includes('bees') || (asset.symbol || '').toLowerCase().includes('alpha');
+      const isDirectLoc = (type === 'EQUITY' || type === 'STOCK') && !isLikelyETF;
+      addToSector(sectorName, equityValue, isDirectLoc, asset.name, asset.symbol);
+      distributeSectorToCap(sectorName, equityValue);
     }
   });
 

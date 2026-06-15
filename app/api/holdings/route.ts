@@ -91,18 +91,39 @@ export async function GET(request: Request) {
     let targetSymbol = symbol;
     let tickertapeData: any = null; // Left for compatibility flow, but it won't be filled by TT.
 
+    // Manual mapping for Yahoo symbols that are actually mutual funds
+    const MANUAL_MAP: Record<string, string> = {
+      '0P0001S0S9.BO': '152156', // Zerodha Nifty LargeMidcap 250
+      '0P0000XW0K.BO': '140196', // Edelweiss Liquid Fund - Direct Growth
+      '0P0011MAX.BO': '120503',  // Axis Small Cap Fund
+      '0P0000XV5G.BO': '140243', // Edelweiss Greater China - Direct
+      '0P0000KYO9.BO': '140242', // Edelweiss Greater China - Regular
+      'NIFTYBEES.NS': '140084',  // Nippon India ETF Nifty 50 BeES
+      'NIFTYBEES.BO': '140084',
+      'ALPHA.NS': '149397',      // Kotak Nifty Alpha 50 ETF (Yahoo symbol)
+      'ALPHA.BO': '149397',
+      'ALPHAETF.NS': '149397',   // Alternative mapping
+      'ALPHAETF.BO': '149397',
+      'KOTAKNIFTY.NS': '112351', // Kotak Nifty 50 ETF
+      'KOTAKNIFTY.BO': '112351',
+    };
+    const resolvedSymbol = MANUAL_MAP[symbol.toUpperCase()] || symbol;
+
     // --- UPVALY FINAPI INTEGRATION (Primary Fetch) ---
-    const isMutualFund = symbol.startsWith('MF_') || /^\d{5,6}$/.test(symbol);
-    const schemeCode = symbol.replace('MF_', '');
+    const isMutualFund = resolvedSymbol.startsWith('MF_') || /^\d{5,6}$/.test(resolvedSymbol);
+    const schemeCode = resolvedSymbol.replace('MF_', '');
 
     if (isMutualFund) {
+      console.log(`[HOLDINGS API] Attempting Upvaly fetch for ${resolvedSymbol} (schemeCode: ${schemeCode})`);
       try {
-        const upvalyRes = await fetch(`https://finapi.upvaly.com/api/mf/scheme-code/${schemeCode}`, {
-          next: { revalidate: 86400 } // Cache for 24 hours
+        const upvalyRes = await fetch(`https://finapi.upvaly.com/api/mf/scheme-code/${schemeCode}?_t=${Date.now()}`, {
+          cache: 'no-store'
         });
         
+        console.log(`[HOLDINGS API] Upvaly res.ok: ${upvalyRes.ok}, status: ${upvalyRes.status}`);
         if (upvalyRes.ok) {
           const upvalyData = await upvalyRes.json();
+          console.log(`[HOLDINGS API] Upvaly data status: ${upvalyData.status}, has data: ${!!upvalyData.data}`);
           if (upvalyData.status === 'success' && upvalyData.data) {
             const d = upvalyData.data;
             
@@ -111,12 +132,23 @@ export async function GET(request: Request) {
               source: 'Upvaly FinAPI',
               symbol: symbol,
               categoryName: d.schemeCategory || null,
+              debugKeys: d.portfolio ? Object.keys(d.portfolio) : [],
+              debugMC: d.portfolio?.marketCapWeightage || 'MISSING',
               assetAllocation: {
-                equity: parseFloat(d.portfolio?.assetAllocation?.equityAllocation || "0"),
-                debt: parseFloat(d.portfolio?.assetAllocation?.debtAllocation || "0"),
-                cash: parseFloat(d.portfolio?.assetAllocation?.cashAllocation || "0"),
-                other: parseFloat(d.portfolio?.assetAllocation?.otherAllocation || "0")
+                stockPosition: parseFloat(d.portfolio?.assetAllocation?.equityAllocation || "0"),
+                bondPosition: parseFloat(d.portfolio?.assetAllocation?.debtAllocation || "0"),
+                cashPosition: parseFloat(d.portfolio?.assetAllocation?.cashAllocation || "0"),
+                otherPosition: parseFloat(d.portfolio?.assetAllocation?.otherAllocation || "0")
               },
+              marketCapWeightage: (() => {
+                const mc = d.portfolio?.marketCapWeightage;
+                if (!mc) return null;
+                const large = parseFloat(mc.largeCap || "0");
+                const mid = parseFloat(mc.midCap || "0");
+                const small = parseFloat(mc.smallCap || "0");
+                const others = parseFloat(mc.others || "0");
+                return (large + mid + small + others) > 0 ? { largeCap: large, midCap: mid, smallCap: small, others } : null;
+              })(),
               sectorWeightings: (d.sectors || []).map((s: any) => ({
                 sector: s.sector,
                 percentage: parseFloat(s.weightage)
@@ -129,8 +161,8 @@ export async function GET(request: Request) {
             });
           }
         }
-      } catch (e) {
-        console.error(`Upvaly fetch failed for ${schemeCode}:`, e);
+      } catch (e: any) {
+        console.error(`Upvaly fetch failed for ${schemeCode}:`, e.message || e);
         // Let it fall through to Yahoo Finance fallback below
       }
     }
@@ -216,10 +248,10 @@ export async function GET(request: Request) {
                 percentage: s.percentage * 100
               })),
               assetAllocation: {
-                equity: (result.topHoldings?.stockPosition || 0) * 100,
-                debt: (result.topHoldings?.bondPosition || 0) * 100,
-                cash: (result.topHoldings?.cashPosition || 0) * 100,
-                other: (result.topHoldings?.otherPosition || 0) * 100,
+                stockPosition: (result.topHoldings?.stockPosition || 0) * 100,
+                bondPosition: (result.topHoldings?.bondPosition || 0) * 100,
+                cashPosition: (result.topHoldings?.cashPosition || 0) * 100,
+                otherPosition: (result.topHoldings?.otherPosition || 0) * 100,
               },
               categoryName: result.assetProfile?.categoryName || null,
               symbol: yfSymbol,
