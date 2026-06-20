@@ -15,7 +15,7 @@ export function usePortfolioData(
 
   const [idealAllocation, setIdealAllocation] = useState<Record<string, number>>({
     'Equities': 60,
-    'Debt and Fixed': 20,
+    'Fixed Income': 20,
     'Commodities': 5,
     'Crypto': 5,
     'Cash': 10,
@@ -284,6 +284,11 @@ export function usePortfolioData(
             if (loadedAllocation['Debt'] !== undefined) {
               loadedAllocation['Fixed Income'] = (loadedAllocation['Fixed Income'] || 0) + loadedAllocation['Debt'];
               delete loadedAllocation['Debt'];
+              needsSync = true;
+            }
+            if (loadedAllocation['Debt and Fixed'] !== undefined) {
+              loadedAllocation['Fixed Income'] = (loadedAllocation['Fixed Income'] || 0) + loadedAllocation['Debt and Fixed'];
+              delete loadedAllocation['Debt and Fixed'];
               needsSync = true;
             }
             if (loadedAllocation['Domestic Equity'] !== undefined) {

@@ -7,7 +7,7 @@ const dotenv = require('dotenv');
 if (fs.existsSync('.env')) dotenv.config({ path: '.env' });
 if (fs.existsSync('.env.local')) dotenv.config({ path: '.env.local', override: true });
 
-const dev = false;
+const dev = true;
 const port = 3000;
 
 // Omit the 0.0.0.0 hostname here so Next.js dynamically uses your phone's real IP for JavaScript files

@@ -137,30 +137,15 @@ export default function Dashboard() {
   const [binanceAssets, setBinanceAssets] = useState<Asset[]>([]);
   const [coindcxAssets, setCoindcxAssets] = useState<Asset[]>([]);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-
-
-
-  const getRunningOperations = () => {
-    const operations: string[] = [];
-    if (isLoadingPrices) {
-      const progress = priceProgress ? ` (${priceProgress.done}/${priceProgress.total})` : '';
-      operations.push(`Updating Prices${progress}`);
-    }
-    if (isAiTyping) operations.push('AI Thinking');
-    const loadingHoldingsValues = Object.values(loadingHoldings.current);
-    if (loadingHoldingsValues.some(v => v)) operations.push('Loading Holdings');
-    return operations;
-  };
-  const runningOperations = getRunningOperations();
-
   const [activeTab, setActiveTab] = useState<'portfolio' | 'screener'>('portfolio');
   const [isAllocationSettingsOpen, setIsAllocationSettingsOpen] = useState(false);
   const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({ 'Total Portfolio': true });
-  const [expandedTableCategories, setExpandedTableCategories] = useState<Record<string, boolean>>({ 'Equities': true, 'Mutual Funds': true, 'Crypto': true, 'Commodities': true, 'Debt and Fixed': true, 'Cash': true, 'Other / Uncategorized': true, 'Total Portfolio': true });
+  const [expandedTableCategories, setExpandedTableCategories] = useState<Record<string, boolean>>({});
   const [expandedSymbols, setExpandedSymbols] = useState<Record<string, boolean>>({});
   const [expandedSectors, setExpandedSectors] = useState<Record<string, boolean>>({});
   const [expandedMarketCaps, setExpandedMarketCaps] = useState<Record<string, boolean>>({});
   const [expandedFunds, setExpandedFunds] = useState<Record<string, boolean>>({});
+  const [expandedAllocCategories, setExpandedAllocCategories] = useState<Record<string, boolean>>({});
   const [manualFundModal, setManualFundModal] = useState<{ isOpen: boolean, symbol: string, name: string, holdings: { name: string, holdingPercent: number }[] } | null>(null);
   const [manualSectorModal, setManualSectorModal] = useState<{ isOpen: boolean, symbol: string, name: string, sectors: { sector: string, percentage: number }[] } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -176,6 +161,7 @@ export default function Dashboard() {
   const [assetToDelete, setAssetToDelete] = useState<string | null>(null);
   const [manualPrice, setManualPrice] = useState('');
   const [manualSector, setManualSector] = useState('');
+  const [purchaseDate, setPurchaseDate] = useState('');
   const [availableModels, setAvailableModels] = useState<any[]>([]);
 
   const {
@@ -199,7 +185,7 @@ export default function Dashboard() {
     handleExportData, handleImportData, handleRestoreFromMongo, forceRefreshHoldings
   } = usePortfolioData(user, isAuthReady);
 
-  const { prices, setPrices, isLoadingPrices, fetchPrices } = usePrices(assets, fundHoldings);
+  const { prices, setPrices, isLoadingPrices, priceProgress, fetchPrices } = usePrices(assets, fundHoldings);
 
   const mergedAssets = useMemo(() => [...assets, ...binanceAssets, ...coindcxAssets], [assets, binanceAssets, coindcxAssets]);
 
@@ -214,6 +200,34 @@ export default function Dashboard() {
     CustomXAxisTick
   } = usePortfolioCalculations({ mergedAssets, assets, prices, fundHoldings, idealAllocation });
 
+  const groupedAllocationData = useMemo(() => {
+    const groups: Record<string, { name: string; value: number; constituents: { name: string; symbol: string; value: number }[] }> = {};
+    
+    allocationData.forEach(item => {
+      const parentName = item.name.includes(' > ') ? item.name.split(' > ')[0].trim() : item.name.trim();
+      if (!groups[parentName]) {
+        groups[parentName] = {
+          name: parentName,
+          value: 0,
+          constituents: []
+        };
+      }
+      groups[parentName].value += item.value;
+      if (item.constituents) {
+        item.constituents.forEach((c: any) => {
+          const existing = groups[parentName].constituents.find(gc => gc.symbol === c.symbol);
+          if (existing) {
+            existing.value += c.value;
+          } else {
+            groups[parentName].constituents.push({ ...c });
+          }
+        });
+      }
+    });
+    
+    return Object.values(groups).sort((a, b) => b.value - a.value);
+  }, [allocationData]);
+
   const {
     isChatOpen, setIsChatOpen, chatMessages, setChatMessages,
     aiInput, setAiInput, isAiTyping, messagesEndRef, chatContainerRef,
@@ -223,6 +237,19 @@ export default function Dashboard() {
     openRouterKey, aiProvider, selectedModel, googleModel, availableModels, searchSource,
     setIsAddModalOpen, setIsSettingsOpen
   });
+
+  const getRunningOperations = () => {
+    const operations: string[] = [];
+    if (isLoadingPrices) {
+      const progress = priceProgress ? ` (${priceProgress.done}/${priceProgress.total})` : '';
+      operations.push(`Updating Prices${progress}`);
+    }
+    if (isAiTyping) operations.push('AI Thinking');
+    const loadingHoldingsValues = Object.values(loadingHoldings.current);
+    if (loadingHoldingsValues.some(v => v)) operations.push('Loading Holdings');
+    return operations;
+  };
+  const runningOperations = getRunningOperations();
 
 
   useEffect(() => {
@@ -312,6 +339,11 @@ export default function Dashboard() {
             if (loadedAllocation['Debt'] !== undefined) {
               loadedAllocation['Fixed Income'] = (loadedAllocation['Fixed Income'] || 0) + loadedAllocation['Debt'];
               delete loadedAllocation['Debt'];
+              needsSync = true;
+            }
+            if (loadedAllocation['Debt and Fixed'] !== undefined) {
+              loadedAllocation['Fixed Income'] = (loadedAllocation['Fixed Income'] || 0) + loadedAllocation['Debt and Fixed'];
+              delete loadedAllocation['Debt and Fixed'];
               needsSync = true;
             }
             if (loadedAllocation['Domestic Equity'] !== undefined) {
@@ -425,72 +457,7 @@ export default function Dashboard() {
       .catch(console.error);
   }, []);
 
-  useEffect(() => {
-    assets.forEach(asset => {
-      const needsFetch = (asset.type === 'MUTUALFUND' || asset.type === 'ETF') && 
-        !fundHoldings[asset.symbol] && 
-        !loadingHoldings.current[asset.symbol];
-        
-      if (needsFetch) {
-        loadingHoldings.current[asset.symbol] = true;
-        fetch(`/api/holdings?symbol=${encodeURIComponent(asset.symbol)}&name=${encodeURIComponent(asset.name || '')}`)
-          .then(async res => {
-            const contentType = res.headers.get('content-type');
-            const text = await res.text();
-            
-            if (!res.ok || (contentType && !contentType.includes('application/json'))) {
-               // Only log error if it doesn't look like the "Starting Server..." page
-               if (!text.includes('Starting Server')) {
-                   console.error('API Error fetching holdings for', asset.symbol, res.status, text.substring(0, 100));
-               }
-               return { holdings: [] };
-            }
-            
-            try {
-              return JSON.parse(text);
-            } catch (e) {
-              console.error('Failed to parse holdings data for', asset.symbol, ':', text.substring(0, 100));
-              return { holdings: [] };
-            }
-          })
-          .then(data => {
-            if (data.debug) {
-              console.log(`Holdings debug for ${asset.symbol}: ${data.debug}`);
-            }
-            if (data.error) {
-              setHoldingsErrors(prev => ({ ...prev, [asset.symbol]: data.error }));
-            }
-            const hasHoldings = data.holdings && data.holdings.length > 0;
-            const hasSectors = data.sectorWeightings && data.sectorWeightings.length > 0;
-            
-            const fundData = {
-              holdings: data.holdings || [],
-              sectorWeightings: data.sectorWeightings || [],
-              categoryName: data.categoryName || null,
-              assetAllocation: data.assetAllocation || null,
-              debug: data.debug || null
-            };
 
-            setFundHoldings(prev => {
-              const updated = { 
-                ...prev, 
-                [asset.symbol]: fundData
-              };
-              return updated;
-            });
-
-            // Sync to DB outside of state update if we found something
-            if (hasHoldings || hasSectors || data.categoryName || data.assetAllocation) {
-              syncToDb({ fundHoldings: { ...fundHoldings, [asset.symbol]: fundData } });
-            }
-          })
-          .catch(err => {
-            console.error(`Holdings fetch failed for ${asset.symbol}`, err);
-            setHoldingsErrors(prev => ({ ...prev, [asset.symbol]: err.message }));
-          });
-      }
-    });
-  }, [assets, fundHoldings]);
 
 
   useEffect(() => {
@@ -814,6 +781,7 @@ export default function Dashboard() {
     setInvestedValueInput('');
     setManualPrice('');
     setManualSector('');
+    setPurchaseDate('');
     setEntryCurrency('INR');
     setEditingAssetId(null);
   };
@@ -1009,22 +977,53 @@ export default function Dashboard() {
                     </PieChart>
                   </ResponsiveContainer>
                 </div>
-                <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2">
+                <div className="mt-4 flex flex-col gap-3">
                   {allocationData.map((entry, index) => {
                     const total = allocationData.reduce((sum, item) => sum + item.value, 0);
                     const percent = total > 0 ? ((entry.value / total) * 100).toFixed(1) : '0.0';
+                    const isExpanded = expandedCategories[entry.name];
                     return (
-                      <div key={`legend-allocation-${entry.name}-${index}`} className="flex items-center justify-between text-sm">
-                        <div className="flex items-center gap-2">
-                          <div className="w-3 h-3 rounded-full" style={{ backgroundColor: COLORS[index % COLORS.length] }} />
-                          <span className="text-zinc-600 dark:text-zinc-400 truncate max-w-[100px] sm:max-w-[120px]">{entry.name}</span>
+                      <div 
+                        key={`legend-allocation-${entry.name}-${index}`} 
+                        className="flex flex-col gap-1.5 p-3 rounded-xl bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-100 dark:border-zinc-800 cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+                        onClick={() => setExpandedCategories(prev => ({ ...prev, [entry.name]: !prev[entry.name] }))}
+                      >
+                        <div className="flex items-center justify-between text-sm">
+                          <div className="flex items-center gap-2">
+                            <div className="w-3 h-3 rounded-full" style={{ backgroundColor: COLORS[index % COLORS.length] }} />
+                            <span className="font-semibold text-zinc-900 dark:text-zinc-100">{entry.name}</span>
+                          </div>
+                          <div className="font-bold text-zinc-900 dark:text-zinc-100">
+                            ₹{entry.value.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                            <span className="text-zinc-400 ml-1.5 font-normal text-xs">
+                              ({percent}%)
+                            </span>
+                          </div>
                         </div>
-                        <div className="font-medium whitespace-nowrap">
-                          ₹{entry.value.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
-                          <span className="text-zinc-400 ml-1.5 font-normal text-xs">
-                            ({percent}%)
-                          </span>
+
+                        <div className="w-full h-1.5 bg-zinc-200 dark:bg-zinc-700 rounded-full overflow-hidden flex">
+                          <div 
+                            className="h-full transition-all duration-500 rounded-full" 
+                            style={{ width: `${percent}%`, backgroundColor: COLORS[index % COLORS.length] }} 
+                          />
                         </div>
+                        
+                        {isExpanded && entry.constituents && entry.constituents.length > 0 && (
+                          <div className="mt-2 pt-2 border-t border-zinc-200 dark:border-zinc-700 flex flex-col gap-1.5">
+                            {[...entry.constituents].sort((a: any, b: any) => b.value - a.value).map((c: any, i: number) => {
+                              const cPercent = entry.value > 0 ? ((c.value / entry.value) * 100).toFixed(1) : '0.0';
+                              return (
+                                <div key={`const-${i}`} className="flex justify-between items-center text-xs text-zinc-600 dark:text-zinc-400">
+                                  <span className="truncate max-w-[150px]">{c.name}</span>
+                                  <div className="flex items-center gap-2">
+                                    <span>₹{c.value.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+                                    <span className="w-10 text-right opacity-70">{cPercent}%</span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -1473,6 +1472,53 @@ export default function Dashboard() {
                                 </div>
                               ))}
                             </div>
+
+                            {(() => {
+                              const symbol = entry.constituents[0]?.symbol;
+                              const alloc = symbol ? fundHoldings[symbol]?.assetAllocation : null;
+                              
+                              if (!alloc) return null;
+                              
+                              return (
+                                <div>
+                                  <div className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold mb-2">Asset Allocation:</div>
+                                  
+                                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-zinc-500 uppercase tracking-wider font-medium mb-2">
+                                    {alloc.stockPosition > 0 && (
+                                      <div className="flex items-center gap-1.5">
+                                        <div className="w-1.5 h-1.5 rounded-full bg-blue-500" />
+                                        <span>Equity: {alloc.stockPosition.toFixed(1)}%</span>
+                                      </div>
+                                    )}
+                                    {alloc.bondPosition > 0 && (
+                                      <div className="flex items-center gap-1.5">
+                                        <div className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                                        <span>Debt: {alloc.bondPosition.toFixed(1)}%</span>
+                                      </div>
+                                    )}
+                                    {alloc.cashPosition > 0 && (
+                                      <div className="flex items-center gap-1.5">
+                                        <div className="w-1.5 h-1.5 rounded-full bg-purple-500" />
+                                        <span>Cash: {alloc.cashPosition.toFixed(1)}%</span>
+                                      </div>
+                                    )}
+                                    {alloc.otherPosition > 0 && (
+                                      <div className="flex items-center gap-1.5">
+                                        <div className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                                        <span>Other: {alloc.otherPosition.toFixed(1)}%</span>
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  <div className="w-full h-1.5 bg-zinc-200 dark:bg-zinc-700 rounded-full overflow-hidden flex">
+                                    {alloc.stockPosition > 0 && <div className="h-full bg-blue-500 transition-all duration-500" style={{ width: `${alloc.stockPosition}%` }} />}
+                                    {alloc.bondPosition > 0 && <div className="h-full bg-emerald-500 transition-all duration-500" style={{ width: `${alloc.bondPosition}%` }} />}
+                                    {alloc.cashPosition > 0 && <div className="h-full bg-purple-500 transition-all duration-500" style={{ width: `${alloc.cashPosition}%` }} />}
+                                    {alloc.otherPosition > 0 && <div className="h-full bg-amber-500 transition-all duration-500" style={{ width: `${alloc.otherPosition}%` }} />}
+                                  </div>
+                                </div>
+                              );
+                            })()}
 
                             <div>
                               <div className="flex items-center justify-between mb-2">
@@ -2340,6 +2386,8 @@ export default function Dashboard() {
         investedValueInput={investedValueInput}
         setInvestedValueInput={setInvestedValueInput}
         usdToInr={usdToInr}
+        purchaseDate={purchaseDate}
+        setPurchaseDate={setPurchaseDate}
         handleAddAsset={handleAddAsset}
         manualPrice={manualPrice}
         setManualPrice={setManualPrice}

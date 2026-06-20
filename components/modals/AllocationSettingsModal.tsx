@@ -30,7 +30,7 @@ const buildTree = (categories: string[]) => {
   return root;
 };
 
-const TreeNode = ({ nodeKey, node, idealAllocation, consolidatedAllocation, handleAllocationChange, depth = 0 }: any) => {
+const TreeNode = ({ nodeKey, node, idealAllocation, consolidatedAllocation, handleAllocationChange, handleDeleteCategory, depth = 0 }: any) => {
   const path = node._path;
   const childrenKeys = Object.keys(node._children);
   const hasChildren = childrenKeys.length > 0;
@@ -91,6 +91,15 @@ const TreeNode = ({ nodeKey, node, idealAllocation, consolidatedAllocation, hand
             placeholder="0"
           />
           <span className="text-sm text-zinc-500 dark:text-zinc-400 w-4">%</span>
+          {depth > 0 && (
+            <button 
+              onClick={() => handleDeleteCategory(path)}
+              className="ml-2 text-zinc-400 hover:text-red-500 transition-colors"
+              title="Delete sub-category"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </div>
       
@@ -103,7 +112,8 @@ const TreeNode = ({ nodeKey, node, idealAllocation, consolidatedAllocation, hand
               node={node._children[k]} 
               idealAllocation={idealAllocation}
               consolidatedAllocation={consolidatedAllocation} 
-              handleAllocationChange={handleAllocationChange} 
+              handleAllocationChange={handleAllocationChange}
+              handleDeleteCategory={handleDeleteCategory} 
               depth={depth + 1} 
             />
           ))}
@@ -163,6 +173,17 @@ export default function AllocationSettingsModal({
     setIdealAllocation(updated);
   };
 
+  const handleDeleteCategory = (categoryPath: string) => {
+    const updated = { ...idealAllocation };
+    delete updated[categoryPath];
+    Object.keys(updated).forEach(key => {
+      if (key.startsWith(`${categoryPath} > `)) {
+        delete updated[key];
+      }
+    });
+    setIdealAllocation(updated);
+  };
+
   const handleSave = () => {
     syncToDb({ settings: { idealAllocation } });
     setIsAllocationSettingsOpen(false);
@@ -203,7 +224,8 @@ export default function AllocationSettingsModal({
                 node={tree[k]} 
                 idealAllocation={idealAllocation}
                 consolidatedAllocation={consolidatedAllocation} 
-                handleAllocationChange={handleAllocationChange} 
+                handleAllocationChange={handleAllocationChange}
+                handleDeleteCategory={handleDeleteCategory}
               />
             ))}
           </div>

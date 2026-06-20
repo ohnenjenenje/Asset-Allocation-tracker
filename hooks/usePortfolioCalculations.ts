@@ -131,7 +131,11 @@ export function usePortfolioCalculations({
           }
         };
         
-        addValue('Equities', alloc.stockPosition || 0);
+        const assetNameLower = (asset.name || '').toLowerCase();
+        const isGlobalFund = assetNameLower.includes('off-shore') || assetNameLower.includes('china') || assetNameLower.includes('global') || assetNameLower.includes('international') || assetNameLower.includes('nasdaq') || assetNameLower.includes('s&p') || assetNameLower.includes('us equity');
+        const equityCategory = isGlobalFund ? 'Equities > Global Equity' : 'Equities > Domestic Equity';
+
+        addValue(equityCategory, alloc.stockPosition || 0);
         addValue('Fixed Income', alloc.bondPosition || 0);
         addValue('Cash', alloc.cashPosition || 0);
         addValue('Other', (alloc.otherPosition || 0) + (alloc.preferredPosition || 0) + (alloc.convertiblePosition || 0));
@@ -147,7 +151,7 @@ export function usePortfolioCalculations({
 
     let finalCategory = topCategory;
     if (finalCategory === 'Equities') {
-      finalCategory = isDomestic(asset) ? 'Domestic Equity' : 'Global Equity';
+      finalCategory = isDomestic(asset) ? 'Equities > Domestic Equity' : 'Equities > Global Equity';
     }
     
     if (finalCategory === 'Mutual Funds') {
@@ -157,7 +161,7 @@ export function usePortfolioCalculations({
       } else {
         const assetName = (asset.name || '').toLowerCase();
         const isGlobalFund = assetName.includes('off-shore') || assetName.includes('china') || assetName.includes('global') || assetName.includes('international');
-        finalCategory = isGlobalFund ? 'Global Equity' : 'Domestic Equity';
+        finalCategory = isGlobalFund ? 'Equities > Global Equity' : 'Equities > Domestic Equity';
       }
     } else if (finalCategory === 'Commodities') {
       finalCategory = 'Commodities > ' + getCommoditySubCategory(asset);
@@ -444,8 +448,38 @@ export function usePortfolioCalculations({
 
     // 2. Distribute the Equity value across Market Caps
     const holdings = Array.isArray(fundData) ? fundData : (fundData?.holdings || []);
+    const mcapWeightage = fundData?.marketCapWeightage;
     
-    if (holdings && holdings.length > 0) {
+    if (mcapWeightage && (Number(mcapWeightage.largeCap) > 0 || Number(mcapWeightage.midCap) > 0 || Number(mcapWeightage.smallCap) > 0)) {
+      // Use the API-provided market cap allocation directly
+      const large = Number(mcapWeightage.largeCap) || 0;
+      const mid = Number(mcapWeightage.midCap) || 0;
+      const small = Number(mcapWeightage.smallCap) || 0;
+      const others = Number(mcapWeightage.others) || 0;
+      const totalWeight = large + mid + small + others;
+      
+      const nonEquity = totalValue - equityValue;
+      
+      const allocateCap = (capName: string, weight: number) => {
+        if (weight <= 0) return;
+        const capValue = equityValue * (weight / totalWeight);
+        
+        const otherAllocations: {name: string, value: number}[] = [];
+        if (large > 0 && capName !== 'Large Cap') otherAllocations.push({ name: 'Large Cap', value: equityValue * (large / totalWeight) });
+        if (mid > 0 && capName !== 'Mid Cap') otherAllocations.push({ name: 'Mid Cap', value: equityValue * (mid / totalWeight) });
+        if (small > 0 && capName !== 'Small Cap') otherAllocations.push({ name: 'Small Cap', value: equityValue * (small / totalWeight) });
+        if (others > 0 && capName !== 'Other / Uncategorized') otherAllocations.push({ name: 'Other / Uncategorized', value: equityValue * (others / totalWeight) });
+        if (nonEquity > 0) otherAllocations.push({ name: 'Non-Equity / Debt', value: nonEquity });
+        
+        addToMarketCap(capName, capValue, false, asset.name, asset.symbol, undefined, otherAllocations);
+      };
+      
+      allocateCap('Large Cap', large);
+      allocateCap('Mid Cap', mid);
+      allocateCap('Small Cap', small);
+      allocateCap('Other / Uncategorized', others);
+      
+    } else if (holdings && holdings.length > 0) {
       let mappedHoldingsValue = 0;
       let totalHoldingPercent = holdings.reduce((sum: number, h: any) => sum + (h.holdingPercent || 0), 0);
       let isPercentageScale = totalHoldingPercent > 1.5;

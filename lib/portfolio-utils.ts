@@ -25,7 +25,7 @@ export const normalizeCategory = (category?: string) => {
   if (upper === 'DOMESTIC EQUITY' || upper === 'GLOBAL EQUITY') return upper.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
   if (upper === 'MUTUALFUND' || upper === 'ETF') return 'Mutual Funds';
   if (upper === 'CRYPTOCURRENCY' || upper === 'CRYPTO') return 'Crypto';
-  if (upper === 'DEBT' || upper === 'FIXED INCOME' || upper === 'BOND' || upper === 'BONDS') return 'Debt and Fixed';
+  if (upper === 'DEBT' || upper === 'FIXED INCOME' || upper === 'BOND' || upper === 'BONDS') return 'Fixed Income';
   if (upper.includes('CASH')) return 'Cash';
   if (upper === 'GOLD' || upper === 'SILVER' || upper === 'COMMODITY' || upper === 'COMMODITIES') return 'Commodities';
   return category;
@@ -44,10 +44,26 @@ export const getCapCategory = (name: string, categoryName?: string) => {
   const lowerCat = (categoryName || '').toLowerCase();
   if (lowerName.includes('small') || lowerCat.includes('small')) return 'Small Cap';
   if (lowerName.includes('mid') || lowerCat.includes('mid')) return 'Mid Cap';
-  if (lowerName.includes('large') || lowerCat.includes('large') || lowerName.includes('bluechip') || lowerCat.includes('bluechip') || lowerName.includes('nifty 50') || lowerName.includes('sensex') || lowerName.includes('nifty bees') || lowerName.includes('alphaetf')) return 'Large Cap';
-  if (lowerName.includes('flexi') || lowerCat.includes('flexi')) return 'Flexi Cap';
+  
+  if (
+    lowerName.includes('large') || lowerCat.includes('large') || 
+    lowerName.includes('bluechip') || lowerCat.includes('bluechip') || 
+    lowerName.includes('nifty 50') || lowerName.includes('nifty50') ||
+    lowerName.includes('sensex') || lowerName.includes('nifty bees') || 
+    lowerName.includes('alphaetf') || lowerName.includes('alpha 50') ||
+    lowerName.includes('nifty 100') || lowerName.includes('next 50')
+  ) return 'Large Cap';
+  
+  if (
+    lowerName.includes('flexi') || lowerCat.includes('flexi') ||
+    lowerName.includes('nifty 200') || lowerName.includes('nifty 500') ||
+    lowerName.includes('alpha 30') || lowerName.includes('momentum') ||
+    lowerName.includes('value') || lowerName.includes('factor')
+  ) return 'Flexi Cap';
+  
   if (lowerName.includes('multi') || lowerCat.includes('multi')) return 'Multi Cap';
   if (lowerName.includes('elss') || lowerCat.includes('elss') || lowerName.includes('tax') || lowerCat.includes('tax')) return 'ELSS';
+  
   return null;
 };
 

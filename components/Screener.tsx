@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Search, Filter, ArrowUpDown, ChevronRight, TrendingUp, TrendingDown, ExternalLink, Loader2, Plus } from 'lucide-react';
+import { Search, Filter, ArrowUpDown, ExternalLink, Loader2, Plus } from 'lucide-react';
 
 type ScreenerResult = {
   sid: string;
@@ -13,9 +13,6 @@ type ScreenerResult = {
   peRatio: number;
   pbRatio: number;
   divYield: number;
-  price: number;
-  change: number;
-  pchange: number;
 };
 
 const SECTORS = [
@@ -25,9 +22,10 @@ const SECTORS = [
 
 const MARKET_CAPS = [
   { label: "All", val: 0 },
-  { label: "> 10,000 Cr", val: 100000000000 },
-  { label: "> 50,000 Cr", val: 500000000000 },
-  { label: "> 1,00,000 Cr", val: 1000000000000 }
+  { label: "> 1,000 Cr", val: 10000 },
+  { label: "> 10,000 Cr", val: 100000 },
+  { label: "> 50,000 Cr", val: 500000 },
+  { label: "> 1,00,000 Cr", val: 1000000 }
 ];
 
 type ScreenerProps = {
@@ -85,19 +83,21 @@ export default function Screener({ onAdd }: ScreenerProps) {
       // Tickertape returns data in a specific format: { data: { results: [...] } }
       const resultsArray = data?.data?.results || [];
       
-      const mappedResults = resultsArray.map((r: any) => ({
-        sid: r.sid || Math.random().toString(36).substr(2, 9),
-        ticker: r.stock?.ticker || 'N/A',
-        name: r.stock?.name || 'Unknown',
-        sector: r.stock?.sector || 'Other',
-        marketCap: r.marketCap || 0,
-        peRatio: r.peRatio || 0,
-        pbRatio: r.pbRatio || 0,
-        divYield: r.divYield || 0,
-        price: r.price || 0,
-        change: r.change || 0,
-        pchange: r.pchange || 0
-      }));
+      const mappedResults = resultsArray.map((r: any) => {
+        const info = r.stock?.info || {};
+        const ratios = r.stock?.advancedRatios || {};
+        
+        return {
+          sid: r.sid || Math.random().toString(36).substr(2, 9),
+          ticker: info.ticker || r.stock?.ticker || 'N/A',
+          name: info.name || r.stock?.name || 'Unknown',
+          sector: info.sector || ratios.sector || r.stock?.sector || 'Other',
+          marketCap: ratios.marketCap || r.marketCap || 0,
+          peRatio: ratios.peRatio || r.peRatio || 0,
+          pbRatio: ratios.pbRatio || r.pbRatio || 0,
+          divYield: ratios.divYield || r.divYield || 0
+        };
+      });
 
       setResults(mappedResults);
     } catch (err: any) {
@@ -111,10 +111,14 @@ export default function Screener({ onAdd }: ScreenerProps) {
     fetchResults();
   }, [filters, sort]);
 
-  const formatCurrency = (val: number) => {
-    if (val >= 10000000) return `₹${(val / 10000000).toFixed(2)}Cr`;
-    if (val >= 100000) return `₹${(val / 100000).toFixed(2)}L`;
-    return `₹${val.toLocaleString('en-IN')}`;
+  const formatMarketCap = (valInMillions: number) => {
+    // Tickertape returns marketCap in millions of INR
+    // 1 Cr = 10 million, so divide by 10 to get Cr
+    const crores = valInMillions / 10;
+    if (crores >= 100000) return `₹${(crores / 100000).toFixed(2)}L Cr`;
+    if (crores >= 1000) return `₹${(crores / 1000).toFixed(1)}K Cr`;
+    if (crores >= 1) return `₹${crores.toFixed(0)} Cr`;
+    return `₹${(crores * 100).toFixed(0)} L`;
   };
 
   return (
@@ -196,12 +200,6 @@ export default function Screener({ onAdd }: ScreenerProps) {
             <thead>
               <tr className="bg-zinc-50 dark:bg-zinc-800/50 border-b border-zinc-200 dark:border-zinc-800">
                 <th className="p-4 text-xs font-bold text-zinc-500 uppercase tracking-wider">Stock</th>
-                <th className="p-4 text-xs font-bold text-zinc-500 uppercase tracking-wider cursor-pointer hover:text-blue-500 transition-colors" onClick={() => setSort({ key: 'price', order: sort.order * -1 })}>
-                  Price <ArrowUpDown className="w-3 h-3 inline ml-1" />
-                </th>
-                <th className="p-4 text-xs font-bold text-zinc-500 uppercase tracking-wider cursor-pointer hover:text-blue-500 transition-colors" onClick={() => setSort({ key: 'pchange', order: sort.order * -1 })}>
-                  Change <ArrowUpDown className="w-3 h-3 inline ml-1" />
-                </th>
                 <th className="p-4 text-xs font-bold text-zinc-500 uppercase tracking-wider cursor-pointer hover:text-blue-500 transition-colors" onClick={() => setSort({ key: 'marketCap', order: sort.order * -1 })}>
                   Market Cap <ArrowUpDown className="w-3 h-3 inline ml-1" />
                 </th>
@@ -229,17 +227,8 @@ export default function Screener({ onAdd }: ScreenerProps) {
                         <span className="text-[10px] text-zinc-400 dark:text-zinc-500 mt-1">{stock.sector}</span>
                       </div>
                     </td>
-                    <td className="p-4 font-medium text-zinc-900 dark:text-white">
-                      ₹{stock.price.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                    </td>
-                    <td className="p-4">
-                      <div className={`flex items-center gap-1 font-medium ${stock.pchange >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                        {stock.pchange >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-                        {Math.abs(stock.pchange).toFixed(2)}%
-                      </div>
-                    </td>
                     <td className="p-4 text-zinc-600 dark:text-zinc-300">
-                      {formatCurrency(stock.marketCap)}
+                      {formatMarketCap(stock.marketCap)}
                     </td>
                     <td className="p-4 text-zinc-600 dark:text-zinc-300">
                       {stock.peRatio ? stock.peRatio.toFixed(2) : '-'}
