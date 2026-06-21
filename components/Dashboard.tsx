@@ -662,10 +662,11 @@ export default function Dashboard() {
       const getCategoryPriority = (asset: Asset) => {
         const cat = normalizeCategory(asset.type);
         if (cat === 'Equities' || cat === 'EQUITY' || cat === 'STOCK') return 1;
-        if (cat === 'Mutual Funds' || cat === 'MUTUALFUND' || cat === 'ETF') return 2;
-        if (cat === 'Fixed Income' || cat === 'DEBT' || cat === 'FIXED INCOME') return 3;
-        if (cat === 'Cash' || cat === 'CASH') return 4;
-        if (cat === 'Crypto' || cat === 'CRYPTOCURRENCY') return 5;
+        if (cat === 'Mutual Funds' || cat === 'MUTUALFUND') return 2;
+        if (cat === 'ETFs' || cat === 'ETF') return 3;
+        if (cat === 'Fixed Income' || cat === 'DEBT' || cat === 'FIXED INCOME') return 4;
+        if (cat === 'Cash' || cat === 'CASH') return 5;
+        if (cat === 'Crypto' || cat === 'CRYPTOCURRENCY') return 6;
         return 6; 
       };
 
@@ -2102,7 +2103,7 @@ export default function Dashboard() {
                                 >
                                   <td colSpan={8} className="px-6 py-2 text-[10px] font-bold uppercase tracking-widest text-zinc-500 dark:text-zinc-400 flex items-center gap-2">
                                     <ChevronDown className="w-3 h-3" />
-                                    {currentCategory}
+                                    {currentCategory} ({portfolioStats.byCategory[currentCategory]?.assetCount || 0})
                                   </td>
                                 </tr>
                               );
@@ -2116,7 +2117,7 @@ export default function Dashboard() {
                                   onClick={() => setExpandedTableCategories(prev => ({ ...prev, [currentCategory]: true }))}
                                 >
                                   <td className="px-6 py-4 font-bold text-zinc-700 dark:text-zinc-300">
-                                    <div className="flex items-center gap-2"><ChevronRight className="w-4 h-4 text-zinc-400" />{currentCategory}</div>
+                                    <div className="flex items-center gap-2"><ChevronRight className="w-4 h-4 text-zinc-400" />{currentCategory} ({portfolioStats.byCategory[currentCategory]?.assetCount || 0})</div>
                                   </td>
                                   <td className="px-6 py-4 text-right font-medium text-zinc-500">
                                     {stats.quantity.toLocaleString('en-IN', { maximumFractionDigits: 2 })}

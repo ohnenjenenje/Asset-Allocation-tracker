@@ -6,18 +6,39 @@ const yahoo = new YahooFinance();
 
 const safeQuote = async (symbol: string) => {
   try {
-    return await yahoo.quote(symbol);
+    const res = await fetch(`https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbol)}`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'application/json'
+      }
+    });
+    if (!res.ok) throw new Error(`Yahoo direct fetch failed: ${res.status}`);
+    const data = await res.json();
+    const result = data?.quoteResponse?.result?.[0];
+    if (!result) return null;
+    return result;
   } catch (e) {
-    console.error(`Error in yahoo.quote for ${symbol}:`, e);
+    console.error(`Error in direct Yahoo fetch for ${symbol}:`, e);
     return null;
   }
 };
 
 const safeQuoteSummary = async (symbol: string, options: any) => {
   try {
-    return await yahoo.quoteSummary(symbol, options);
+    const modules = options.modules.join(',');
+    const res = await fetch(`https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(symbol)}?modules=${modules}`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'application/json'
+      }
+    });
+    if (!res.ok) throw new Error(`Yahoo summary fetch failed: ${res.status}`);
+    const data = await res.json();
+    const result = data?.quoteSummary?.result?.[0];
+    if (!result) return null;
+    return result;
   } catch (e) {
-    console.error(`Error in yahoo.quoteSummary for ${symbol}:`, e);
+    console.error(`Error in direct Yahoo summary fetch for ${symbol}:`, e);
     return null;
   }
 };
