@@ -251,7 +251,7 @@ export async function GET(request: Request) {
       };
 
       // Fetch prices and sectors for symbols to update
-      const mfPrices: Record<string, { price: number | null, name: string | null, yahooSymbol: string | null, sector: string | null, source?: string }> = {};
+      const mfPrices: Record<string, { price: number | null, name: string | null, yahooSymbol: string | null, sector: string | null, source?: string, quoteType?: string }> = {};
       const stockPrices: Record<string, any> = {};
 
       await Promise.all(symbolsToUpdate.map(async (sym) => {
@@ -354,7 +354,8 @@ export async function GET(request: Request) {
                     name: schemeName,
                     yahooSymbol: sym.startsWith('0P') ? sym : null,
                     sector: null,
-                    source: 'MFAPI'
+                    source: 'MFAPI',
+                          quoteType: (data.meta?.scheme_category?.toUpperCase().includes("ETF") || data.meta?.scheme_name?.toUpperCase().includes("ETF")) ? "ETF" : "MUTUALFUND"
                   };
                   mfapiSuccess = true;
                 }
@@ -398,7 +399,8 @@ export async function GET(request: Request) {
                           name: schemeName,
                           yahooSymbol: sym.startsWith('0P') ? sym : null,
                           sector: null,
-                          source: 'MFAPI'
+                          source: 'MFAPI',
+                          quoteType: (detailData.meta?.scheme_category?.toUpperCase().includes("ETF") || detailData.meta?.scheme_name?.toUpperCase().includes("ETF")) ? "ETF" : "MUTUALFUND"
                         };
                         mfapiSuccess = true;
                       }
