@@ -47,7 +47,7 @@ export function usePortfolioCalculations({
   const portfolioStats = mergedAssets.reduce((acc, asset) => {
     const category = normalizeCategory(asset.type);
     if (!acc.byCategory[category]) {
-      acc.byCategory[category] = { quantity: 0, currentValue: 0, investedValue: 0 };
+      acc.byCategory[category] = { quantity: 0, currentValue: 0, investedValue: 0, assetCount: 0 };
     }
 
     const priceData = prices[asset.symbol];
@@ -78,6 +78,7 @@ export function usePortfolioCalculations({
     acc.byCategory[category].quantity += asset.quantity;
     acc.byCategory[category].currentValue += currentValue;
     acc.byCategory[category].investedValue += investedValue;
+    acc.byCategory[category].assetCount += 1;
 
     if (isSmallCrypto(asset)) {
       acc.smallCryptoStats.quantity += asset.quantity;
@@ -86,7 +87,7 @@ export function usePortfolioCalculations({
     }
     
     return acc;
-  }, { currentValue: 0, investedValue: 0, byCategory: {} as Record<string, { quantity: number; currentValue: number; investedValue: number; }>, smallCryptoStats: { quantity: 0, currentValue: 0, investedValue: 0 } });
+  }, { currentValue: 0, investedValue: 0, byCategory: {} as Record<string, { quantity: number; currentValue: number; investedValue: number; assetCount: number; }>, smallCryptoStats: { quantity: 0, currentValue: 0, investedValue: 0 } });
 
   const totalProfitLoss = portfolioStats.currentValue - portfolioStats.investedValue;
   const totalProfitLossPercent = portfolioStats.investedValue > 0 ? (totalProfitLoss / portfolioStats.investedValue) * 100 : 0;

@@ -23,7 +23,8 @@ export const normalizeCategory = (category?: string) => {
   const upper = category.toUpperCase().trim();
   if (upper === 'EQUITY' || upper === 'STOCK') return 'Equities';
   if (upper === 'DOMESTIC EQUITY' || upper === 'GLOBAL EQUITY') return upper.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
-  if (upper === 'MUTUALFUND' || upper === 'ETF') return 'Mutual Funds';
+  if (upper === 'MUTUALFUND') return 'Mutual Funds';
+  if (upper === 'ETF') return 'ETFs';
   if (upper === 'CRYPTOCURRENCY' || upper === 'CRYPTO') return 'Crypto';
   if (upper === 'DEBT' || upper === 'FIXED INCOME' || upper === 'BOND' || upper === 'BONDS') return 'Fixed Income';
   if (upper.includes('CASH')) return 'Cash';
