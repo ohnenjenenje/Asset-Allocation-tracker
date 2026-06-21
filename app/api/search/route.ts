@@ -288,16 +288,27 @@ export async function GET(request: Request) {
         
         const searchQ = (isIndian || isCryptoOrUS) ? q : `${q} NSE`;
         
-        console.log('Searching Yahoo Finance for:', searchQ);
-        const yahooResult = await yahoo.search(searchQ, { quotesCount: 6, newsCount: 0 });
-        console.log('Yahoo Finance response received.');
-        stockQuotes = (yahooResult.quotes || []).map(q => ({
-          symbol: q.symbol,
-          shortname: q.shortname,
-          longname: q.longname,
-          quoteType: q.quoteType,
-          source: 'Yahoo Finance'
-        }));
+        console.log('Searching Yahoo Finance via direct fetch for:', searchQ);
+        const yahooRes = await fetch(`https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(searchQ)}&quotesCount=6&newsCount=0`, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'application/json'
+          }
+        });
+        
+        if (yahooRes.ok) {
+          const yahooData = await yahooRes.json();
+          stockQuotes = (yahooData.quotes || []).map((q: any) => ({
+            symbol: q.symbol,
+            shortname: q.shortname,
+            longname: q.longname,
+            quoteType: q.quoteType,
+            source: 'Yahoo Finance'
+          }));
+          console.log('Yahoo Finance direct fetch successful.');
+        } else {
+          console.error(`Yahoo direct fetch failed with status: ${yahooRes.status}`);
+        }
       } catch (e: any) {
         console.error('Yahoo Finance search error:', e.message || e);
       }
