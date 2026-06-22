@@ -56,6 +56,15 @@ export async function POST(request: Request) {
     const client = await clientPromise;
     const db = client.db('portfolio_tracker');
 
+    
+    // SAFETY LOCK: Prevent accidental data wipes
+    if (data && data.assets && data.assets.length === 0 && !data.forceClear) {
+      const existingUser = await db.collection('users').findOne({ uid: uid });
+      if (existingUser && existingUser.assets && existingUser.assets.length > 0) {
+        return NextResponse.json({ success: false, error: 'Safety lock: prevented overwriting populated portfolio with empty array. Use forceClear to bypass.' }, { status: 400 });
+      }
+    }
+
     // Update or insert the user document in MongoDB
     // We use the uid as the _id or just store it as a field. Let's store it as a field and use upsert.
     await db.collection('users').updateOne(

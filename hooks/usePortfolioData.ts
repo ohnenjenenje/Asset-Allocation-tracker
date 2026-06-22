@@ -253,12 +253,39 @@ export function usePortfolioData(
 
     if (!isAuthReady || !user) return;
 
-    const userRef = doc(db, 'users', user.uid);
-    const unsubscribe = onSnapshot(userRef, async (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
+    let isMounted = true;
+
+    const loadData = async () => {
+      try {
+        // 1. Fetch Primary Data from MongoDB
+        const res = await fetch(`/api/sync?uid=${user.uid}`);
+        const json = await res.json();
+        
+        let data: any = null;
+        
+        if (json.success && json.data) {
+          data = json.data;
+        } else {
+          // 2. Fallback to Firebase if Mongo is empty/offline
+          const userRef = doc(db, 'users', user.uid);
+          const docSnap = await getDoc(userRef);
+          if (docSnap.exists()) {
+            data = docSnap.data();
+            // Sync it back into Mongo immediately so we have a backup
+            await fetch('/api/sync', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ uid: user.uid, email: user.email, displayName: user.displayName, data })
+            });
+          }
+        }
+
+        if (!data || !isMounted) return;
+
+        // 3. Apply Data to State
         if (data.assets) setAssets(data.assets);
         if (data.fundHoldings) setFundHoldings(data.fundHoldings);
+        
         if (data.settings) {
           if (data.settings.idealAllocation) {
             let loadedAllocation = { ...data.settings.idealAllocation };
@@ -342,38 +369,14 @@ export function usePortfolioData(
             }
           }
         }
-      } else {
-        // Initialize empty document if it doesn't exist
-        try {
-          const initialData = {
-            uid: user.uid,
-            assets: [],
-            fundHoldings: {},
-            settings: {}
-          };
-          
-          await setDoc(userRef, initialData);
-          
-          // Sync back to Mongo under new UID
-          await fetch('/api/sync', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              uid: user.uid,
-              email: user.email,
-              displayName: user.displayName,
-              data: initialData
-            })
-          });
-        } catch (e) {
-          console.error("Initialization failed", e);
-        }
+      } catch (err) {
+        console.error("Failed to load portfolio data:", err);
       }
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, `users/${user.uid}`);
-    });
+    };
 
-    return () => unsubscribe();
+    loadData();
+
+    return () => { isMounted = false; };
   }, [user, isAuthReady]);
 
   useEffect(() => {
