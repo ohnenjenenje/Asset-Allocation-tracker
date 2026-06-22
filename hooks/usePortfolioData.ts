@@ -232,9 +232,9 @@ export function usePortfolioData(
     const newHoldings = { ...fundHoldings };
     let changed = false;
     assets.forEach(asset => {
-      const type = (asset.type || '').toUpperCase();
-      const nameLower = (asset.name || '').toLowerCase();
-      const symLower = (asset.symbol || '').toLowerCase();
+      const type = String(asset.type || '').toUpperCase();
+      const nameLower = String(asset.name || '').toLowerCase();
+      const symLower = String(asset.symbol || '').toLowerCase();
       const isLikelyETF = type === 'ETF' || nameLower.includes('etf') || nameLower.includes('bees') || symLower.includes('bees') || symLower === 'alpha.ns' || symLower === 'alpha.bo';
       const isFund = type === 'MUTUALFUND' || isLikelyETF;
       
@@ -411,9 +411,9 @@ export function usePortfolioData(
       const hasStaleFields = existing?.assetAllocation && !('stockPosition' in existing.assetAllocation);
       const missingMarketCap = existing && !('marketCapWeightage' in existing);
       
-      const type = (asset.type || '').toUpperCase();
-      const nameLower = (asset.name || '').toLowerCase();
-      const symLower = (asset.symbol || '').toLowerCase();
+      const type = String(asset.type || '').toUpperCase();
+      const nameLower = String(asset.name || '').toLowerCase();
+      const symLower = String(asset.symbol || '').toLowerCase();
       const isLikelyETF = type === 'ETF' || nameLower.includes('etf') || nameLower.includes('bees') || symLower.includes('bees') || symLower === 'alpha.ns' || symLower === 'alpha.bo';
       const isFund = type === 'MUTUALFUND' || isLikelyETF;
 

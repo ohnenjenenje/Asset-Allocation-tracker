@@ -132,7 +132,7 @@ export function usePortfolioCalculations({
           }
         };
         
-        const assetNameLower = (asset.name || '').toLowerCase();
+        const assetNameLower = String(asset.name || '').toLowerCase();
         const isGlobalFund = assetNameLower.includes('off-shore') || assetNameLower.includes('china') || assetNameLower.includes('global') || assetNameLower.includes('international') || assetNameLower.includes('nasdaq') || assetNameLower.includes('s&p') || assetNameLower.includes('us equity');
         const equityCategory = isGlobalFund ? 'Equities > Global Equity' : 'Equities > Domestic Equity';
 
@@ -160,7 +160,7 @@ export function usePortfolioCalculations({
       if (catName.includes('debt') || catName.includes('bond') || catName.includes('liquid') || catName.includes('fixed')) {
         finalCategory = 'Fixed Income';
       } else {
-        const assetName = (asset.name || '').toLowerCase();
+        const assetName = String(asset.name || '').toLowerCase();
         const isGlobalFund = assetName.includes('off-shore') || assetName.includes('china') || assetName.includes('global') || assetName.includes('international');
         finalCategory = isGlobalFund ? 'Equities > Global Equity' : 'Equities > Domestic Equity';
       }
@@ -680,7 +680,7 @@ export function usePortfolioCalculations({
 
     const distributeSectorToCap = (sName: string, sValue: number) => {
       const mcap = fundData?.marketCapWeightage;
-      const isLikelyETF = type === 'ETF' || (asset.name || '').toLowerCase().includes('etf') || (asset.name || '').toLowerCase().includes('bees') || (asset.symbol || '').toLowerCase().includes('bees') || (asset.symbol || '').toLowerCase().includes('alpha');
+      const isLikelyETF = type === 'ETF' || String(asset.name || '').toLowerCase().includes('etf') || String(asset.name || '').toLowerCase().includes('bees') || String(asset.symbol || '').toLowerCase().includes('bees') || String(asset.symbol || '').toLowerCase().includes('alpha');
       const isDirectLoc = (type === 'EQUITY' || type === 'STOCK') && !isLikelyETF;
 
       if (!isDirectLoc && mcap && (Number(mcap.largeCap) > 0 || Number(mcap.midCap) > 0 || Number(mcap.smallCap) > 0)) {
@@ -748,7 +748,7 @@ export function usePortfolioCalculations({
       }
     } else {
       const sectorName = asset.manualSector || prices[asset.symbol]?.sector || 'Other / Uncategorized';
-      const isLikelyETF = type === 'ETF' || (asset.name || '').toLowerCase().includes('etf') || (asset.name || '').toLowerCase().includes('bees') || (asset.symbol || '').toLowerCase().includes('bees') || (asset.symbol || '').toLowerCase().includes('alpha');
+      const isLikelyETF = type === 'ETF' || String(asset.name || '').toLowerCase().includes('etf') || String(asset.name || '').toLowerCase().includes('bees') || String(asset.symbol || '').toLowerCase().includes('bees') || String(asset.symbol || '').toLowerCase().includes('alpha');
       const isDirectLoc = (type === 'EQUITY' || type === 'STOCK') && !isLikelyETF;
       addToSector(sectorName, equityValue, isDirectLoc, asset.name, asset.symbol);
       distributeSectorToCap(sectorName, equityValue);
