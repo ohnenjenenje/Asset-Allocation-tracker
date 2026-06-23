@@ -5,6 +5,7 @@ export const guessCurrency = (symbol: string) => {
   const upper = symbol.toUpperCase();
   if (upper.endsWith('.NS') || upper.endsWith('.BO')) return 'INR';
   if (upper.endsWith('.L')) return 'GBp';
+  if (upper.includes('-INR')) return 'INR'; // Explicitly catch GOLD-INR-GRAM, SILVER-INR-GRAM, CASH-INR
   if (upper.includes('-USD')) return 'USD'; // Explicit crypto USD
   if (upper.includes('-')) return 'USD'; // Other crypto usually USD
   // Default to INR instead of USD when adding asset
