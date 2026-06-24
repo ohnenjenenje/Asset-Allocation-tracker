@@ -654,13 +654,14 @@ export default function Dashboard() {
     return aggregated.sort((a, b) => {
       const getCategoryPriority = (asset: Asset) => {
         const cat = normalizeCategory(asset.type);
-        if (cat === 'Equities' || cat === 'EQUITY' || cat === 'STOCK') return 1;
-        if (cat === 'Mutual Funds' || cat === 'MUTUALFUND') return 2;
-        if (cat === 'ETFs' || cat === 'ETF') return 3;
-        if (cat === 'Fixed Income' || cat === 'DEBT' || cat === 'FIXED INCOME') return 4;
-        if (cat === 'Cash' || cat === 'CASH') return 5;
-        if (cat === 'Crypto' || cat === 'CRYPTOCURRENCY') return 6;
-        return 6; 
+        if (cat === 'Equities') return 1;
+        if (cat === 'Mutual Funds') return 2;
+        if (cat === 'ETFs') return 3;
+        if (cat === 'Fixed Income') return 4;
+        if (cat === 'Commodities') return 5;
+        if (cat === 'Crypto') return 6;
+        if (cat === 'Cash') return 7;
+        return 8; 
       };
 
       const priorityA = getCategoryPriority(a);
