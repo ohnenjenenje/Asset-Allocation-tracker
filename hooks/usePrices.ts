@@ -64,7 +64,7 @@ export function usePrices(assets: Asset[], fundHoldings: Record<string, any>) {
         
         while (retries >= 0 && !success) {
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 60000); // 20s timeout per chunk
+          const timeoutId = setTimeout(() => controller.abort('Timeout fetching prices'), 60000);
           
           try {
             const res = await fetch(`/api/price?symbols=${encodeURIComponent(chunk.join(','))}${forceRefresh ? '&refresh=true' : ''}`, {
@@ -85,7 +85,7 @@ export function usePrices(assets: Asset[], fundHoldings: Record<string, any>) {
             if (!contentType || !contentType.includes('application/json')) {
               const isHtml = text.trim().startsWith('<');
               if (!isHtml) {
-                console.error(`Non-JSON content-type: ${contentType}. Body: ${text.substring(0, 200)}`);
+                console.warn(`Non-JSON content-type: ${contentType}. Body: ${text.substring(0, 200)}`);
               }
               const error = new Error(`Non-JSON content-type: ${contentType}`);
               (error as any).isHtml = isHtml;
@@ -115,7 +115,7 @@ export function usePrices(assets: Asset[], fundHoldings: Record<string, any>) {
             const isHtml = err.isHtml;
             
             if (!isHtml) {
-              console.error(`Attempt ${6 - retries} failed for chunk ${i} (Symbols: ${chunk.join(', ')}) (${isTimeout ? 'Timeout' : 'Error'}):`, err.message || err);
+              console.warn(`Attempt ${6 - retries} failed for chunk ${i} (Symbols: ${chunk.join(', ')}) (${isTimeout ? 'Timeout' : 'Error'}):`, err.message || err);
             }
             
             retries--;
@@ -123,10 +123,10 @@ export function usePrices(assets: Asset[], fundHoldings: Record<string, any>) {
                 // If it's a HTML response (likely "Starting Server...") or 503 (Server Unavailable), wait longer
                 const isSlowResponse = isHtml || err.status === 503;
                 const backoff = isSlowResponse ? 15000 : 5000;
-                if (!isHtml) console.log(`Retrying in ${backoff}ms...`);
+                if (!isHtml) console.warn(`Retrying in ${backoff}ms...`);
                 await new Promise(r => setTimeout(r, backoff)); 
             } else {
-              if (isHtml) console.error(`Failed to fetch chunk ${i} after all retries (received HTML response)`);
+              if (isHtml) console.warn(`Failed to fetch chunk ${i} after all retries (received HTML response)`);
             }
           }
         }
