@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef, Fragment, useMemo } from 'react';
-import { Plus, Search, Trash2, RefreshCw, TrendingUp, TrendingDown, DollarSign, PieChart as PieChartIcon, BarChart3, List, MessageCircle, Settings, Target, X, Send, Bot, ArrowUp, ArrowDown, ArrowUpDown, MessageSquarePlus, ChevronUp, ChevronDown, ChevronRight, Pencil, Info, LogOut, Filter } from 'lucide-react';
+import { Plus, Search, Trash2, RefreshCw, TrendingUp, TrendingDown, DollarSign, PieChart as PieChartIcon, BarChart3, List, MessageCircle, Settings, Target, X, Send, Bot, ArrowUp, ArrowDown, ArrowUpDown, MessageSquarePlus, ChevronUp, ChevronDown, ChevronRight, Pencil, Info, LogOut, Filter, Briefcase, Layers, Activity } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, Legend, Treemap, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
 import { v4 as uuidv4 } from 'uuid';
 import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
@@ -227,6 +227,8 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState<'portfolio' | 'screener'>('portfolio');
   const [isAllocationSettingsOpen, setIsAllocationSettingsOpen] = useState(false);
   const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({ 'Total Portfolio': true });
+  const [exposureTab, setExposureTab] = useState<'All' | 'Category' | 'Sector' | 'MarketCap'>('All');
+  const [expandedExposureGroup, setExpandedExposureGroup] = useState<string | null>(null);
   const [expandedTableCategories, setExpandedTableCategories] = useState<Record<string, boolean>>({});
   const [expandedSymbols, setExpandedSymbols] = useState<Record<string, boolean>>({});
   const [expandedSectors, setExpandedSectors] = useState<Record<string, boolean>>({});
@@ -2225,12 +2227,33 @@ export default function Dashboard() {
 
           {/* Top Underlying Holdings */}
           <div className="lg:col-span-1 bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-sm overflow-hidden flex flex-col">
-            <div className="p-6 border-b border-zinc-200 dark:border-zinc-800 flex items-center gap-2">
-              <List className="w-5 h-5 text-emerald-500" />
-              <h2 className="text-lg font-semibold">Top Underlying Exposure</h2>
+            <div className="p-5 border-b border-zinc-200 dark:border-zinc-800">
+              <div className="flex items-center gap-2 mb-4">
+                <List className="w-5 h-5 text-emerald-500" />
+                <h2 className="text-lg font-semibold">Top Underlying Exposure</h2>
+              </div>
+              <div className="flex space-x-1 bg-zinc-100 dark:bg-zinc-800/50 p-1 rounded-lg">
+                {(['All', 'Category', 'Sector', 'MarketCap'] as const).map(tab => (
+                  <button
+                    key={tab}
+                    onClick={() => {
+                      setExposureTab(tab);
+                      setExpandedExposureGroup(null);
+                    }}
+                    className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                      exposureTab === tab 
+                        ? 'bg-white dark:bg-zinc-700 text-zinc-900 dark:text-zinc-100 shadow-sm' 
+                        : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'
+                    }`}
+                  >
+                    {tab === 'MarketCap' ? 'Market Cap' : tab}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div className="overflow-y-auto max-h-[400px]">
-              {topUnderlying.length === 0 ? (
+            
+            <div className="overflow-y-auto max-h-[500px]">
+              {exposureTab === 'All' && topUnderlying.length === 0 ? (
                 <div className="p-6 text-center text-zinc-500 text-sm">
                   {Object.keys(holdingsErrors).length > 0 ? (
                     <div className="text-red-500">
@@ -2242,22 +2265,106 @@ export default function Dashboard() {
                 </div>
               ) : (
                 <ul className="divide-y divide-zinc-200 dark:divide-zinc-800">
-                  {topUnderlying.map((item, idx) => (
-                    <li key={`${item.symbol || item.name}-${idx}`} className="p-4 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors flex justify-between items-center">
-                      <div className="overflow-hidden pr-3">
-                        <div className="font-medium text-sm text-zinc-900 dark:text-zinc-100 truncate">{item.name}</div>
-                        <div className="text-xs text-zinc-500 mt-0.5">{item.symbol}</div>
-                      </div>
-                      <div className="text-right whitespace-nowrap">
-                        <div className="font-medium text-sm text-zinc-900 dark:text-zinc-100">
-                          ₹{item.value.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
-                        </div>
-                        <div className="text-xs text-zinc-500 mt-0.5">
-                          {((item.value / portfolioStats.currentValue) * 100).toFixed(1)}%
-                        </div>
-                      </div>
-                    </li>
-                  ))}
+                  {exposureTab === 'All' ? (
+                    topUnderlying.slice(0, 10).map((item, idx) => {
+                      const percentage = ((item.value / portfolioStats.currentValue) * 100).toFixed(1);
+                      return (
+                        <li key={`${item.symbol || item.name}-${idx}`} className="p-4 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors">
+                          <div className="flex justify-between items-center mb-1.5">
+                            <div className="overflow-hidden pr-3">
+                              <div className="font-medium text-sm text-zinc-900 dark:text-zinc-100 truncate">{item.name}</div>
+                              <div className="text-xs text-zinc-500 mt-0.5">{item.symbol}</div>
+                            </div>
+                            <div className="text-right whitespace-nowrap">
+                              <div className="font-medium text-sm text-zinc-900 dark:text-zinc-100">
+                                ₹{item.value.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                              </div>
+                              <div className="text-xs font-bold text-zinc-500 mt-0.5">
+                                {percentage}%
+                              </div>
+                            </div>
+                          </div>
+                          <div className="w-full bg-zinc-200 dark:bg-zinc-800 rounded-full h-1.5 mt-1 overflow-hidden">
+                            <div className="bg-emerald-500 h-1.5 rounded-full" style={{ width: `${Math.min(100, Number(percentage))}%` }}></div>
+                          </div>
+                        </li>
+                      );
+                    })
+                  ) : (
+                    (exposureTab === 'Category' ? groupedAllocationData : exposureTab === 'Sector' ? sectorData : marketCapData)
+                      .filter(group => group.value > 0)
+                      .map((group, idx) => {
+                        const isExpanded = expandedExposureGroup === group.name;
+                        const groupPercentage = ((group.value / portfolioStats.currentValue) * 100).toFixed(1);
+                        
+                        return (
+                          <li key={`${group.name}-${idx}`} className="flex flex-col">
+                            <button 
+                              onClick={() => setExpandedExposureGroup(isExpanded ? null : group.name)}
+                              className="w-full text-left p-4 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors flex flex-col gap-1.5 group cursor-pointer"
+                            >
+                              <div className="flex justify-between items-center w-full">
+                                <div className="flex items-center gap-2">
+                                  {exposureTab === 'Category' ? <PieChartIcon className="w-4 h-4 text-zinc-400 group-hover:text-emerald-500 transition-colors" /> :
+                                   exposureTab === 'Sector' ? <Briefcase className="w-4 h-4 text-zinc-400 group-hover:text-emerald-500 transition-colors" /> :
+                                   <Activity className="w-4 h-4 text-zinc-400 group-hover:text-emerald-500 transition-colors" />}
+                                  <div className="font-medium text-sm text-zinc-900 dark:text-zinc-100 truncate">{group.name}</div>
+                                  {isExpanded ? <ChevronUp className="w-3.5 h-3.5 text-zinc-400" /> : <ChevronDown className="w-3.5 h-3.5 text-zinc-400" />}
+                                </div>
+                                <div className="text-right whitespace-nowrap">
+                                  <div className="font-medium text-sm text-zinc-900 dark:text-zinc-100">
+                                    ₹{group.value.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                                  </div>
+                                  <div className="text-xs font-bold text-zinc-500 mt-0.5">
+                                    {groupPercentage}%
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="w-full bg-zinc-200 dark:bg-zinc-800 rounded-full h-1 overflow-hidden mt-1 opacity-70">
+                                <div className="bg-zinc-400 dark:bg-zinc-500 h-1 rounded-full" style={{ width: `${Math.min(100, Number(groupPercentage))}%` }}></div>
+                              </div>
+                            </button>
+                            
+                            {isExpanded && group.constituents && (
+                              <div className="bg-zinc-50/50 dark:bg-zinc-800/20 border-t border-zinc-100 dark:border-zinc-800/50 divide-y divide-zinc-100 dark:divide-zinc-800/50">
+                                {[...group.constituents]
+                                  .sort((a: any, b: any) => b.value - a.value)
+                                  .slice(0, 10)
+                                  .map((item: any, itemIdx: number) => {
+                                    const percentage = ((item.value / portfolioStats.currentValue) * 100).toFixed(1);
+                                    return (
+                                      <div key={`${item.symbol || item.name}-${itemIdx}`} className="p-3 pl-10 hover:bg-zinc-100 dark:hover:bg-zinc-800/50 transition-colors">
+                                        <div className="flex justify-between items-center mb-1">
+                                          <div className="overflow-hidden pr-3">
+                                            <div className="font-medium text-sm text-zinc-800 dark:text-zinc-200 truncate">{item.name}</div>
+                                            <div className="text-xs text-zinc-500 mt-0.5">{item.symbol}</div>
+                                          </div>
+                                          <div className="text-right whitespace-nowrap">
+                                            <div className="font-medium text-sm text-zinc-800 dark:text-zinc-200">
+                                              ₹{item.value.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                                            </div>
+                                            <div className="text-xs font-bold text-zinc-500 mt-0.5">
+                                              {percentage}%
+                                            </div>
+                                          </div>
+                                        </div>
+                                        <div className="w-full bg-zinc-200 dark:bg-zinc-700/50 rounded-full h-1 mt-1 overflow-hidden">
+                                          <div className="bg-emerald-500 h-1 rounded-full" style={{ width: `${Math.min(100, Number(percentage))}%` }}></div>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                {group.constituents.length > 10 && (
+                                  <div className="p-2 text-center text-xs text-zinc-500 italic bg-zinc-50 dark:bg-zinc-800/30">
+                                    + {group.constituents.length - 10} more assets not shown
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </li>
+                        );
+                      })
+                  )}
                 </ul>
               )}
             </div>
