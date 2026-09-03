@@ -1,4 +1,5 @@
-import { Asset } from './types';
+import { Asset, PriceData } from './types';
+import { GBP_TO_INR_APPROX, USDINR_FALLBACK } from './constants';
 
 export const guessCurrency = (symbol: string) => {
   if (!symbol || typeof symbol !== 'string') return 'INR';
@@ -14,8 +15,41 @@ export const guessCurrency = (symbol: string) => {
 
 export const getConvertedPrice = (price: number, currency: string, usdToInr: number) => {
   if (currency === 'USD') return price * usdToInr;
-  if (currency === 'GBp') return (price / 100) * 105; // Approx GBP to INR
+  if (currency === 'GBp') return (price / 100) * GBP_TO_INR_APPROX;
   return price;
+};
+
+// SRP: centralize price+currence resolution (was copy-pasted 3+ times in usePortfolioCalculations & Dashboard)
+export const resolveCurrentPrice = (
+  asset: Asset,
+  prices: Record<string, PriceData>,
+  usdToInr: number,
+): { currentPrice: number; currentPriceRaw: number; currentCurrency: string } => {
+  const priceData = prices[asset.symbol];
+  const hasPrice = priceData?.regularMarketPrice != null;
+  const currentPriceRaw =
+    asset.manualPrice !== undefined ? asset.manualPrice : hasPrice ? priceData.regularMarketPrice : asset.entryPrice;
+
+  let currentCurrency: string;
+  if (asset.manualPrice !== undefined) {
+    currentCurrency = asset.currency || guessCurrency(asset.symbol);
+  } else if (hasPrice) {
+    currentCurrency = priceData.currency || guessCurrency(asset.symbol);
+    if (typeof asset.symbol === 'string' && asset.symbol.includes('-USD') && currentCurrency === 'INR') currentCurrency = 'USD';
+  } else {
+    currentCurrency = asset.currency || guessCurrency(asset.symbol);
+  }
+
+  return { currentPrice: getConvertedPrice(currentPriceRaw as number, currentCurrency, usdToInr), currentPriceRaw: currentPriceRaw as number, currentCurrency };
+};
+
+// Helper for market-cap category from price data (DIP: hides threshold constants)
+export const getMarketCapCategory = (marketCap?: number, currency?: string, usdToInr: number = USDINR_FALLBACK): string | null => {
+  if (!marketCap) return null;
+  const capInUsd = currency === 'INR' ? marketCap / usdToInr : marketCap;
+  if (capInUsd >= 10_000_000_000) return 'Large Cap';
+  if (capInUsd >= 2_000_000_000) return 'Mid Cap';
+  return 'Small Cap';
 };
 
 export const normalizeCategory = (category?: string) => {

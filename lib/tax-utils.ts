@@ -1,7 +1,6 @@
 import { Asset } from './types';
+import { GOLD_IMPORT_DUTY_PERCENT, GST_PERCENT } from './constants';
 
-const GOLD_IMPORT_DUTY_PERCENT = 15;
-const GST_PERCENT = 3;
 const LTCG_RATE = 12.5;
 const EQUITY_LTCG_RATE = 12.5;
 const EQUITY_STCG_RATE = 20;

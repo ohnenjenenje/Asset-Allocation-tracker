@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import crypto from 'crypto';
+import { USDINR_FALLBACK } from '@/lib/constants';
 
 export const dynamic = 'force-dynamic';
 
@@ -56,7 +57,7 @@ export async function GET() {
               if (usdtTicker && usdtTicker.last_price) {
                   currentPrice = parseFloat(usdtTicker.last_price);
               } else if (inrTicker && inrTicker.last_price) {
-                  currentPrice = parseFloat(inrTicker.last_price) / 83; // Estimate
+                  currentPrice = parseFloat(inrTicker.last_price) / USDINR_FALLBACK; // Estimate using centralized FX fallback
               }
           }
           
@@ -64,9 +65,10 @@ export async function GET() {
             symbol: symbol === 'INR' ? 'INR' : `${symbol}/USDT`,
             name: symbol,
             quantity: qty,
-            type: 'CRYPTO',
+            type: 'CRYPTO' as const,
             currentPrice: currentPrice,
-            exchange: 'CoinDCX'
+            priceCurrency: 'USD' as const,
+            exchange: 'CoinDCX' as const
           });
         }
       }

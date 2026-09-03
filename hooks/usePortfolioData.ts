@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef, Dispatch, SetStateAction } from 'react';
 import { User } from 'firebase/auth';
-import { doc, setDoc, updateDoc, onSnapshot, getDoc } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '@/lib/firebase';
+import { doc, setDoc, onSnapshot, getDoc } from 'firebase/firestore';
+import { db } from '@/lib/firebase';
 import { Asset, PriceData } from '@/lib/types';
+import { migrateIdealAllocation } from '@/lib/portfolio/allocationMigrations';
+import { firestoreMongoRepository } from '@/lib/repositories/portfolioRepository';
 
 export function usePortfolioData(
   user: User | null,
@@ -31,97 +33,19 @@ export function usePortfolioData(
   const [selectedModel, setSelectedModel] = useState('meta-llama/llama-3.3-70b-instruct:free');
   const [googleModel, setGoogleModel] = useState('gemini-3.1-flash-lite-preview');
 
+  // DIP: delegate persistence to repository abstraction (SRP: hook no longer knows Firestore+Mongo details)
   const syncToDb = async (updates: any) => {
     if (!user) return;
-    
-    // Helper to recursively remove undefined values
-    const removeUndefined = (obj: any): any => {
-      if (obj === null || typeof obj !== 'object') return obj;
-      if (Array.isArray(obj)) return obj.map(removeUndefined);
-      return Object.fromEntries(
-        Object.entries(obj)
-          .filter(([_, v]) => v !== undefined)
-          .map(([k, v]) => [k, removeUndefined(v)])
-      );
-    };
-
-    try {
-      const userRef = doc(db, 'users', user.uid);
-      const docSnap = await getDoc(userRef);
-      
-      const firestoreUpdates: any = {};
-      const cleanUpdates = removeUndefined(updates);
-      
-      if (cleanUpdates.assets !== undefined) firestoreUpdates.assets = cleanUpdates.assets;
-      if (cleanUpdates.fundHoldings !== undefined) firestoreUpdates.fundHoldings = cleanUpdates.fundHoldings;
-      if (cleanUpdates.settings) {
-        for (const [key, value] of Object.entries(cleanUpdates.settings)) {
-          firestoreUpdates[`settings.${key}`] = value;
-        }
-      }
-      // Forward dot-notation keys (e.g. cachedCrypto.binance) directly to Firestore
-      for (const [key, value] of Object.entries(cleanUpdates)) {
-        if (key.includes('.')) {
-          firestoreUpdates[key] = value;
-        }
-      }
-
-      if (Object.keys(firestoreUpdates).length > 0) {
-        if (docSnap.exists()) {
-          await updateDoc(userRef, firestoreUpdates);
-        } else {
-          // Initialize document if it doesn't exist
-          const initialData = {
-            uid: user.uid,
-            assets: cleanUpdates.assets || assets,
-            fundHoldings: cleanUpdates.fundHoldings || fundHoldings,
-            settings: {
-              idealAllocation,
-              searchSource,
-              openRouterKey,
-              aiProvider,
-              googleModel,
-              openrouterModel: selectedModel,
-              ...(cleanUpdates.settings || {})
-            }
-          };
-          await setDoc(userRef, initialData);
-        }
-      }
-
-      // Sync to MongoDB backup
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 8000); // 8s timeout for backup sync
-
-        fetch('/api/sync', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            uid: user.uid,
-            email: user.email,
-            displayName: user.displayName,
-            data: updates
-          }),
-          signal: controller.signal
-        }).then(res => {
-          clearTimeout(timeoutId);
-          if (!res.ok && res.status !== 503) { // 503 means purposefully disabled
-            console.warn('MongoDB backup sync returned status:', res.status);
-          }
-        }).catch(err => {
-          clearTimeout(timeoutId);
-          // Only log the error if it's not a deliberate abort or common network issue when starting up
-          if (err.name !== 'AbortError') {
-            console.debug('Optional MongoDB backup sync skipped:', err.message);
-          }
-        });
-      } catch (e) {
-        // Ignore errors in the synchronous part of the backup sync setup
-      }
-    } catch (e) {
-      handleFirestoreError(e, OperationType.WRITE, `users/${user?.uid}`);
-    }
+    await firestoreMongoRepository.save(user, updates, {
+      assets,
+      fundHoldings,
+      idealAllocation,
+      searchSource,
+      openRouterKey,
+      aiProvider,
+      googleModel,
+      selectedModel,
+    });
   };
 
   const handleExportData = () => {
@@ -264,28 +188,8 @@ export function usePortfolioData(
 
     const loadData = async () => {
       try {
-        // 1. Fetch Primary Data from MongoDB
-        const res = await fetch(`/api/sync?uid=${user.uid}`);
-        const json = await res.json();
-        
-        let data: any = null;
-        
-        if (json.success && json.data) {
-          data = json.data;
-        } else {
-          // 2. Fallback to Firebase if Mongo is empty/offline
-          const userRef = doc(db, 'users', user.uid);
-          const docSnap = await getDoc(userRef);
-          if (docSnap.exists()) {
-            data = docSnap.data();
-            // Sync it back into Mongo immediately so we have a backup
-            await fetch('/api/sync', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ uid: user.uid, email: user.email, displayName: user.displayName, data })
-            });
-          }
-        }
+        // DIP: load via repository abstraction
+        let data = await firestoreMongoRepository.load(user);
 
         if (!isMounted) return;
 
@@ -316,65 +220,12 @@ export function usePortfolioData(
         
         if (data.settings) {
           if (data.settings.idealAllocation) {
-            let loadedAllocation = { ...data.settings.idealAllocation };
-            let needsSync = false;
-
-            if (loadedAllocation['Mutual Funds'] !== undefined) {
-              const mfAlloc = loadedAllocation['Mutual Funds'];
-              delete loadedAllocation['Mutual Funds'];
-              loadedAllocation['Equities'] = (loadedAllocation['Equities'] || 0) + Math.round(mfAlloc * 0.7);
-              loadedAllocation['Fixed Income'] = (loadedAllocation['Fixed Income'] || 0) + Math.round(mfAlloc * 0.3);
-              needsSync = true;
-            }
-            if (loadedAllocation['Mutual Fund - Equity'] !== undefined) {
-              loadedAllocation['Equities'] = (loadedAllocation['Equities'] || 0) + loadedAllocation['Mutual Fund - Equity'];
-              delete loadedAllocation['Mutual Fund - Equity'];
-              needsSync = true;
-            }
-            if (loadedAllocation['Mutual Fund - Debt'] !== undefined) {
-              loadedAllocation['Fixed Income'] = (loadedAllocation['Fixed Income'] || 0) + loadedAllocation['Mutual Fund - Debt'];
-              delete loadedAllocation['Mutual Fund - Debt'];
-              needsSync = true;
-            }
-            if (loadedAllocation['Debt'] !== undefined) {
-              loadedAllocation['Fixed Income'] = (loadedAllocation['Fixed Income'] || 0) + loadedAllocation['Debt'];
-              delete loadedAllocation['Debt'];
-              needsSync = true;
-            }
-            if (loadedAllocation['Debt and Fixed'] !== undefined) {
-              loadedAllocation['Fixed Income'] = (loadedAllocation['Fixed Income'] || 0) + loadedAllocation['Debt and Fixed'];
-              delete loadedAllocation['Debt and Fixed'];
-              needsSync = true;
-            }
-            if (loadedAllocation['Domestic Equity'] !== undefined) {
-              const val = loadedAllocation['Domestic Equity'];
-              delete loadedAllocation['Domestic Equity'];
-              loadedAllocation['Equities > Domestic Equity'] = val;
-              needsSync = true;
-            }
-            if (loadedAllocation['Global Equity'] !== undefined) {
-              const val = loadedAllocation['Global Equity'];
-              delete loadedAllocation['Global Equity'];
-              loadedAllocation['Equities > Global Equity'] = val;
-              needsSync = true;
-            }
-            if (loadedAllocation['Gold'] !== undefined) {
-              const val = loadedAllocation['Gold'];
-              delete loadedAllocation['Gold'];
-              loadedAllocation['Commodities > Gold'] = val;
-              needsSync = true;
-            }
-            if (loadedAllocation['Silver'] !== undefined) {
-              const val = loadedAllocation['Silver'];
-              delete loadedAllocation['Silver'];
-              loadedAllocation['Commodities > Silver'] = val;
-              needsSync = true;
-            }
+            const { migrated, needsSync } = migrateIdealAllocation(data.settings.idealAllocation);
 
             if (needsSync) {
-              syncToDb({ settings: { idealAllocation: loadedAllocation } });
+              syncToDb({ settings: { idealAllocation: migrated } });
             }
-            setIdealAllocation(loadedAllocation);
+            setIdealAllocation(migrated);
           }
           if (data.settings.searchSource) setSearchSource(data.settings.searchSource);
           if (data.settings.openRouterKey) setOpenRouterKey(data.settings.openRouterKey);

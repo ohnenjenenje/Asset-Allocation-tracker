@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { Asset, PriceData } from '@/lib/types';
-import { normalizeCategory, getCommoditySubCategory, guessCurrency, getConvertedPrice, getCapCategory, normalizeGroup, formatCompact } from '@/lib/portfolio-utils';
+import { normalizeCategory, getCommoditySubCategory, guessCurrency, getConvertedPrice, getCapCategory, normalizeGroup, formatCompact, resolveCurrentPrice } from '@/lib/portfolio-utils';
+import { USDINR_FALLBACK } from '@/lib/constants';
 
 interface UsePortfolioCalculationsParams {
   mergedAssets: Asset[];
@@ -17,26 +18,12 @@ export function usePortfolioCalculations({
   fundHoldings,
   idealAllocation
 }: UsePortfolioCalculationsParams) {
-  const usdToInr = useMemo(() => prices['INR=X']?.regularMarketPrice || 83, [prices]);
+  const usdToInr = useMemo(() => prices['INR=X']?.regularMarketPrice || USDINR_FALLBACK, [prices]);
 
   const isSmallCrypto = useMemo(() => (asset: Asset) => {
     const baseCat = normalizeCategory(asset.type);
     if (baseCat === 'Crypto') {
-      const priceData = prices[asset.symbol];
-      const hasPrice = priceData?.regularMarketPrice != null;
-      const currentPriceRaw = asset.manualPrice !== undefined ? asset.manualPrice : (hasPrice ? priceData.regularMarketPrice : asset.entryPrice);
-      
-      let currentCurrency;
-      if (asset.manualPrice !== undefined) {
-        currentCurrency = asset.currency || guessCurrency(asset.symbol);
-      } else if (hasPrice) {
-        currentCurrency = priceData.currency || guessCurrency(asset.symbol);
-        if (typeof asset.symbol === 'string' && asset.symbol.includes('-USD') && currentCurrency === 'INR') currentCurrency = 'USD';
-      } else {
-        currentCurrency = asset.currency || guessCurrency(asset.symbol);
-      }
-      
-      const currentPrice = getConvertedPrice(currentPriceRaw, currentCurrency, usdToInr);
+      const { currentPrice } = resolveCurrentPrice(asset, prices, usdToInr);
       const value = currentPrice * asset.quantity;
       if (value < 10) return true;
     }
@@ -51,20 +38,7 @@ export function usePortfolioCalculations({
     }
 
     const priceData = prices[asset.symbol];
-    const hasPrice = priceData?.regularMarketPrice != null;
-    const currentPriceRaw = asset.manualPrice !== undefined ? asset.manualPrice : (hasPrice ? priceData.regularMarketPrice : asset.entryPrice);
-    
-    let currentCurrency;
-    if (asset.manualPrice !== undefined) {
-      currentCurrency = asset.currency || guessCurrency(asset.symbol);
-    } else if (hasPrice) {
-      currentCurrency = priceData.currency || guessCurrency(asset.symbol);
-      if (typeof asset.symbol === 'string' && asset.symbol.includes('-USD') && currentCurrency === 'INR') currentCurrency = 'USD';
-    } else {
-      currentCurrency = asset.currency || guessCurrency(asset.symbol);
-    }
-    
-    const currentPrice = getConvertedPrice(currentPriceRaw, currentCurrency, usdToInr);
+    const { currentPrice, currentPriceRaw, currentCurrency } = resolveCurrentPrice(asset, prices, usdToInr);
     
     let assetCurrency = asset.currency || guessCurrency(asset.symbol);
     const entryPriceConverted = getConvertedPrice(asset.entryPrice, assetCurrency, usdToInr);
@@ -94,20 +68,7 @@ export function usePortfolioCalculations({
 
   const allocationData = mergedAssets.reduce((acc: any[], asset) => {
     const priceData = prices[asset.symbol];
-    const hasPrice = priceData?.regularMarketPrice != null;
-    const currentPriceRaw = asset.manualPrice !== undefined ? asset.manualPrice : (hasPrice ? priceData.regularMarketPrice : asset.entryPrice);
-    
-    let currentCurrency;
-    if (asset.manualPrice !== undefined) {
-      currentCurrency = asset.currency || guessCurrency(asset.symbol);
-    } else if (hasPrice) {
-      currentCurrency = priceData.currency || guessCurrency(asset.symbol);
-      if (typeof asset.symbol === 'string' && asset.symbol.includes('-USD') && currentCurrency === 'INR') currentCurrency = 'USD';
-    } else {
-      currentCurrency = asset.currency || guessCurrency(asset.symbol);
-    }
-    
-    const currentPrice = getConvertedPrice(currentPriceRaw, currentCurrency, usdToInr);
+    const { currentPrice, currentPriceRaw, currentCurrency } = resolveCurrentPrice(asset, prices, usdToInr);
     const value = currentPrice * asset.quantity;
     
     const topCategoryRaw = asset.categoryPath && asset.categoryPath.length > 0 ? asset.categoryPath[0] : asset.type;
@@ -355,20 +316,7 @@ export function usePortfolioCalculations({
 
   assets.forEach(asset => {
     const priceData = prices[asset.symbol];
-    const hasPrice = priceData?.regularMarketPrice != null;
-    const currentPriceRaw = asset.manualPrice !== undefined ? asset.manualPrice : (hasPrice ? priceData.regularMarketPrice : asset.entryPrice);
-    
-    let currentCurrency;
-    if (asset.manualPrice !== undefined) {
-      currentCurrency = asset.currency || guessCurrency(asset.symbol);
-    } else if (hasPrice) {
-      currentCurrency = priceData.currency || guessCurrency(asset.symbol);
-      if (typeof asset.symbol === 'string' && asset.symbol.includes('-USD') && currentCurrency === 'INR') currentCurrency = 'USD';
-    } else {
-      currentCurrency = asset.currency || guessCurrency(asset.symbol);
-    }
-    
-    const currentPrice = getConvertedPrice(currentPriceRaw, currentCurrency, usdToInr);
+    const { currentPrice, currentPriceRaw, currentCurrency } = resolveCurrentPrice(asset, prices, usdToInr);
     const totalValue = currentPrice * asset.quantity;
 
     const fundData = fundHoldings[asset.symbol];
@@ -462,20 +410,7 @@ export function usePortfolioCalculations({
 
   assets.forEach(asset => {
     const priceData = prices[asset.symbol];
-    const hasPrice = priceData?.regularMarketPrice != null;
-    const currentPriceRaw = asset.manualPrice !== undefined ? asset.manualPrice : (hasPrice ? priceData.regularMarketPrice : asset.entryPrice);
-    
-    let currentCurrency;
-    if (asset.manualPrice !== undefined) {
-      currentCurrency = asset.currency || guessCurrency(asset.symbol);
-    } else if (hasPrice) {
-      currentCurrency = priceData.currency || guessCurrency(asset.symbol);
-      if (typeof asset.symbol === 'string' && asset.symbol.includes('-USD') && currentCurrency === 'INR') currentCurrency = 'USD';
-    } else {
-      currentCurrency = asset.currency || guessCurrency(asset.symbol);
-    }
-    
-    const currentPrice = getConvertedPrice(currentPriceRaw, currentCurrency, usdToInr);
+    const { currentPrice, currentPriceRaw, currentCurrency } = resolveCurrentPrice(asset, prices, usdToInr);
     const totalValue = currentPrice * asset.quantity;
 
     // 1. Determine the Equity portion of this asset (matching Asset Allocation logic)
@@ -661,20 +596,7 @@ export function usePortfolioCalculations({
 
   assets.forEach(asset => {
     const priceData = prices[asset.symbol];
-    const hasPrice = priceData?.regularMarketPrice != null;
-    const currentPriceRaw = asset.manualPrice !== undefined ? asset.manualPrice : (hasPrice ? priceData.regularMarketPrice : asset.entryPrice);
-    
-    let currentCurrency;
-    if (asset.manualPrice !== undefined) {
-      currentCurrency = asset.currency || guessCurrency(asset.symbol);
-    } else if (hasPrice) {
-      currentCurrency = priceData.currency || guessCurrency(asset.symbol);
-      if (typeof asset.symbol === 'string' && asset.symbol.includes('-USD') && currentCurrency === 'INR') currentCurrency = 'USD';
-    } else {
-      currentCurrency = asset.currency || guessCurrency(asset.symbol);
-    }
-    
-    const currentPrice = getConvertedPrice(currentPriceRaw, currentCurrency, usdToInr);
+    const { currentPrice, currentPriceRaw, currentCurrency } = resolveCurrentPrice(asset, prices, usdToInr);
     const totalValue = currentPrice * asset.quantity;
 
     // 1. Determine the Equity portion of this asset
@@ -830,20 +752,7 @@ export function usePortfolioCalculations({
 
   assets.forEach(asset => {
     const priceData = prices[asset.symbol];
-    const hasPrice = priceData?.regularMarketPrice != null;
-    const currentPriceRaw = asset.manualPrice !== undefined ? asset.manualPrice : (hasPrice ? priceData.regularMarketPrice : asset.entryPrice);
-    
-    let currentCurrency;
-    if (asset.manualPrice !== undefined) {
-      currentCurrency = asset.currency || guessCurrency(asset.symbol);
-    } else if (hasPrice) {
-      currentCurrency = priceData.currency || guessCurrency(asset.symbol);
-      if (typeof asset.symbol === 'string' && asset.symbol.includes('-USD') && currentCurrency === 'INR') currentCurrency = 'USD';
-    } else {
-      currentCurrency = asset.currency || guessCurrency(asset.symbol);
-    }
-    
-    const currentPrice = getConvertedPrice(currentPriceRaw, currentCurrency, usdToInr);
+    const { currentPrice, currentPriceRaw, currentCurrency } = resolveCurrentPrice(asset, prices, usdToInr);
     const totalValue = currentPrice * asset.quantity;
 
     if (asset.type === 'MUTUALFUND' || asset.type === 'ETF') {

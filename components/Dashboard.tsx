@@ -4,9 +4,7 @@ import { useState, useEffect, useCallback, useRef, Fragment, useMemo } from 'rea
 import { Plus, Search, Trash2, RefreshCw, TrendingUp, TrendingDown, DollarSign, PieChart as PieChartIcon, BarChart3, List, MessageCircle, Settings, Target, X, Send, Bot, ArrowUp, ArrowDown, ArrowUpDown, MessageSquarePlus, ChevronUp, ChevronDown, ChevronRight, Pencil, Info, LogOut, Filter, Briefcase, Layers, Activity } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, Legend, Treemap, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
 import { v4 as uuidv4 } from 'uuid';
-import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
-import { auth, signInWithGoogle, signInWithEmail, signUpWithEmail, resetPassword, logOut } from '@/lib/firebase';
-import { onAuthStateChanged, User } from 'firebase/auth';
+import { logOut } from '@/lib/firebase';
 import Screener from '@/components/Screener';
 
 import LoginPage from '@/components/auth/LoginPage';
@@ -19,7 +17,7 @@ import DeleteConfirmModal from '@/components/modals/DeleteConfirmModal';
 
 import { Asset, PriceData, ChatMessage } from '@/lib/types';
 import { COLORS } from '@/lib/constants';
-import { guessCurrency, getConvertedPrice, normalizeCategory, getCommoditySubCategory, getCapCategory, normalizeGroup, formatCompact, getBaseCryptoSymbol, isSameCrypto } from '@/lib/portfolio-utils';
+import { guessCurrency, getConvertedPrice, normalizeCategory, getCommoditySubCategory, getCapCategory, normalizeGroup, formatCompact, isSameCrypto } from '@/lib/portfolio-utils';
 import { calculateTax, formatHoldingPeriod } from '@/lib/tax-utils';
 import { useAuth } from '@/hooks/useAuth';
 import { usePrices } from '@/hooks/usePrices';
@@ -331,7 +329,6 @@ export default function Dashboard() {
   const [manualPrice, setManualPrice] = useState('');
   const [manualSector, setManualSector] = useState('');
   const [purchaseDate, setPurchaseDate] = useState('');
-  const [availableModels, setAvailableModels] = useState<any[]>([]);
 
   const {
     user, isAuthReady, isSigningIn, isEmailLoginMode, isResetMode,
@@ -352,7 +349,8 @@ export default function Dashboard() {
     googleModel, setGoogleModel,
     isSettingsOpen, setIsSettingsOpen,
     restoreStatus, syncToDb,
-    handleExportData, handleImportData, handleRestoreFromMongo, forceRefreshHoldings
+    handleExportData, handleImportData, handleRestoreFromMongo, forceRefreshHoldings,
+    availableModels
   } = usePortfolioData(user, isAuthReady);
 
   const pricingAssets = useMemo(() => {
@@ -467,7 +465,7 @@ export default function Dashboard() {
           ...a,
           id: `${exchangeName.toLowerCase()}-${a.name}`,
           entryPrice: 0,
-          currency: 'USD'
+          currency: a.priceCurrency || 'USD'
         }));
         setter(mapped);
         setStatus({ state: 'connected', lastSynced: Date.now() });
@@ -482,7 +480,7 @@ export default function Dashboard() {
               newPrices[crypto.symbol] = {
                 symbol: crypto.symbol,
                 regularMarketPrice: crypto.currentPrice,
-                currency: 'USD',
+                currency: crypto.priceCurrency || 'USD',
                 shortName: crypto.name,
                 quoteType: 'CRYPTO',
                 source: `${exchangeName} API`,
@@ -513,47 +511,6 @@ export default function Dashboard() {
     }
   }, [binanceStatus.state, coindcxStatus.state, cachedCrypto]);
 
-
-  useEffect(() => {
-    // Fetch available free models
-    fetch('/api/models')
-      .then(async res => {
-        const text = await res.text();
-        try {
-          return JSON.parse(text);
-        } catch (e) {
-          console.error('Failed to parse models data:', text.substring(0, 100));
-          return null;
-        }
-      })
-      .then(data => {
-        if (data && data.data) {
-          const freeModels = data.data.filter((m: any) => 
-            m.pricing && 
-            m.pricing.prompt === "0" && 
-            m.pricing.completion === "0" &&
-            m.supported_parameters?.includes('tools')
-          );
-          setAvailableModels(freeModels);
-        }
-      })
-      .catch(console.error);
-  }, []);
-
-
-
-
-  useEffect(() => {
-    if (assets.length > 0) {
-      fetchPrices();
-      
-      const interval = setInterval(() => {
-        fetchPrices(true);
-      }, 60000); // Fetch every minute
-      
-      return () => clearInterval(interval);
-    }
-  }, [assets, fetchPrices]);
 
   useEffect(() => {
     const delayDebounceFn = setTimeout(async () => {
@@ -629,18 +586,6 @@ export default function Dashboard() {
     resetForm();
   };
 
-
-  const isSameCrypto = (symbol1: string, symbol2: string, type1: string, type2?: string) => {
-    const isCrypto1 = type1 === 'CRYPTOCURRENCY' || type1 === 'CRYPTO';
-    const isCrypto2 = type2 === 'CRYPTOCURRENCY' || type2 === 'CRYPTO' || (!type2 && (symbol2.includes('-USD') || symbol2.includes('-INR')));
-    
-    if (!isCrypto1 && !isCrypto2) return false;
-    
-    const base1 = getBaseCryptoSymbol(symbol1);
-    const base2 = getBaseCryptoSymbol(symbol2);
-    
-    return base1 === base2 && base1 !== symbol1 && base2 !== symbol2;
-  };
 
   const findExistingAssetToMerge = (selectedRes: any) => {
     if (!selectedRes) return undefined;
@@ -1745,15 +1690,7 @@ export default function Dashboard() {
               const totalPortfolioValue = stackedBarData.reduce((sum, cap) => 
                 sum + Object.entries(cap).reduce((capSum, [key, val]) => key !== 'name' ? capSum + (val as number) : capSum, 0), 0);
               const percent = totalPortfolioValue > 0 ? ((totalSectorValue / totalPortfolioValue) * 100).toFixed(1) : '0.0';
-              
-  const formatCompact = (val: number) => {
-    if (val === undefined || val === null) return '₹0';
-    if (val >= 10000000) return `₹${(val / 10000000).toFixed(2)}Cr`;
-    if (val >= 100000) return `₹${(val / 100000).toFixed(2)}L`;
-    if (val >= 1000) return `₹${(val / 1000).toFixed(1)}k`;
-    return `₹${val.toFixed(0)}`;
-  };
-
+               
   return (
     <div key={sector} className="flex flex-col gap-1.5 p-3 rounded-lg bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-100 dark:border-zinc-800">
       <div className="flex items-center justify-between text-xs">

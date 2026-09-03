@@ -1,119 +1,30 @@
 import { NextResponse } from 'next/server';
-import { GoogleAuth } from 'google-auth-library';
-import YahooFinance from 'yahoo-finance2';
+import { MANUAL_MAP as MANUAL_MAP_CONST, SHEET_CACHE_TTL_MS, SHEET_HEADER, USDINR_FALLBACK } from '@/lib/constants';
+import { getGFinanceSymbol, isGoldSilverSymbol, isIndianSymbol, isMutualFundSymbol, isUsdAsset } from '@/lib/pricing/symbolClassifier';
+import { calculateMetalPricePerGramInr } from '@/lib/pricing/metalPricing';
+import { yahooClient } from '@/lib/pricing/yahooClient';
+import { metalsClient } from '@/lib/pricing/metalsClient';
+import { sheetRepository } from '@/lib/pricing/sheetRepository';
+import { cleanFundNameForSearch, mfapiClient } from '@/lib/pricing/mfapiClient';
 
-const yahoo = new YahooFinance();
-
-const safeQuote = async (symbol: string) => {
-  try {
-    const res = await fetch(`https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbol)}`, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Accept': 'application/json'
-      }
-    });
-    if (!res.ok) throw new Error(`Yahoo direct fetch failed: ${res.status}`);
-    const data = await res.json();
-    const result = data?.quoteResponse?.result?.[0];
-    if (!result) return null;
-    return result;
-  } catch (e) {
-    console.error(`Error in direct Yahoo fetch for ${symbol}:`, e);
-    return null;
-  }
-};
-
-const safeQuoteSummary = async (symbol: string, options: any) => {
-  try {
-    const modules = options.modules.join(',');
-    const res = await fetch(`https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(symbol)}?modules=${modules}`, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Accept': 'application/json'
-      }
-    });
-    if (!res.ok) throw new Error(`Yahoo summary fetch failed: ${res.status}`);
-    const data = await res.json();
-    const result = data?.quoteSummary?.result?.[0];
-    if (!result) return null;
-    return result;
-  } catch (e) {
-    console.error(`Error in direct Yahoo summary fetch for ${symbol}:`, e);
-    return null;
-  }
-};
-
-const safeSearch = async (query: string, options: any) => {
-  try {
-    const count = options?.quotesCount || 10;
-    const res = await fetch(`https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=${count}&newsCount=0`, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'application/json'
-      }
-    });
-    if (!res.ok) throw new Error(`Yahoo search fetch failed: ${res.status}`);
-    const data = await res.json();
-    return data || { quotes: [] };
-  } catch (e) {
-    console.error(`Error in direct Yahoo search for ${query}:`, e);
-    return { quotes: [] };
-  }
-};
+// DIP: route depends on abstractions, not concrete fetch URLs
+const safeQuote = (symbol: string) => yahooClient.quote(symbol);
+const safeQuoteSummary = (symbol: string, options: any) => yahooClient.quoteSummary(symbol, options.modules);
+const safeSearch = (query: string, options: any) => yahooClient.search(query, options?.quotesCount || 10);
 
 export const dynamic = 'force-dynamic';
 
-// Global cache for sheet data to prevent multiple redundant fetches for sequential chunks
+// Re-export for testability / SRP (sheetRepository holds cache internally now)
 let cachedSheetData: any = null;
 let lastSheetFetch = 0;
-const CACHE_TTL = 30000; // 30 seconds
+const CACHE_TTL = SHEET_CACHE_TTL_MS;
 
-const getAuthToken = async () => {
-  if (!process.env.GOOGLE_CLIENT_EMAIL || !process.env.GOOGLE_PRIVATE_KEY || !process.env.GOOGLE_SHEET_ID) {
-    return null;
-  }
-  
-  try {
-    const auth = new GoogleAuth({
-      credentials: {
-        client_email: process.env.GOOGLE_CLIENT_EMAIL,
-        private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-      },
-      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-    });
+const getAuthToken = () => sheetRepository.getAuthToken();
 
-    const client = await auth.getClient();
-    const token = await client.getAccessToken();
-    return token.token;
-  } catch (e) {
-    console.error("Failed to initialize Google Sheets Auth", e);
-    return null;
-  }
-};
+// Keep legacy MANUAL_MAP for backward-compat but delegate to constants; local overrides win
+const MANUAL_MAP: Record<string, string> = MANUAL_MAP_CONST;
 
-const MANUAL_MAP: Record<string, string> = {
-  '0P0001S0S9.BO': '151125', // Zerodha Nifty LargeMidcap 250
-  '0P0000XW0K.BO': '102146', // Edelweiss Liquid Fund - Retail
-  '0P0011MAX.BO': '120503',  // Axis Small Cap Fund
-  'MF_101762': '118955',    // HDFC Flexi Cap Fund - Direct Growth
-};
-
-const getMetalPrice = async (metal: string, currency: string = 'INR') => {
-  if (!process.env.METALS_API_KEY) return null;
-  try {
-    const res = await fetch(`https://api.metals.dev/v1/latest?api_key=${process.env.METALS_API_KEY}&currency=${currency}&metals=${metal}`);
-    if (res.ok) {
-      const data = await res.json();
-      if (data.metals && data.metals[metal]) {
-        let price = parseFloat(data.metals[metal]);
-        return price;
-      }
-    }
-  } catch (e) {
-    console.error(`Failed to fetch metal price for ${metal}`, e);
-  }
-  return null;
-};
+const getMetalPrice = (metal: string) => metalsClient.getUsdPrice(metal as 'gold' | 'silver');
 
 
 export async function GET(request: Request) {
@@ -128,16 +39,7 @@ export async function GET(request: Request) {
     const symbols = symbolsParam.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
     const refresh = searchParams.get('refresh') === 'true';
     
-    // Manual mapping for known problematic Yahoo symbols to AMFI codes
-    const MANUAL_MAP: Record<string, string> = {
-      '0P0001S0S9.BO': '152156', // Zerodha Nifty LargeMidcap 250
-      '0P0000XW0K.BO': '140196', // Edelweiss Liquid Fund - Direct Growth
-      '0P0011MAX.BO': '120503',  // Axis Small Cap Fund
-      'MF_101762': '118955',    // HDFC Flexi Cap Fund - Direct Growth
-      '0P0000XV5G.BO': '140243', // Edelweiss Greater China - Direct
-      '0P0000KYO9.BO': '140242', // Edelweiss Greater China - Regular
-      'JPPOWER.BO': 'JPPOWER.NS', // JaiPrakash Power Ventures
-    };
+    // MANUAL_MAP now centralized in lib/constants.ts (DIP)
 
     const token = await getAuthToken();
     const sheetId = process.env.GOOGLE_SHEET_ID;
@@ -217,8 +119,8 @@ export async function GET(request: Request) {
     const brokenSymbols = symbols.filter(s => {
       const d = existingData[s];
       if (!d) return true;
-      const isGoldOrSilver = d.symbol === 'GOLD-INR-GRAM' || d.symbol === 'SILVER-INR-GRAM';
-      const isMF = d.symbol.startsWith('0P') || /^\d+$/.test(d.symbol) || d.symbol.startsWith('MF_') || /^INF[A-Z0-9]{9}$/i.test(d.symbol);
+      const isGoldOrSilver = isGoldSilverSymbol(d.symbol);
+      const isMF = isMutualFundSymbol(d.symbol);
       const isPriceMissing = d.regularMarketPrice === null;
       const isMarketCapMissing = isNaN(d.marketCap);
       const isYahooSymbolMissing = isMF && !d.yahooSymbol;
@@ -242,22 +144,6 @@ export async function GET(request: Request) {
     
     // 4. Append or update symbols
     if (symbolsToUpdate.length > 0) {
-      const getGFinanceSymbol = (sym: string) => {
-        if (sym === 'INR=X') return 'CURRENCY:USDINR';
-        if (sym.endsWith('=X')) {
-          return `CURRENCY:USD${sym.replace('=X', '')}`;
-        }
-        if (sym.endsWith('.NS')) {
-          return `NSE:${sym.replace('.NS', '')}`;
-        }
-        if (sym.endsWith('.BO') && !sym.startsWith('0P')) {
-          return `BSE:${sym.replace('.BO', '')}`;
-        }
-        if (sym.includes('-')) {
-          return `CURRENCY:${sym.replace('-', '')}`;
-        }
-        return sym;
-      };
 
       // Fetch prices and sectors for symbols to update
       const mfPrices: Record<string, { price: number | null, name: string | null, yahooSymbol: string | null, sector: string | null, source?: string, quoteType?: string }> = {};
@@ -292,9 +178,7 @@ export async function GET(request: Request) {
           try {
             const metalKey = sym === 'GOLD-INR-GRAM' ? 'gold' : 'silver';
             
-             // Fetch real metals data (USD per troy ounce futures: GC=F for Gold, SI=F for Silver)
-             // We use the exact calculation from USD/troy ounce to INR/gram, using the INR=X exchange rate.
-             let priceUsd = await getMetalPrice(metalKey, 'USD');
+             let priceUsd = await getMetalPrice(metalKey);
              let source = '';
 
              const ySym = sym === 'GOLD-INR-GRAM' ? 'GC=F' : 'SI=F';
@@ -309,23 +193,8 @@ export async function GET(request: Request) {
              }
 
              if (priceUsd) {
-               // 1 Troy Ounce = 31.1034768 grams
-               const troyOunceInGrams = 31.1034768;
-               
-               // Fetch standard USD to INR rate, fallback to 94.22 if unavailable
-               const usdToInr = existingData['INR=X']?.regularMarketPrice || 94.22;
-
-               // Base conversion: (USD / Troy Ounce) -> (USD / Gram) -> (INR / Gram)
-               let finalInrPrice = (priceUsd / troyOunceInGrams) * usdToInr;
-                
-               // Import Duty (15%: 10% BCD + 5% AIDC, effective May 2026) + GST (3%)
-               const importDutyRate = 0.15;
-               const gstRate = 0.03;
-               if (sym === 'GOLD-INR-GRAM') {
-                 finalInrPrice *= (1 + importDutyRate) * (1 + gstRate);
-               } else if (sym === 'SILVER-INR-GRAM') {
-                 finalInrPrice *= (1 + importDutyRate) * (1 + gstRate);
-               }
+               const usdToInr = existingData['INR=X']?.regularMarketPrice || USDINR_FALLBACK;
+               const finalInrPrice = calculateMetalPricePerGramInr(priceUsd, usdToInr);
                
                mfPrices[sym] = {
                  price: finalInrPrice,
@@ -342,7 +211,7 @@ export async function GET(request: Request) {
         }
 
         const lookupSym = MANUAL_MAP[sym] || sym;
-        const isMF = lookupSym.startsWith('0P') || /^\d+$/.test(lookupSym) || lookupSym.startsWith('MF_') || /^INF[A-Z0-9]{9}$/i.test(lookupSym) || lookupSym === 'GOLD-INR-GRAM';
+        const isMF = isMutualFundSymbol(lookupSym) || isGoldSilverSymbol(lookupSym);
         
         // If it's a Mutual Fund, prioritize MFAPI
         if (isMF) {
@@ -380,18 +249,7 @@ export async function GET(request: Request) {
               
               if (fundName) {
                 // Preserve Growth and IDCW as they are critical for identifying the correct fund variant
-                const cleanName = fundName
-                  .replace(/Direct Plan/gi, '')
-                  .replace(/Regular Plan/gi, '')
-                  .replace(/Option/gi, '')
-                  .replace(/Plan/gi, '')
-                  .replace(/Scheme/gi, '')
-                  .replace(/Index Fund/gi, '')
-                  .replace(/Fund/gi, '')
-                  .replace(/Index/gi, '')
-                  .replace(/-/g, ' ')
-                  .replace(/\s+/g, ' ')
-                  .trim();
+                const cleanName = cleanFundNameForSearch(fundName);
                   
                 const searchRes = await fetch(`https://api.mfapi.in/mf/search?q=${encodeURIComponent(cleanName)}`);
                 if (searchRes.ok) {
@@ -431,11 +289,7 @@ export async function GET(request: Request) {
                 if (!result || !result.regularMarketPrice) {
                   let fundName = existingData[sym]?.shortName;
                   if (fundName && fundName !== sym) {
-                    const cleanName = fundName
-                      .replace(/Direct Plan/gi, '').replace(/Regular Plan/gi, '').replace(/Direct/gi, '').replace(/Regular/gi, '')
-                      .replace(/Growth/gi, '').replace(/IDCW/gi, '').replace(/Dividend/gi, '').replace(/Option/gi, '')
-                      .replace(/Plan/gi, '').replace(/Scheme/gi, '').replace(/Index Fund/gi, '').replace(/Fund/gi, '')
-                      .replace(/Index/gi, '').replace(/-/g, ' ').replace(/\s+/g, ' ').trim();
+                    const cleanName = cleanFundNameForSearch(fundName);
                       
                     const ySearch = await safeSearch(cleanName, { quotesCount: 10 }) as any;
                     let match = ySearch.quotes.find((q: any) => 
@@ -475,23 +329,7 @@ export async function GET(request: Request) {
             // If we succeeded with MFAPI (either direct AMFI or via search), try to find Yahoo symbol mapping if missing
             if (mfapiSuccess && !mfPrices[sym].yahooSymbol && schemeName) {
               try {
-                const cleanName = schemeName
-                  .replace(/Direct Plan/gi, '')
-                  .replace(/Regular Plan/gi, '')
-                  .replace(/Direct/gi, '')
-                  .replace(/Regular/gi, '')
-                  .replace(/Growth/gi, '')
-                  .replace(/IDCW/gi, '')
-                  .replace(/Dividend/gi, '')
-                  .replace(/Option/gi, '')
-                  .replace(/Plan/gi, '')
-                  .replace(/Scheme/gi, '')
-                  .replace(/Index Fund/gi, '')
-                  .replace(/Fund/gi, '')
-                  .replace(/Index/gi, '')
-                  .replace(/-/g, ' ')
-                  .replace(/\s+/g, ' ')
-                  .trim();
+                const cleanName = cleanFundNameForSearch(schemeName);
                 
                 const ySearch = await safeSearch(cleanName, { quotesCount: 10 }) as any;
                 const match = ySearch.quotes.find((q: any) => 
@@ -570,7 +408,7 @@ export async function GET(request: Request) {
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({
-            values: [['Symbol', 'Price', 'Name', 'Currency', 'Type', 'MarketCap', 'YahooSymbol', 'Sector', 'Source']]
+            values: [[...SHEET_HEADER]]
           })
         });
         if (!res.ok) throw new Error(`Failed to append headers: ${res.status} ${await res.text()}`);
@@ -583,7 +421,7 @@ export async function GET(request: Request) {
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({
-            values: [['Symbol', 'Price', 'Name', 'Currency', 'Type', 'MarketCap', 'YahooSymbol', 'Sector', 'Source']]
+            values: [[...SHEET_HEADER]]
           })
         });
         if (!res.ok) throw new Error(`Failed to update headers: ${res.status} ${await res.text()}`);
@@ -596,9 +434,9 @@ export async function GET(request: Request) {
         if (rowIndex >= 0) {
           const gSym = getGFinanceSymbol(sym);
           const rowNumber = rowIndex + 1;
-          const isMF = sym.startsWith('0P') || /^\d+$/.test(sym) || sym.startsWith('MF_') || /^INF[A-Z0-9]{9}$/i.test(sym) || sym === 'GOLD-INR-GRAM';
-          const isIndian = sym.endsWith('.NS') || sym.endsWith('.BO') || sym === 'GOLD-INR-GRAM';
-          const isUsdAsset = sym.endsWith('-USD') || (!sym.includes('.') && !isMF);
+          const isMF = isMutualFundSymbol(sym) || isGoldSilverSymbol(sym);
+          const isIndian = isIndianSymbol(sym);
+          const isUsdAssetSym = isUsdAsset(sym);
           
           let priceFormula = gSym.startsWith('CURRENCY:') ? `=IFNA(GOOGLEFINANCE("${gSym}"), "")` : `=IFNA(GOOGLEFINANCE("${gSym}", "price"), "")`;
           let nameFormula = `=IFNA(GOOGLEFINANCE("${gSym}", "name"), "${sym}")`;
@@ -621,7 +459,7 @@ export async function GET(request: Request) {
 
           let currencyFormula = `=IFNA(GOOGLEFINANCE("${gSym}", "currency"), "INR")`;
           if (isMF || isIndian) currencyFormula = `INR`;
-          else if (isUsdAsset) currencyFormula = `USD`;
+          else if (isUsdAssetSym) currencyFormula = `USD`;
 
           const actualType = stockPrices[sym]?.quoteType || existingData[sym]?.quoteType || (isMF ? "MUTUALFUND" : "EQUITY");
           const typeFormula = sym === "GOLD-INR-GRAM" ? "COMMODITY" : (actualType === "ETF" ? "ETF" : (isMF ? "MUTUALFUND" : "EQUITY"));
@@ -671,9 +509,9 @@ export async function GET(request: Request) {
       if (missingSymbols.length > 0) {
         const appendData = missingSymbols.map(sym => {
           const gSym = getGFinanceSymbol(sym);
-          const isMF = sym.startsWith('0P') || /^\d+$/.test(sym) || sym.startsWith('MF_') || /^INF[A-Z0-9]{9}$/i.test(sym) || sym === 'GOLD-INR-GRAM';
-          const isIndian = sym.endsWith('.NS') || sym.endsWith('.BO') || sym === 'GOLD-INR-GRAM';
-          const isUsdAsset = sym.endsWith('-USD') || (!sym.includes('.') && !isMF);
+          const isMF = isMutualFundSymbol(sym) || isGoldSilverSymbol(sym);
+          const isIndian = isIndianSymbol(sym);
+          const isUsdAssetSym = isUsdAsset(sym);
           
           let priceFormula = gSym.startsWith('CURRENCY:') ? `=IFNA(GOOGLEFINANCE("${gSym}"), "")` : `=IFNA(GOOGLEFINANCE("${gSym}", "price"), "")`;
           let nameFormula = `=IFNA(GOOGLEFINANCE("${gSym}", "name"), "${sym}")`;
@@ -695,7 +533,7 @@ export async function GET(request: Request) {
 
           let currencyFormula = `=IFNA(GOOGLEFINANCE("${gSym}", "currency"), "INR")`;
           if (isMF || isIndian) currencyFormula = `INR`;
-          else if (isUsdAsset) currencyFormula = `USD`;
+          else if (isUsdAssetSym) currencyFormula = `USD`;
 
           const actualType = stockPrices[sym]?.quoteType || existingData[sym]?.quoteType || (isMF ? "MUTUALFUND" : "EQUITY");
           const typeFormula = sym === "GOLD-INR-GRAM" ? "COMMODITY" : (actualType === "ETF" ? "ETF" : (isMF ? "MUTUALFUND" : "EQUITY"));
@@ -730,8 +568,8 @@ export async function GET(request: Request) {
       }
 
       symbolsToUpdate.forEach(sym => {
-        const isMF = sym.startsWith('0P') || /^\d+$/.test(sym) || sym.startsWith('MF_') || /^INF[A-Z0-9]{9}$/i.test(sym) || sym === 'GOLD-INR-GRAM';
-        const isIndian = sym.endsWith('.NS') || sym.endsWith('.BO') || sym === 'GOLD-INR-GRAM';
+        const isMF = isMutualFundSymbol(sym) || isGoldSilverSymbol(sym);
+        const isIndian = isIndianSymbol(sym);
         
         let source = existingData[sym]?.source || "";
         if (isMF && mfPrices[sym]) {

@@ -52,9 +52,10 @@ export async function GET() {
           symbol: pair,
           name: cleanSymbol,
           quantity: qty,
-          type: 'CRYPTO',
+          type: 'CRYPTO' as const,
           currentPrice: currentPrice,
-          exchange: 'Binance'
+          priceCurrency: 'USD' as const,
+          exchange: 'Binance' as const
         };
       });
 
