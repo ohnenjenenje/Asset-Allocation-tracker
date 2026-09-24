@@ -1,6 +1,6 @@
 # Asset Allocation Tracker — Mobile App
 
-Expo (React Native) Android app. **Design language:** "Midnight Ledger" (dark `#0B1220`, teal `#2DD4BF`).
+Expo (React Native) Android app — **Expo SDK 57 · React Native 0.86 · React 19.2**, New Architecture enabled. **Design language:** "Midnight Ledger" (dark `#0B1220`, teal `#2DD4BF`).
 
 ## Architecture
 
