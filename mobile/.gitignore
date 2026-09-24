@@ -1,0 +1,15 @@
+node_modules/
+.expo/
+dist/
+build/
+android-keystores/
+credentials.json
+*.jks
+*.p8
+*.p12
+*.key
+*.keystore
+*.mobileprovision
+*.orig.*
+.env
+.env.local
