@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "main": "expo-router/entry",
   "scripts": {
+    "postinstall": "node scripts/patch-expo-watcher.cjs",
     "start": "expo start",
     "android": "expo start --android",
     "build": "eas build -p android --profile preview",
