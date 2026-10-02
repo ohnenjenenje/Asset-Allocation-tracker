@@ -1,5 +1,5 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, createUserWithEmailAndPassword, signInWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, EmailAuthProvider, signInWithPopup, linkWithCredential, linkWithPopup, unlink, fetchSignInMethodsForEmail, reauthenticateWithCredential, signOut, createUserWithEmailAndPassword, signInWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth';
 import { getFirestore, doc, getDoc, setDoc, updateDoc, onSnapshot } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
@@ -55,6 +55,79 @@ export const logOut = async () => {
     console.error("Error signing out", error);
     throw error;
   }
+};
+
+/** Returns the list of linked providerIds for the current user (e.g. ['google.com', 'password']). */
+export const getLinkedProviders = (): string[] => {
+  return auth.currentUser?.providerData.map(p => p.providerId) ?? [];
+};
+
+export const hasPasswordProvider = () => getLinkedProviders().includes('password');
+export const hasGoogleProvider = () => getLinkedProviders().includes('google.com');
+
+/**
+ * Link an email/password credential to the currently signed-in (e.g. Google) user.
+ * This lets a Google user later sign in with email+password on web or mobile.
+ */
+export const linkEmailPassword = async (email: string, password: string) => {
+  const currentUser = auth.currentUser;
+  if (!currentUser) throw new Error('No user is currently signed in.');
+  const credential = EmailAuthProvider.credential(email, password);
+  try {
+    const result = await linkWithCredential(currentUser, credential);
+    return result.user;
+  } catch (error) {
+    console.error("Error linking email/password", error);
+    throw error;
+  }
+};
+
+/**
+ * Link a Google account to the currently signed-in (e.g. email/password) user
+ * via a popup. After linking, either method signs into the same account.
+ */
+export const linkGoogleAccount = async () => {
+  const currentUser = auth.currentUser;
+  if (!currentUser) throw new Error('No user is currently signed in.');
+  try {
+    const result = await linkWithPopup(currentUser, googleProvider);
+    return result.user;
+  } catch (error) {
+    console.error("Error linking Google account", error);
+    throw error;
+  }
+};
+
+/**
+ * Unlink a provider ('password' or 'google.com'). Refuses to unlink the last
+ * remaining sign-in method so the account never becomes inaccessible.
+ */
+export const unlinkProvider = async (providerId: string) => {
+  const currentUser = auth.currentUser;
+  if (!currentUser) throw new Error('No user is currently signed in.');
+  if ((currentUser.providerData?.length ?? 0) <= 1) {
+    throw new Error('Cannot unlink the only sign-in method. Link another method first.');
+  }
+  try {
+    const result = await unlink(currentUser, providerId);
+    return result;
+  } catch (error) {
+    console.error("Error unlinking provider", error);
+    throw error;
+  }
+};
+
+/** Which sign-in methods exist for an email (used to hint "try Google instead"). */
+export const getSignInMethods = async (email: string) => {
+  return fetchSignInMethodsForEmail(auth, email);
+};
+
+/** Re-authenticate before sensitive operations when Firebase asks for a recent login. */
+export const reauthenticateWithPassword = async (password: string) => {
+  const currentUser = auth.currentUser;
+  if (!currentUser?.email) throw new Error('No user is currently signed in.');
+  const credential = EmailAuthProvider.credential(currentUser.email, password);
+  return reauthenticateWithCredential(currentUser, credential).then(r => r.user);
 };
 
 export enum OperationType {

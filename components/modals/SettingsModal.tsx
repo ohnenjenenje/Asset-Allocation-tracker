@@ -1,6 +1,7 @@
 import React from 'react';
 import { X, RefreshCw } from 'lucide-react';
 import { Asset } from '@/lib/types';
+import AccountLinking from '@/components/auth/AccountLinking';
 
 interface SettingsModalProps {
   isSettingsOpen: boolean;
@@ -53,14 +54,15 @@ export default function SettingsModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-      <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow-xl w-full max-w-md overflow-hidden flex flex-col border border-zinc-200 dark:border-zinc-800">
-        <div className="p-5 border-b border-zinc-200 dark:border-zinc-800 flex justify-between items-center">
+      <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow-xl w-full max-w-md overflow-hidden flex flex-col border border-zinc-200 dark:border-zinc-800 max-h-[90vh]">
+        <div className="p-5 border-b border-zinc-200 dark:border-zinc-800 flex justify-between items-center shrink-0">
           <h2 className="text-xl font-semibold text-zinc-900 dark:text-zinc-100">Settings</h2>
           <button onClick={() => setIsSettingsOpen(false)} className="text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors">
             <X className="w-5 h-5" />
           </button>
         </div>
-        <div className="p-5 space-y-6">
+        <div className="p-5 space-y-6 overflow-y-auto">
+          <AccountLinking />
           <div>
             <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">Stock Search Source</label>
             <select
