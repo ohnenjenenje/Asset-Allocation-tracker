@@ -38,7 +38,9 @@
       "expo-font",
       "expo-web-browser",
       "expo-sharing",
-      "expo-status-bar"
+      "expo-status-bar",
+      "expo-dev-client",
+      "@react-native-google-signin/google-signin"
     ],
     "experiments": {
       "typedRoutes": true

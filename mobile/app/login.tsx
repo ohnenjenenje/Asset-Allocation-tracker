@@ -1,36 +1,43 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, ActivityIndicator,
   KeyboardAvoidingView, Platform, ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { PieChart } from 'lucide-react-native';
-import * as WebBrowser from 'expo-web-browser';
-import * as Google from 'expo-auth-session/providers/google';
 import { useAuth } from '@/hooks/useAuth';
-
-WebBrowser.maybeCompleteAuthSession();
-
-// Configure these in Google Cloud / Firebase console for your app (optional).
-const GOOGLE_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID ?? '';
+import { isGoogleSignInSupported, requestGoogleIdToken } from '@/lib/googleSignIn';
 
 export default function LoginScreen() {
   const { isSigningIn, authError, setAuthError, handleEmailAuth, handleResetPassword, handleGoogleIdToken } = useAuth();
   const [isLoginMode, setIsLoginMode] = useState(true);
   const [isResetMode, setIsResetMode] = useState(false);
+  const [isGoogleBusy, setIsGoogleBusy] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
 
-  const [request, response, promptAsync] = Google.useIdTokenAuthRequest(
-    GOOGLE_CLIENT_ID ? { clientId: GOOGLE_CLIENT_ID } : { clientId: 'disabled' },
-  );
-
-  useEffect(() => {
-    if (response?.type === 'success') {
-      const idToken = (response.params as any)?.id_token;
-      if (idToken) handleGoogleIdToken(idToken);
+  const submitGoogle = async () => {
+    if (isGoogleBusy) return;
+    setIsGoogleBusy(true);
+    setAuthError('');
+    try {
+      const result = await requestGoogleIdToken();
+      if (result.type === 'cancelled') return;
+      if (result.type === 'unavailable') {
+        setAuthError(
+          'Google sign-in needs a development build. Run the dev-client build, or use email sign-in in Expo Go.',
+        );
+        return;
+      }
+      if (result.type === 'error') {
+        setAuthError(result.message);
+        return;
+      }
+      await handleGoogleIdToken(result.idToken);
+    } finally {
+      setIsGoogleBusy(false);
     }
-  }, [response]);
+  };
 
   const submit = () => {
     if (isResetMode) {
@@ -118,7 +125,7 @@ export default function LoginScreen() {
             ) : null}
           </View>
 
-          {!!GOOGLE_CLIENT_ID && (
+          {isGoogleSignInSupported() && (
             <>
               <View className="flex-row items-center mb-4">
                 <View className="flex-1 h-px bg-border" />
@@ -126,11 +133,15 @@ export default function LoginScreen() {
                 <View className="flex-1 h-px bg-border" />
               </View>
               <TouchableOpacity
-                onPress={() => promptAsync()}
-                disabled={isSigningIn || !request}
+                onPress={submitGoogle}
+                disabled={isSigningIn || isGoogleBusy}
                 className="bg-surface border border-border rounded-xl py-3 items-center active:opacity-80 mb-4"
               >
-                <Text className="text-textPrimary font-medium">Continue with Google</Text>
+                {isGoogleBusy ? (
+                  <ActivityIndicator color="#2DD4BF" />
+                ) : (
+                  <Text className="text-textPrimary font-medium">Continue with Google</Text>
+                )}
               </TouchableOpacity>
             </>
           )}

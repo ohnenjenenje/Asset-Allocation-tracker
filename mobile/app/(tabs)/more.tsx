@@ -12,6 +12,7 @@ import { ScreenHeader } from '@/components/ScreenHeader';
 import { Card } from '@/components/Card';
 import { useDashboard } from '@/hooks/useDashboardData';
 import { useAuth } from '@/hooks/useAuth';
+import { isGoogleSignInSupported, requestGoogleIdToken } from '@/lib/googleSignIn';
 
 function Row({ icon, label, sub, onPress, danger }: any) {
   return (
@@ -71,7 +72,11 @@ function ExchangeCard({ exchange, status, hasKeys, onSave, onClear, onSync }: an
 }
 
 export default function MoreScreen() {
-  const { signOut, user } = useAuth();
+  const {
+    signOut, user, linkedProviders, hasPasswordLinked, hasGoogleLinked,
+    isLinking, linkMessage, setLinkMessage,
+    handleLinkEmailPassword, handleLinkGoogleIdToken, handleUnlinkProvider,
+  } = useAuth();
   const dash = useDashboard() as any;
   const {
     assets, fundHoldings, idealAllocation, searchSource, setSearchSource,
@@ -84,6 +89,45 @@ export default function MoreScreen() {
 
   const [keyInput, setKeyInput] = useState(openRouterKey || '');
   const [modelsOpen, setModelsOpen] = useState(false);
+  const [linkEmail, setLinkEmail] = useState(user?.email || '');
+  const [linkPassword, setLinkPassword] = useState('');
+  const [showPasswordForm, setShowPasswordForm] = useState(false);
+  const [isGoogleLinkBusy, setIsGoogleLinkBusy] = useState(false);
+
+  useEffect(() => {
+    if (user?.email) setLinkEmail((prev) => prev || user.email || '');
+  }, [user?.email]);
+
+  const canUnlink = (linkedProviders?.length ?? 0) > 1;
+
+  const submitPasswordLink = async () => {
+    const ok = await handleLinkEmailPassword(linkEmail.trim(), linkPassword);
+    if (ok) {
+      setLinkPassword('');
+      setShowPasswordForm(false);
+    }
+  };
+
+  const submitGoogleLink = async () => {
+    if (isGoogleLinkBusy) return;
+    setIsGoogleLinkBusy(true);
+    setLinkMessage('');
+    try {
+      const result = await requestGoogleIdToken();
+      if (result.type === 'cancelled') return;
+      if (result.type === 'unavailable') {
+        setLinkMessage('Google sign-in needs a development build. Use email sign-in in Expo Go.');
+        return;
+      }
+      if (result.type === 'error') {
+        setLinkMessage(result.message);
+        return;
+      }
+      await handleLinkGoogleIdToken(result.idToken);
+    } finally {
+      setIsGoogleLinkBusy(false);
+    }
+  };
 
   const exportData = async () => {
     try {
@@ -129,6 +173,79 @@ export default function MoreScreen() {
     <SafeAreaView className="flex-1 bg-bg" edges={['top']}>
       <ScreenHeader title="More" />
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
+
+        <Card title="Account — Sign-in methods" className="mb-4">
+          <Text className="text-textMuted text-xs mb-3">
+            Signed in as <Text className="text-textPrimary font-semibold">{user?.email}</Text>. Link both methods so you can sign in with Google or email/password on mobile and web.
+          </Text>
+
+          <View className="flex-row items-center justify-between bg-surfaceHigh border border-border rounded-xl px-3 py-2.5 mb-2">
+            <View className="flex-row items-center">
+              <View className={`w-2 h-2 rounded-full mr-2 ${hasGoogleLinked ? 'bg-profit' : 'bg-textMuted'}`} />
+              <Text className="text-textPrimary text-sm font-medium">Google</Text>
+              <Text className="text-textMuted text-[11px] ml-2">{hasGoogleLinked ? 'Linked' : 'Not linked'}</Text>
+            </View>
+            {hasGoogleLinked ? (
+              <TouchableOpacity disabled={isLinking || !canUnlink} onPress={() => handleUnlinkProvider('google.com')}>
+                <Text className={`text-xs font-semibold ${canUnlink ? 'text-loss' : 'text-textMuted'}`}>Unlink</Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity disabled={isLinking || isGoogleLinkBusy} onPress={submitGoogleLink}>
+                <Text className="text-primary text-xs font-semibold">
+                  {isGoogleLinkBusy ? 'Linking…' : isGoogleSignInSupported() ? 'Link Google' : 'Link (needs dev build)'}
+                </Text>
+              </TouchableOpacity>
+            )}
+          </View>
+
+          <View className="flex-row items-center justify-between bg-surfaceHigh border border-border rounded-xl px-3 py-2.5 mb-2">
+            <View className="flex-row items-center">
+              <View className={`w-2 h-2 rounded-full mr-2 ${hasPasswordLinked ? 'bg-profit' : 'bg-textMuted'}`} />
+              <Text className="text-textPrimary text-sm font-medium">Email / Password</Text>
+              <Text className="text-textMuted text-[11px] ml-2">{hasPasswordLinked ? 'Linked' : 'Not linked'}</Text>
+            </View>
+            {hasPasswordLinked ? (
+              <TouchableOpacity disabled={isLinking || !canUnlink} onPress={() => handleUnlinkProvider('password')}>
+                <Text className={`text-xs font-semibold ${canUnlink ? 'text-loss' : 'text-textMuted'}`}>Unlink</Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity disabled={isLinking} onPress={() => { setShowPasswordForm(!showPasswordForm); setLinkMessage(''); }}>
+                <Text className="text-primary text-xs font-semibold">{showPasswordForm ? 'Hide' : 'Set password'}</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+
+          {!hasPasswordLinked && showPasswordForm && (
+            <View className="gap-2 mt-1 mb-2">
+              <TextInput
+                className="bg-surfaceHigh border border-border rounded-lg px-3 py-2.5 text-textPrimary text-sm"
+                placeholder="Email"
+                placeholderTextColor="#5A6B87"
+                keyboardType="email-address"
+                autoCapitalize="none"
+                value={linkEmail}
+                onChangeText={setLinkEmail}
+              />
+              <TextInput
+                className="bg-surfaceHigh border border-border rounded-lg px-3 py-2.5 text-textPrimary text-sm"
+                placeholder="Choose a password (min 6 chars)"
+                placeholderTextColor="#5A6B87"
+                secureTextEntry
+                value={linkPassword}
+                onChangeText={setLinkPassword}
+              />
+              <TouchableOpacity disabled={isLinking} onPress={submitPasswordLink} className="bg-primary rounded-lg py-2.5 items-center active:opacity-80">
+                {isLinking ? <ActivityIndicator color="#0B1220" /> : <Text className="text-bg font-bold text-sm">Link email/password</Text>}
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {!!linkMessage && (
+            <View className={`px-3 py-2 rounded-lg mt-1 ${linkMessage.includes('now sign in') || linkMessage.includes('unlinked') ? 'bg-profit/10' : 'bg-amber/15'}`}>
+              <Text className={`text-xs ${linkMessage.includes('now sign in') || linkMessage.includes('unlinked') ? 'text-profit' : 'text-amber'}`}>{linkMessage}</Text>
+            </View>
+          )}
+        </Card>
 
         <Card title="Crypto Exchange Sync" className="mb-4">
           <ExchangeCard exchange="Binance" status={binanceStatus} hasKeys={hasBinanceKeys} onSave={(k: string, s: string) => saveKeys('binance', k, s)} onClear={() => clearKeys('binance')} onSync={syncBinance} />

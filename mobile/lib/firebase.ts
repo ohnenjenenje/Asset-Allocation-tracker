@@ -7,7 +7,10 @@ import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   sendPasswordResetEmail,
+  EmailAuthProvider,
   GoogleAuthProvider,
+  linkWithCredential,
+  unlink,
   signInWithCredential,
   signOut,
 } from 'firebase/auth';
@@ -37,10 +40,48 @@ export const signInWithEmail = (email: string, password: string) =>
 
 export const resetPassword = (email: string) => sendPasswordResetEmail(auth, email);
 
-/** Sign-in using a Google idToken obtained via expo-auth-session. */
+/** Sign-in using a Google idToken obtained via the native Google Sign-In SDK. */
 export const signInWithGoogleIdToken = (idToken: string) => {
   const credential = GoogleAuthProvider.credential(idToken);
   return signInWithCredential(auth, credential).then((r) => r.user);
+};
+
+/** Linked providerIds for the current user (e.g. ['google.com', 'password']). */
+export const getLinkedProviders = (): string[] =>
+  auth.currentUser?.providerData.map((p: any) => p.providerId) ?? [];
+
+/**
+ * Link an email/password credential to the current (e.g. Google) session so the
+ * same Firebase account can sign in with either method on mobile or web.
+ */
+export const linkEmailPassword = (email: string, password: string) => {
+  const currentUser = auth.currentUser;
+  if (!currentUser) return Promise.reject(new Error('No user is currently signed in.'));
+  const credential = EmailAuthProvider.credential(email, password);
+  return linkWithCredential(currentUser, credential).then((r) => r.user);
+};
+
+/** Link a Google ID token to the current (e.g. email/password) session. */
+export const linkGoogleIdToken = (idToken: string) => {
+  const currentUser = auth.currentUser;
+  if (!currentUser) return Promise.reject(new Error('No user is currently signed in.'));
+  const credential = GoogleAuthProvider.credential(idToken);
+  return linkWithCredential(currentUser, credential).then((r) => r.user);
+};
+
+/**
+ * Unlink a provider ('password' or 'google.com'). Refuses to unlink the last
+ * remaining method so the account never becomes inaccessible.
+ */
+export const unlinkProvider = (providerId: string) => {
+  const currentUser = auth.currentUser;
+  if (!currentUser) return Promise.reject(new Error('No user is currently signed in.'));
+  if ((currentUser.providerData?.length ?? 0) <= 1) {
+    return Promise.reject(
+      new Error('Cannot unlink the only sign-in method. Link another method first.'),
+    );
+  }
+  return unlink(currentUser, providerId);
 };
 
 export const logOut = () => signOut(auth);

@@ -63,9 +63,23 @@ the app on Play Store / re-sign later.**
 - SHA-256: `BE:AE:DF:EA:CA:56:03:04:D0:F4:C7:EC:C5:AF:15:46:03:58:8D:19:1B:F3:4C:CA:81:E6:B0:4D:5E:AA:F2:95`
 
 ### Google sign-in (optional)
+Uses `@react-native-google-signin/google-signin`, so it needs a **development build** — Expo Go
+cannot do Google OAuth any more (it can only redirect to `exp://<dev-server>:8081`, which Google
+rejects with `Error 400: invalid_request`).
+
 1. Google Cloud Console → project `liquid-muse-491818-a9` → Credentials
 2. Create **Android** OAuth client: package `com.assetallocation.tracker`, SHA-1 above
 3. Create **Web** OAuth client, put it in `.env` as `EXPO_PUBLIC_GOOGLE_CLIENT_ID`
+   (`EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID` for the iOS client)
+4. Build a dev client once and launch it against `npx expo start`:
+
+```bash
+npm install
+npx eas build -p android --profile development   # dev-client APK
+npm start                                        # then open the dev build
+```
+
+In Expo Go the "Continue with Google" button is hidden; email/password still works.
 
 Note: Render free tier cold-starts (~30–60 s). All API calls use a 60 s timeout and the
 price fetcher retries with backoff (visible "Updating prices x/y" progress in the header).
