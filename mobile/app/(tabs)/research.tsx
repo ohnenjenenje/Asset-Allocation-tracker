@@ -3,6 +3,8 @@ import { useRouter } from 'expo-router';
 import type { ComponentProps } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
+import { GoldSilverRatioCard } from '@/src/components/market/GoldSilverRatioCard';
+import { IndiaIndexPeCard } from '@/src/components/market/IndiaIndexPeCard';
 import { Card } from '@/src/components/ui/Card';
 import { Screen } from '@/src/components/ui/Screen';
 import { ScreenHeader } from '@/src/components/ui/ScreenHeader';
@@ -68,6 +70,17 @@ export default function ResearchScreen() {
       <View style={styles.stack}>
         <View>
           <SectionHeader
+            title="Market indicator"
+            subtitle="Valuation and relative-value signals for Indian indices, gold and silver"
+          />
+          <View style={styles.marketCards}>
+            <GoldSilverRatioCard />
+            <IndiaIndexPeCard />
+          </View>
+        </View>
+
+        <View>
+          <SectionHeader
             title="Research tools"
             subtitle="Everything that supports a decision without changing your allocation"
           />
@@ -118,6 +131,7 @@ export default function ResearchScreen() {
 
 const styles = StyleSheet.create({
   stack: { gap: space.xl },
+  marketCards: { gap: space.md },
   cards: { gap: space.md },
   toolCard: { flexDirection: 'row', alignItems: 'flex-start', gap: space.md },
   toolIcon: {

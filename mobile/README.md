@@ -238,6 +238,45 @@ treated as Groq keys.
 public keys, so the proxy cannot be used anonymously in production. Local
 `next dev` allows tokenless requests for testing.
 
+### Gold/silver ratio
+
+The Research tab shows a market indicator card backed by
+`GET /api/market/gold-silver`:
+
+- Yahoo Finance `GC=F` / `SI=F` COMEX futures supply the primary ratio.
+- `https://xaus.com/api/v1/spot` supplies an independent spot ratio for
+  cross-checking. The response includes both quotes, the percentage gap and a
+  status: `match` (within 1.5%), `mismatch`, `stale` or `unavailable`.
+- The card interprets the ratio as relative value: at or above 80, silver looks
+  cheap versus gold; at or below 50, gold looks cheap versus silver; anything
+  between is neutral. The 50/80 bands are a common heuristic, not investment
+  advice, and the ratio can stay outside them for years.
+- The server caches both feeds in memory for 10 minutes, shortened to 2 minutes
+  when the cross-check is unavailable. The mobile query refetches every 15
+  minutes and offers a manual refresh on the card.
+- If Yahoo fails, the endpoint falls back to xaus.com. If both fail, it serves
+  the last cached value marked `stale`, or HTTP 503 when there is no cache.
+
+### India index P/E
+
+The Research tab's second market card is backed by
+`GET /api/market/india-pe`:
+
+- NSE's daily index closing file (`ind_close_all.csv`, keyless) supplies the
+  latest P/E, P/B and dividend yield for Nifty 50, Nifty Bank, Nifty IT and
+  Nifty Midcap 100.
+- Downstox supplies the same indices' monthly history. The card compares each
+  current P/E with that index's own last 60 monthly readings and labels the
+  bottom quartile `cheap`, the middle half `fair` and the top quartile
+  `expensive`.
+- This is relative-value context, not a forecast. The five-year window sits
+  after NSE's 2021 switch to consolidated earnings.
+- If NSE is unavailable, Downstox's current values are used as the fallback. If
+  both fail, the endpoint serves the last cached value marked `stale`, or HTTP
+  503 when there is no cache. The cache lasts one hour, shortened to 15 minutes
+  when a history baseline is missing; the mobile query refetches every six
+  hours and offers a manual refresh.
+
 ### Auth and demo mode
 
 Email/password authentication uses the Firebase JS SDK with AsyncStorage
