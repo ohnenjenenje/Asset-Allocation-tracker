@@ -4,8 +4,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
+  Keyboard,
   KeyboardAvoidingView,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -124,6 +124,14 @@ export default function AssistantScreen() {
     return () => clearTimeout(timer);
   }, [messages, isSending, activity]);
 
+  // Keep the latest messages visible when the keyboard opens and shrinks the list.
+  useEffect(() => {
+    const subscription = Keyboard.addListener('keyboardDidShow', () => {
+      listRef.current?.scrollToEnd({ animated: true });
+    });
+    return () => subscription.remove();
+  }, []);
+
   const handleSend = () => {
     const text = input.trim();
     if (!text || !canSend) return;
@@ -133,10 +141,7 @@ export default function AssistantScreen() {
 
   return (
     <Screen scroll={false}>
-      <KeyboardAvoidingView
-        style={styles.flex}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      >
+      <KeyboardAvoidingView style={styles.flex} behavior="padding">
         <View style={styles.header}>
           <ScreenHeader
             eyebrow="AI ASSISTANT"
@@ -166,6 +171,19 @@ export default function AssistantScreen() {
                   </Text>
                 </View>
                 <Feather name="chevron-down" size={15} color={colors.muted} />
+              </Pressable>
+              <Pressable
+                onPress={() => router.push('/ai-keys')}
+                accessibilityRole="button"
+                accessibilityLabel="API keys and usage"
+                style={({ pressed }) => [
+                  styles.keysButton,
+                  { backgroundColor: colors.card, borderColor: colors.border },
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Feather name="key" size={15} color={colors.accent} />
+                <Text style={[type.caption, { color: colors.text }]}>Keys</Text>
               </Pressable>
               {messages.length > 0 ? (
                 <IconButton
@@ -512,6 +530,15 @@ const styles = StyleSheet.create({
     gap: space.sm,
   },
   modelButtonText: { flex: 1, gap: 1 },
+  keysButton: {
+    minHeight: 44,
+    borderWidth: 1,
+    borderRadius: radius.md,
+    paddingHorizontal: space.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.xs,
+  },
   notice: { paddingHorizontal: space.lg, paddingBottom: space.sm },
   emptyContent: {
     flexGrow: 1,

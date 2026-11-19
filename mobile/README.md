@@ -224,9 +224,15 @@ FIREBASE_PROJECT_ID=liquid-muse-491818-a9
 `/api/agent` prefers the signed-in user's own keys for the selected provider,
 then the server pool for that provider. It uses the least-recently-used key
 first, rotates through the rest, and puts a key on cooldown when the provider
-returns 429/401/403/5xx before trying the next one. The mobile key screen calls
-`/api/agent/keys` (GET/POST/DELETE), which is backed by the `user_ai_keys`
-MongoDB collection; older documents without a provider are treated as Groq keys.
+returns 429/401/403/5xx before trying the next one. Every chat attempt is also
+counted per key in the `ai_key_usage` MongoDB collection (a hash of the key is
+used as the id, never the key itself). The key screen shows the request total,
+today's count, failures, and the last quota headers the provider returned, so a
+key that has hit its limit is labelled **Limit reached** with the reset time.
+Persisted reset times keep a limited key parked after a server restart. The
+mobile key screen calls `/api/agent/keys` (GET/POST/DELETE), which is backed by
+the `user_ai_keys` MongoDB collection; older documents without a provider are
+treated as Groq keys.
 
 `lib/firebase-auth.ts` verifies Firebase RS256 ID tokens against Google's
 public keys, so the proxy cannot be used anonymously in production. Local

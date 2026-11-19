@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import { resolveRequestUid } from '@/lib/agent-auth';
+import { recordKeyResponse } from '@/lib/ai-key-usage';
 import {
   agentKeyCooldownRemaining,
   getAgentKeyPool,
@@ -323,8 +324,10 @@ export async function POST(request: Request) {
         payload = null;
       }
 
+      const providerMessage = response.ok ? '' : providerErrorMessage(payload, text);
+      void recordKeyResponse(provider, key.key, response.status, providerMessage, response);
+
       if (!response.ok) {
-        const providerMessage = providerErrorMessage(payload, text);
         console.warn(
           `[AGENT] ${definition.name} key ${key.id} failed (${response.status}):`,
           providerMessage.slice(0, 200),
@@ -405,6 +408,12 @@ export async function POST(request: Request) {
       console.warn(
         `[AGENT] ${definition.name} key ${key.id} request failed:`,
         error?.message || error,
+      );
+      void recordKeyResponse(
+        provider,
+        key.key,
+        timedOut ? 408 : 0,
+        error?.message || 'network error',
       );
       markKeyFailure(uid, key, timedOut ? 408 : 0, error?.message || 'network error');
     }

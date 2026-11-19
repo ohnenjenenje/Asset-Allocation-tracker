@@ -23,14 +23,95 @@ import { SectionHeader } from '@/src/components/ui/SectionHeader';
 import { Skeleton } from '@/src/components/ui/Skeleton';
 import { ErrorState } from '@/src/components/ui/States';
 import { TextField } from '@/src/components/ui/TextField';
-import type { AiKeyEntry } from '@/src/features/assistant/keys';
+import type { AiKeyEntry, AiKeyUsage } from '@/src/features/assistant/keys';
+import { EMPTY_KEY_USAGE } from '@/src/features/assistant/keys';
 import { PROVIDER_LABELS } from '@/src/features/assistant/models';
 import { useAiKeys } from '@/src/features/assistant/useAiKeys';
 import { useAuth } from '@/src/features/auth/AuthProvider';
-import { radius, space, type } from '@/src/lib/theme/tokens';
+import { numeric, radius, space, type } from '@/src/lib/theme/tokens';
 import { useTheme } from '@/src/lib/theme/ThemeProvider';
 
 const DEFAULT_MAX_KEYS = 10;
+
+function formatCount(value: number): string {
+  return value.toLocaleString('en-IN');
+}
+
+function usageSummary(usage: AiKeyUsage): string {
+  if (usage.requests === 0) return 'No requests recorded yet';
+  const parts = [
+    `${formatCount(usage.requests)} request${usage.requests === 1 ? '' : 's'} total`,
+    `${formatCount(usage.todayRequests)} today`,
+  ];
+  if (usage.failures > 0) parts.push(`${formatCount(usage.failures)} failed`);
+  return parts.join(' · ');
+}
+
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  if (hours < 48) return remainingMinutes ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
+/**
+ * Groq reports a duration ("1m26.4s"), OpenRouter reports epoch milliseconds
+ * in X-RateLimit-Reset and Gemini usually reports nothing. Normalise the ones
+ * we can and leave Groq's readable value alone.
+ */
+function formatReset(value: string | null, fallbackIso: string | null): string | null {
+  let until: number | null = null;
+
+  if (value) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) {
+      if (numeric > 1e12) until = numeric;
+      else if (numeric > 1e9) until = numeric * 1000;
+      else until = Date.now() + numeric * 1000;
+    } else {
+      const parsed = Date.parse(value);
+      if (Number.isFinite(parsed)) until = parsed;
+      else return value;
+    }
+  }
+
+  if (until == null && fallbackIso) {
+    const parsed = Date.parse(fallbackIso);
+    if (Number.isFinite(parsed)) until = parsed;
+  }
+
+  return until == null ? null : formatDuration(Math.max(0, until - Date.now()));
+}
+
+function quotaLines(usage: AiKeyUsage): string[] {
+  const lines: string[] = [];
+
+  if (usage.limitRequests != null) {
+    const left =
+      usage.remainingRequests != null
+        ? `${formatCount(usage.remainingRequests)}/${formatCount(usage.limitRequests)} requests left`
+        : `${formatCount(usage.limitRequests)} requests per window`;
+    const reset = formatReset(usage.resetRequests, usage.limitResetAt);
+    lines.push(reset ? `${left} · resets ${reset}` : left);
+  } else if (usage.remainingRequests != null) {
+    const left = `${formatCount(usage.remainingRequests)} requests left`;
+    const reset = formatReset(usage.resetRequests, usage.limitResetAt);
+    lines.push(reset ? `${left} · resets ${reset}` : left);
+  }
+
+  if (usage.limitTokens != null && usage.remainingTokens != null) {
+    const left = `${formatCount(usage.remainingTokens)}/${formatCount(usage.limitTokens)} tokens left`;
+    const reset = formatReset(usage.resetTokens, usage.limitResetAt);
+    lines.push(reset ? `${left} · resets ${reset}` : left);
+  }
+
+  return lines;
+}
 
 export default function AiKeysScreen() {
   const router = useRouter();
@@ -121,7 +202,10 @@ export default function AiKeysScreen() {
       style={styles.flex}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      <Screen>
+      <Screen
+        refreshing={list.isRefetching}
+        onRefresh={() => void list.refetch()}
+      >
         <ScreenHeader
           eyebrow="AI ASSISTANT"
           title="API keys"
@@ -193,80 +277,102 @@ export default function AiKeysScreen() {
               </Card>
             ) : (
               <Card padded={false}>
-                {keys.map((entry, index) => (
-                  <View key={entry.id}>
-                    {index > 0 ? (
-                      <View
-                        style={[styles.divider, { backgroundColor: colors.border }]}
-                      />
-                    ) : null}
-                    <View style={styles.keyRow}>
-                      <View
-                        style={[
-                          styles.keyIcon,
-                          {
-                            backgroundColor:
+                {keys.map((entry, index) => {
+                  const usage = entry.usage ?? EMPTY_KEY_USAGE;
+                  const quota = quotaLines(usage);
+                  return (
+                    <View key={entry.id}>
+                      {index > 0 ? (
+                        <View
+                          style={[styles.divider, { backgroundColor: colors.border }]}
+                        />
+                      ) : null}
+                      <View style={styles.keyRow}>
+                        <View
+                          style={[
+                            styles.keyIcon,
+                            {
+                              backgroundColor:
+                                entry.source === 'environment'
+                                  ? colors.accentSoft
+                                  : colors.cardMuted,
+                            },
+                          ]}
+                        >
+                          <Feather
+                            name={entry.source === 'environment' ? 'server' : 'key'}
+                            size={15}
+                            color={
                               entry.source === 'environment'
-                                ? colors.accentSoft
-                                : colors.cardMuted,
-                          },
-                        ]}
-                      >
-                        <Feather
-                          name={entry.source === 'environment' ? 'server' : 'key'}
-                          size={15}
-                          color={
-                            entry.source === 'environment'
-                              ? colors.accent
-                              : colors.muted
+                                ? colors.accent
+                                : colors.muted
+                            }
+                          />
+                        </View>
+                        <View style={styles.keyText}>
+                          <Text
+                            style={[type.bodyMedium, { color: colors.text }]}
+                            numberOfLines={1}
+                          >
+                            {entry.label}
+                          </Text>
+                          <Text style={[type.caption, { color: colors.muted }]}>
+                            {PROVIDER_LABELS[entry.provider]} · {entry.masked}
+                          </Text>
+                          <Text style={[styles.usageText, { color: colors.textSecondary }]}>
+                            {usageSummary(usage)}
+                          </Text>
+                          {quota.map((line) => (
+                            <Text
+                              key={line}
+                              style={[
+                                styles.usageText,
+                                { color: usage.limitReached ? colors.negative : colors.muted },
+                              ]}
+                            >
+                              {line}
+                            </Text>
+                          ))}
+                        </View>
+                        <Badge
+                          label={
+                            usage.limitReached
+                              ? 'Limit reached'
+                              : entry.status === 'cooling'
+                                ? 'Cooling'
+                                : entry.source === 'environment'
+                                  ? 'Server'
+                                  : 'Active'
+                          }
+                          tone={
+                            usage.limitReached
+                              ? 'negative'
+                              : entry.status === 'cooling'
+                                ? 'warning'
+                                : entry.source === 'environment'
+                                  ? 'accent'
+                                  : 'positive'
                           }
                         />
+                        {entry.source === 'account' ? (
+                          deletingId === entry.id ? (
+                            <ActivityIndicator size="small" color={colors.muted} />
+                          ) : (
+                            <Pressable
+                              onPress={() => confirmDelete(entry)}
+                              accessibilityRole="button"
+                              accessibilityLabel={`Remove ${entry.label}`}
+                              hitSlop={10}
+                              style={({ pressed }) => [pressed && styles.pressed]}
+                            >
+                              <Feather name="trash-2" size={16} color={colors.muted} />
+                            </Pressable>
+                          )
+                        ) : null}
                       </View>
-                      <View style={styles.keyText}>
-                        <Text
-                          style={[type.bodyMedium, { color: colors.text }]}
-                          numberOfLines={1}
-                        >
-                          {entry.label}
-                        </Text>
-                        <Text style={[type.caption, { color: colors.muted }]}>
-                          {PROVIDER_LABELS[entry.provider]} · {entry.masked}
-                        </Text>
-                      </View>
-                      <Badge
-                        label={
-                          entry.status === 'cooling'
-                            ? 'Cooling'
-                            : entry.source === 'environment'
-                              ? 'Server'
-                              : 'Active'
-                        }
-                        tone={
-                          entry.status === 'cooling'
-                            ? 'warning'
-                            : entry.source === 'environment'
-                              ? 'accent'
-                              : 'positive'
-                        }
-                      />
-                      {entry.source === 'account' ? (
-                        deletingId === entry.id ? (
-                          <ActivityIndicator size="small" color={colors.muted} />
-                        ) : (
-                          <Pressable
-                            onPress={() => confirmDelete(entry)}
-                            accessibilityRole="button"
-                            accessibilityLabel={`Remove ${entry.label}`}
-                            hitSlop={10}
-                            style={({ pressed }) => [pressed && styles.pressed]}
-                          >
-                            <Feather name="trash-2" size={16} color={colors.muted} />
-                          </Pressable>
-                        )
-                      ) : null}
                     </View>
-                  </View>
-                ))}
+                  );
+                })}
               </Card>
             )}
           </View>
@@ -322,10 +428,10 @@ export default function AiKeysScreen() {
           </View>
 
           <Text style={[styles.footer, { color: colors.muted }]}>
-            The assistant uses the least-recently-used key for the provider you pick
-            in chat. If that provider rate-limits or rejects a key, it cools down and
-            the next key is tried automatically. Models are listed from each provider
-            in the chat header.
+            Counters update after each chat request. Quota figures come from the
+            provider’s rate-limit headers, so they appear once a key has answered a
+            request. Today uses UTC. If a key hits its limit, it cools down and the
+            next key for that provider is tried automatically.
           </Text>
         </View>
       </Screen>
@@ -362,6 +468,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   keyText: { flex: 1, gap: 2 },
+  usageText: { fontSize: 11, lineHeight: 15, ...numeric },
   divider: { height: StyleSheet.hairlineWidth, marginLeft: space.lg },
   form: { gap: space.lg },
   formError: { fontSize: 12, lineHeight: 17, marginHorizontal: 2 },

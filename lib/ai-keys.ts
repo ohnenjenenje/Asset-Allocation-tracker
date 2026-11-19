@@ -8,6 +8,12 @@ import {
   validateProviderKey,
   type AiProviderId,
 } from './ai-providers';
+import {
+  emptyKeyUsage,
+  getKeyUsageMap,
+  keyUsageId,
+  type AiKeyUsageSummary,
+} from './ai-key-usage';
 import clientPromise from './mongodb';
 
 /**
@@ -68,6 +74,8 @@ export interface KeyEntry {
   lastUsedAt: string | null;
   status: 'active' | 'cooling';
   cooldownSeconds: number;
+  /** Request counter and the provider's last reported quota for this key. */
+  usage: AiKeyUsageSummary;
 }
 
 export interface KeyListResult {
@@ -160,6 +168,33 @@ export function agentKeyCooldownRemaining(key: AgentKey): number {
   return Math.max(0, effectiveCooldown(key) - Date.now());
 }
 
+/**
+ * Rate limits are persisted per key so an environment key that hit its quota
+ * stays parked after a server restart, not just for the lifetime of this
+ * process.
+ */
+async function applyPersistedLimitCooldowns(keys: AgentKey[]): Promise<AgentKey[]> {
+  if (keys.length === 0) return keys;
+
+  try {
+    const usage = await getKeyUsageMap(
+      keys.map((key) => ({ provider: key.provider, key: key.key })),
+    );
+    if (usage.size === 0) return keys;
+
+    const now = Date.now();
+    return keys.map((key) => {
+      const resetAt = usage.get(keyUsageId(key.provider, key.key))?.limitResetAt;
+      const until = resetAt ? Date.parse(resetAt) : NaN;
+      if (!Number.isFinite(until) || until <= now) return key;
+      if (until <= effectiveCooldown(key)) return key;
+      return { ...key, cooldownUntil: until };
+    });
+  } catch {
+    return keys;
+  }
+}
+
 /** Account keys for one provider, then environment keys as a shared fallback. */
 export async function getAgentKeyPool(uid: string, provider: AiProviderId): Promise<AgentKey[]> {
   let stored: StoredAiKey[] = [];
@@ -184,11 +219,13 @@ export async function getAgentKeyPool(uid: string, provider: AiProviderId): Prom
   // The same key can be present in both places (for example when a user adds
   // the server key to their account). Try it once, account entry first.
   const seen = new Set<string>();
-  return [...accountKeys, ...environmentAgentKeys(provider)].filter((key) => {
+  const pool = [...accountKeys, ...environmentAgentKeys(provider)].filter((key) => {
     if (seen.has(key.key)) return false;
     seen.add(key.key);
     return true;
   });
+
+  return applyPersistedLimitCooldowns(pool);
 }
 
 /**
@@ -291,7 +328,11 @@ export function markKeySuccess(uid: string, key: AgentKey): void {
   }
 }
 
-function toEntry(key: AgentKey, createdAt?: Date | null): KeyEntry {
+function toEntry(
+  key: AgentKey,
+  usage?: AiKeyUsageSummary,
+  createdAt?: Date | null,
+): KeyEntry {
   const remaining = agentKeyCooldownRemaining(key);
   return {
     id: key.id,
@@ -300,16 +341,17 @@ function toEntry(key: AgentKey, createdAt?: Date | null): KeyEntry {
     source: key.source,
     provider: key.provider,
     createdAt: createdAt ? createdAt.toISOString() : null,
-    lastUsedAt: null,
+    lastUsedAt: usage?.lastUsedAt ?? null,
     status: remaining > 0 ? 'cooling' : 'active',
     cooldownSeconds: Math.ceil(remaining / 1000),
+    usage: usage ?? emptyKeyUsage(),
   };
 }
 
 export async function listKeyEntries(uid: string): Promise<KeyListResult> {
   const stored = await storedKeyDocs(uid);
 
-  const accountEntries = stored
+  const accountKeys = stored
     .filter((doc) => typeof doc.key === 'string' && doc.key.length > 0)
     .map((doc) => {
       const provider = storedProvider(doc);
@@ -321,15 +363,32 @@ export async function listKeyEntries(uid: string): Promise<KeyListResult> {
         provider,
         cooldownUntil: doc.cooldownUntil ? new Date(doc.cooldownUntil).getTime() : undefined,
       };
-      const entry = toEntry(key, doc.createdAt);
-      entry.lastUsedAt = doc.lastUsedAt ? new Date(doc.lastUsedAt).toISOString() : null;
-      return entry;
+      return { doc, key };
     });
 
   const environment = AI_PROVIDER_ORDER.flatMap((provider) => environmentAgentKeys(provider));
+  const usage = await getKeyUsageMap(
+    [...accountKeys.map(({ key }) => key), ...environment].map((key) => ({
+      provider: key.provider,
+      key: key.key,
+    })),
+  );
+
+  const accountEntries = accountKeys.map(({ doc, key }) => {
+    const entry = toEntry(key, usage.get(keyUsageId(key.provider, key.key)), doc.createdAt);
+    if (!entry.lastUsedAt && doc.lastUsedAt) {
+      entry.lastUsedAt = new Date(doc.lastUsedAt).toISOString();
+    }
+    return entry;
+  });
 
   return {
-    keys: [...accountEntries, ...environment.map((key) => toEntry(key))],
+    keys: [
+      ...accountEntries,
+      ...environment.map((key) =>
+        toEntry(key, usage.get(keyUsageId(key.provider, key.key))),
+      ),
+    ],
     maxKeys: MAX_USER_KEYS,
     environmentKeyCount: environment.length,
   };
@@ -389,6 +448,7 @@ export async function addStoredAiKey(
 
   const keyEntry = toEntry(
     { id: doc.keyId, key: doc.key, label: doc.label, source: 'account', provider },
+    undefined,
     doc.createdAt,
   );
   return { ok: true, entry: keyEntry };
