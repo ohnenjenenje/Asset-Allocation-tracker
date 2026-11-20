@@ -8,6 +8,7 @@ import { Skeleton } from '@/src/components/ui/Skeleton';
 import { ErrorState } from '@/src/components/ui/States';
 import { indexEntryVerdict } from '@/src/features/market/entrySignal';
 import {
+  indiaPeSourceLabel,
   useIndiaPe,
   type IndiaIndexValuation,
 } from '@/src/features/market/indiaPe';
@@ -145,12 +146,7 @@ export function IndiaIndexPeCard() {
   const peers = data.indices.filter(
     (index) => index.featured && index.key !== primary.key,
   );
-  const sourceLabel =
-    data.source === 'downstox'
-      ? 'Downstox fallback'
-      : data.source === 'mixed'
-        ? 'NSE + Downstox'
-        : 'NSE close';
+  const sourceLabel = indiaPeSourceLabel(data);
   const asOfLabel = `${formatAsOf(data.asOf)}${data.stale ? ' · last known' : ''}`;
 
   return (

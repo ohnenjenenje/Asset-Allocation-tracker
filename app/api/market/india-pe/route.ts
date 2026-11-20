@@ -1,4 +1,4 @@
-import { get as httpsGet } from 'node:https';
+import { get as httpsGet, request as httpsRequest } from 'node:https';
 import { NextResponse } from 'next/server';
 
 import clientPromise from '@/lib/mongodb';
@@ -16,6 +16,16 @@ export const dynamic = 'force-dynamic';
 const NSE_URL = 'https://nsearchives.nseindia.com/content/indices/ind_close_all.csv';
 const NSE_ARCHIVE_BASE = 'https://nsearchives.nseindia.com/content/indices/ind_close_all_';
 const DOWNSTOX_BASE = 'https://downstox.com/api/index-pe';
+/**
+ * Nifty Indices' own historical valuation endpoint. Unlike the public CSV it
+ * remains reachable from cloud hosts that NSE blocks, and it covers every
+ * official sectoral index. It needs a browser-like request and one call per
+ * index, so it is only used for values the cheaper feeds could not supply.
+ */
+const NIFTY_INDICES_URL =
+  'https://www.niftyindices.com/BackPage/getpepbHistoricaldataDBtoString';
+const NIFTY_INDICES_USER_AGENT =
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36';
 
 const CACHE_MS = 60 * 60_000;
 const SHORT_CACHE_MS = 15 * 60_000;
@@ -26,6 +36,9 @@ const HISTORY_TOTAL_TIMEOUT_MS = 18_000;
 const UPSTREAM_ATTEMPTS = 2;
 const DOWNSTOX_TIMEOUT_MS = 12_000;
 const DOWNSTOX_FALLBACK_TIMEOUT_MS = 12_000;
+const NIFTY_INDICES_TIMEOUT_MS = 10_000;
+const NIFTY_INDICES_TOTAL_TIMEOUT_MS = 20_000;
+const NIFTY_INDICES_CONCURRENCY = 6;
 const MONGO_CONNECT_TIMEOUT_MS = 8_000;
 const MONGO_QUERY_TIMEOUT_MS = 2_000;
 const HISTORY_MONTHS = 60;
@@ -33,20 +46,25 @@ const MIN_HISTORY_MONTHS = 24;
 const HISTORY_CONCURRENCY = 6;
 const HISTORY_CACHE_MS = 24 * 60 * 60_000;
 const PARTIAL_HISTORY_CACHE_MS = 60 * 60_000;
+const CURRENT_CACHE_MS = 24 * 60 * 60_000;
 /** Only persist a cold rebuild that is close to the full five-year window. */
 const HISTORY_WRITE_MIN_MONTHS = 48;
 
 const MONGO_DB = 'portfolio_tracker';
 const MONGO_COLLECTION = 'market_cache';
 const MONGO_HISTORY_ID = 'india-pe-monthly-v1';
+const MONGO_CURRENT_ID = 'india-pe-current-v1';
 
 type IndexCategory = 'broad' | 'sector' | 'thematic';
+type ValuationSource = 'nse' | 'downstox' | 'nifty-indices';
 
 interface IndexConfig {
   key: string;
   name: string;
   /** Exact name in NSE's current file. Historical files are matched after normalization. */
   nseName: string;
+  /** Nifty Indices trading name when it differs from the display/NSE name. */
+  niftyName?: string;
   downstoxSlug: string | null;
   category: IndexCategory;
   featured: boolean;
@@ -69,11 +87,11 @@ const INDEX_CONFIG: IndexConfig[] = [
   { key: 'niftyChemicals', name: 'Nifty Chemicals', nseName: 'Nifty Chemicals', downstoxSlug: null, category: 'sector', featured: false },
   { key: 'niftyCommercialTransport', name: 'Nifty Commercial & Transport Services', nseName: 'Nifty Commercial & Transport Services', downstoxSlug: null, category: 'sector', featured: false },
   { key: 'niftyConstruction', name: 'Nifty Construction', nseName: 'Nifty Construction', downstoxSlug: null, category: 'sector', featured: false },
-  { key: 'niftyConsumerDurables', name: 'Nifty Consumer Durables', nseName: 'Nifty Consumer Durables', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'niftyConsumerDurables', name: 'Nifty Consumer Durables', nseName: 'Nifty Consumer Durables', niftyName: 'NIFTY CONSR DURBL', downstoxSlug: null, category: 'sector', featured: false },
   { key: 'niftyConsumerServices', name: 'Nifty Consumer Services', nseName: 'Nifty Consumer Services', downstoxSlug: null, category: 'sector', featured: false },
-  { key: 'niftyFinancialServices', name: 'Nifty Financial Services', nseName: 'Nifty Financial Services', downstoxSlug: 'nifty-financial-services', category: 'sector', featured: false },
-  { key: 'niftyFinancialServices2550', name: 'Nifty Financial Services 25/50', nseName: 'Nifty Financial Services 25/50', downstoxSlug: null, category: 'sector', featured: false },
-  { key: 'niftyFinancialServicesExBank', name: 'Nifty Financial Services Ex-Bank', nseName: 'Nifty Financial Services Ex-Bank', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'niftyFinancialServices', name: 'Nifty Financial Services', nseName: 'Nifty Financial Services', niftyName: 'Nifty Fin Service', downstoxSlug: 'nifty-financial-services', category: 'sector', featured: false },
+  { key: 'niftyFinancialServices2550', name: 'Nifty Financial Services 25/50', nseName: 'Nifty Financial Services 25/50', niftyName: 'NIFTY FINSRV25 50', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'niftyFinancialServicesExBank', name: 'Nifty Financial Services Ex-Bank', nseName: 'Nifty Financial Services Ex-Bank', niftyName: 'Nifty FinSerExBnk', downstoxSlug: null, category: 'sector', featured: false },
   { key: 'niftyFmcg', name: 'Nifty FMCG', nseName: 'Nifty FMCG', downstoxSlug: 'nifty-fmcg', category: 'sector', featured: false },
   { key: 'niftyHealthcare', name: 'Nifty Healthcare', nseName: 'Nifty Healthcare Index', downstoxSlug: null, category: 'sector', featured: false },
   { key: 'niftyHospitals', name: 'Nifty Hospitals', nseName: 'Nifty Hospitals', downstoxSlug: null, category: 'sector', featured: false },
@@ -82,28 +100,28 @@ const INDEX_CONFIG: IndexConfig[] = [
   { key: 'niftyMedia', name: 'Nifty Media', nseName: 'Nifty Media', downstoxSlug: 'nifty-media', category: 'sector', featured: false },
   { key: 'niftyMetal', name: 'Nifty Metal', nseName: 'Nifty Metal', downstoxSlug: 'nifty-metal', category: 'sector', featured: false },
   { key: 'niftyNbfc', name: 'Nifty NBFC', nseName: 'Nifty NBFC', downstoxSlug: null, category: 'sector', featured: false },
-  { key: 'niftyOilGas', name: 'Nifty Oil & Gas', nseName: 'Nifty Oil & Gas', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'niftyOilGas', name: 'Nifty Oil & Gas', nseName: 'Nifty Oil & Gas', niftyName: 'NIFTY OIL AND GAS', downstoxSlug: null, category: 'sector', featured: false },
   { key: 'niftyPharma', name: 'Nifty Pharma', nseName: 'Nifty Pharma', downstoxSlug: 'nifty-pharma', category: 'sector', featured: false },
   { key: 'niftyPower', name: 'Nifty Power', nseName: 'Nifty Power', downstoxSlug: null, category: 'sector', featured: false },
-  { key: 'niftyPrivateBank', name: 'Nifty Private Bank', nseName: 'Nifty Private Bank', downstoxSlug: 'nifty-private-bank', category: 'sector', featured: false },
+  { key: 'niftyPrivateBank', name: 'Nifty Private Bank', nseName: 'Nifty Private Bank', niftyName: 'Nifty Pvt Bank', downstoxSlug: 'nifty-private-bank', category: 'sector', featured: false },
   { key: 'niftyPsuBank', name: 'Nifty PSU Bank', nseName: 'Nifty PSU Bank', downstoxSlug: 'nifty-psu-bank', category: 'sector', featured: false },
   { key: 'niftyRealty', name: 'Nifty Realty', nseName: 'Nifty Realty', downstoxSlug: 'nifty-realty', category: 'sector', featured: false },
   { key: 'niftyReitsRealty', name: 'Nifty REITs & Realty', nseName: 'Nifty REITs & Realty', downstoxSlug: null, category: 'sector', featured: false },
   { key: 'niftyRetail', name: 'Nifty Retail', nseName: 'Nifty Retail', downstoxSlug: null, category: 'sector', featured: false },
   { key: 'niftyTelecom', name: 'Nifty Telecommunications', nseName: 'Nifty Telecommunications', downstoxSlug: null, category: 'sector', featured: false },
   { key: 'nifty500Healthcare', name: 'Nifty500 Healthcare', nseName: 'Nifty500 Healthcare', downstoxSlug: null, category: 'sector', featured: false },
-  { key: 'niftyMidSmallFinancialServices', name: 'Nifty MidSmall Financial Services', nseName: 'Nifty MidSmall Financial Services', downstoxSlug: null, category: 'sector', featured: false },
-  { key: 'niftyMidSmallHealthcare', name: 'Nifty MidSmall Healthcare', nseName: 'Nifty MidSmall Healthcare', downstoxSlug: null, category: 'sector', featured: false },
-  { key: 'niftyMidSmallItTelecom', name: 'Nifty MidSmall IT & Telecom', nseName: 'Nifty MidSmall IT & Telecom', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'niftyMidSmallFinancialServices', name: 'Nifty MidSmall Financial Services', nseName: 'Nifty MidSmall Financial Services', niftyName: 'Nifty MS Fin Serv', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'niftyMidSmallHealthcare', name: 'Nifty MidSmall Healthcare', nseName: 'Nifty MidSmall Healthcare', niftyName: 'NIFTY MIDSML HLTH', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'niftyMidSmallItTelecom', name: 'Nifty MidSmall IT & Telecom', nseName: 'Nifty MidSmall IT & Telecom', niftyName: 'Nifty MS IT Telcm', downstoxSlug: null, category: 'sector', featured: false },
   { key: 'niftyEnergy', name: 'Nifty Energy', nseName: 'Nifty Energy', downstoxSlug: 'nifty-energy', category: 'thematic', featured: false },
-  { key: 'niftyInfrastructure', name: 'Nifty Infrastructure', nseName: 'Nifty Infrastructure', downstoxSlug: 'nifty-infra', category: 'thematic', featured: false },
-  { key: 'niftyConsumption', name: 'Nifty India Consumption', nseName: 'Nifty India Consumption', downstoxSlug: 'nifty-consumption', category: 'thematic', featured: false },
+  { key: 'niftyInfrastructure', name: 'Nifty Infrastructure', nseName: 'Nifty Infrastructure', niftyName: 'Nifty Infra', downstoxSlug: 'nifty-infra', category: 'thematic', featured: false },
+  { key: 'niftyConsumption', name: 'Nifty India Consumption', nseName: 'Nifty India Consumption', niftyName: 'Nifty Consumption', downstoxSlug: 'nifty-consumption', category: 'thematic', featured: false },
   { key: 'niftyCommodities', name: 'Nifty Commodities', nseName: 'Nifty Commodities', downstoxSlug: 'nifty-commodities', category: 'thematic', featured: false },
   { key: 'niftyPse', name: 'Nifty PSE', nseName: 'Nifty PSE', downstoxSlug: null, category: 'thematic', featured: false },
   { key: 'niftyCpse', name: 'Nifty CPSE', nseName: 'Nifty CPSE', downstoxSlug: 'nifty-cpse', category: 'thematic', featured: false },
   { key: 'niftyMnc', name: 'Nifty MNC', nseName: 'Nifty MNC', downstoxSlug: null, category: 'thematic', featured: false },
-  { key: 'niftyServices', name: 'Nifty Services Sector', nseName: 'Nifty Services Sector', downstoxSlug: null, category: 'thematic', featured: false },
-  { key: 'niftyDefence', name: 'Nifty India Defence', nseName: 'Nifty India Defence', downstoxSlug: null, category: 'thematic', featured: false },
+  { key: 'niftyServices', name: 'Nifty Services Sector', nseName: 'Nifty Services Sector', niftyName: 'Nifty Serv Sector', downstoxSlug: null, category: 'thematic', featured: false },
+  { key: 'niftyDefence', name: 'Nifty India Defence', nseName: 'Nifty India Defence', niftyName: 'Nifty Ind Defence', downstoxSlug: null, category: 'thematic', featured: false },
 ];
 
 const NSE_INDEX_KEYS = new Set(INDEX_CONFIG.map((config) => normalizeIndexName(config.nseName)));
@@ -128,11 +146,15 @@ interface IndexValuation {
   earningsYield: number | null;
   history: IndexHistory | null;
   historySource: 'nse' | 'downstox' | null;
+  /** Where the current P/E/P/B/yield came from. */
+  currentSource: ValuationSource | null;
 }
 
 interface IndiaPeData {
   asOf: string | null;
-  source: 'nse' | 'downstox' | 'mixed' | null;
+  source: ValuationSource | 'mixed' | null;
+  /** Every feed that supplied at least one current value. */
+  sources: ValuationSource[];
   stale: boolean;
   indices: IndexValuation[];
 }
@@ -179,8 +201,25 @@ interface StoredHistory {
   monthly: Record<string, MonthlyPe[]>;
 }
 
+interface NiftyCurrentValue {
+  pe: number;
+  pb: number | null;
+  dividendYield: number | null;
+  asOf: string | null;
+  fetchedAt: string;
+}
+
+type NiftyCurrentMap = Map<string, NiftyCurrentValue>;
+
+interface StoredCurrent {
+  _id: string;
+  updatedAt: Date;
+  values: Record<string, NiftyCurrentValue>;
+}
+
 let cache: { data: IndiaPeData; expiresAt: number } | null = null;
 let historyCache: { monthly: MonthlyHistory; monthsFound: number; expiresAt: number } | null = null;
+let currentCache: { values: NiftyCurrentMap; expiresAt: number } | null = null;
 let historyRefresh: Promise<{
   monthly: MonthlyHistory;
   monthsFound: number;
@@ -270,6 +309,57 @@ function httpsGetText(
 
     request.on('timeout', () => request.destroy(new Error(`timed out after ${timeoutMs}ms`)));
     request.on('error', reject);
+  });
+}
+
+function httpsPostJson(
+  url: string,
+  headers: Record<string, string>,
+  body: string,
+  timeoutMs: number,
+): Promise<TextResponse> {
+  return new Promise((resolve, reject) => {
+    const payload = Buffer.from(body, 'utf8');
+    const request = httpsRequest(
+      url,
+      {
+        method: 'POST',
+        family: 4,
+        headers: {
+          ...headers,
+          'Accept-Encoding': 'identity',
+          'Content-Length': String(payload.length),
+        },
+        timeout: timeoutMs,
+      },
+      (response) => {
+        const status = response.statusCode ?? 0;
+        if (status < 200 || status >= 300) {
+          response.resume();
+          resolve({ status, body: '' });
+          return;
+        }
+
+        const chunks: Buffer[] = [];
+        let size = 0;
+        response.on('data', (chunk: Buffer) => {
+          size += chunk.length;
+          if (size > 2_000_000) {
+            response.destroy(new Error('response too large'));
+            return;
+          }
+          chunks.push(chunk);
+        });
+        response.on('end', () => {
+          resolve({ status, body: Buffer.concat(chunks).toString('utf8') });
+        });
+        response.on('error', reject);
+      },
+    );
+
+    request.on('timeout', () => request.destroy(new Error(`timed out after ${timeoutMs}ms`)));
+    request.on('error', reject);
+    request.end(payload);
   });
 }
 
@@ -750,6 +840,277 @@ async function fetchDownstoxFallback(
   return new Map(entries);
 }
 
+const NIFTY_MONTHS = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+];
+
+/** Nifty Indices expects DD-MMM-YYYY dates in India Standard Time. */
+function niftyDate(date: Date): string {
+  const ist = new Date(date.getTime() + 330 * 60_000);
+  return `${pad2(ist.getUTCDate())}-${NIFTY_MONTHS[ist.getUTCMonth()]}-${ist.getUTCFullYear()}`;
+}
+
+function parseNiftyDate(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const match = /^(\d{1,2}) ([A-Za-z]{3}) (\d{4})$/.exec(value.trim());
+  if (!match) return null;
+
+  const monthName = match[2][0].toUpperCase() + match[2].slice(1).toLowerCase();
+  const month = NIFTY_MONTHS.indexOf(monthName);
+  if (month < 0) return null;
+
+  return `${match[3]}-${pad2(month + 1)}-${pad2(Number(match[1]))}`;
+}
+
+/**
+ * The endpoint returns a JSON array, but older deployments wrap it in `d`.
+ * Rows are newest first; skip any leading row without a usable P/E.
+ */
+function parseNiftyCurrent(body: string): NiftyCurrentValue | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+
+  let rows: unknown = parsed;
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'd' in parsed) {
+    const raw = (parsed as { d?: unknown }).d;
+    if (typeof raw === 'string') {
+      try {
+        rows = JSON.parse(raw);
+      } catch {
+        return null;
+      }
+    } else {
+      rows = raw;
+    }
+  }
+  if (!Array.isArray(rows)) return null;
+
+  for (const item of rows) {
+    if (!item || typeof item !== 'object') continue;
+    const row = item as {
+      pe?: unknown;
+      pb?: unknown;
+      divYield?: unknown;
+      DATE?: unknown;
+    };
+    const pe = positiveNumber(row.pe);
+    if (pe == null) continue;
+
+    return {
+      pe,
+      pb: positiveNumber(row.pb),
+      dividendYield: nonNegativeNumber(row.divYield),
+      asOf: parseNiftyDate(row.DATE),
+      fetchedAt: new Date().toISOString(),
+    };
+  }
+
+  return null;
+}
+
+function isFreshCurrent(value: NiftyCurrentValue, now = Date.now()): boolean {
+  const fetchedAt = Date.parse(value.fetchedAt);
+  return (
+    Number.isFinite(fetchedAt) &&
+    fetchedAt <= now + 60_000 &&
+    now - fetchedAt <= CURRENT_CACHE_MS
+  );
+}
+
+function freshCurrentValues(values: NiftyCurrentMap): NiftyCurrentMap {
+  const now = Date.now();
+  const fresh: NiftyCurrentMap = new Map();
+  for (const [key, value] of values) {
+    if (isFreshCurrent(value, now)) fresh.set(key, value);
+  }
+  return fresh;
+}
+
+function currentCacheExpiry(values: NiftyCurrentMap): number {
+  const now = Date.now();
+  let expiresAt = now + CURRENT_CACHE_MS;
+  for (const value of values.values()) {
+    const fetchedAt = Date.parse(value.fetchedAt);
+    if (Number.isFinite(fetchedAt)) {
+      expiresAt = Math.min(expiresAt, fetchedAt + CURRENT_CACHE_MS);
+    }
+  }
+  return expiresAt;
+}
+
+async function readCurrentFromMongo(): Promise<NiftyCurrentMap | null> {
+  if (!clientPromise) return null;
+
+  try {
+    const client = await withTimeout(clientPromise, MONGO_CONNECT_TIMEOUT_MS);
+    if (!client) return null;
+
+    const doc = await withTimeout(
+      client
+        .db(MONGO_DB)
+        .collection<StoredCurrent>(MONGO_COLLECTION)
+        .findOne({ _id: MONGO_CURRENT_ID }),
+      MONGO_QUERY_TIMEOUT_MS,
+    );
+    if (!doc?.values) return null;
+
+    const values: NiftyCurrentMap = new Map();
+    for (const [key, raw] of Object.entries(doc.values)) {
+      if (!raw || typeof raw !== 'object') continue;
+      const pe = positiveNumber(raw.pe);
+      const fetchedAt =
+        typeof raw.fetchedAt === 'string' && Number.isFinite(Date.parse(raw.fetchedAt))
+          ? raw.fetchedAt
+          : null;
+      if (pe == null || !fetchedAt) continue;
+
+      values.set(key, {
+        pe,
+        pb: positiveNumber(raw.pb),
+        dividendYield: nonNegativeNumber(raw.dividendYield),
+        asOf: typeof raw.asOf === 'string' ? raw.asOf : null,
+        fetchedAt,
+      });
+    }
+
+    return values.size > 0 ? values : null;
+  } catch (error) {
+    console.warn('[india-pe] current cache read failed:', error);
+    return null;
+  }
+}
+
+function writeCurrentToMongo(values: NiftyCurrentMap): void {
+  if (!clientPromise) return;
+
+  void (async () => {
+    try {
+      const client = await clientPromise;
+      await client.db(MONGO_DB).collection<StoredCurrent>(MONGO_COLLECTION).updateOne(
+        { _id: MONGO_CURRENT_ID },
+        {
+          $set: {
+            updatedAt: new Date(),
+            values: Object.fromEntries(values),
+          },
+        },
+        { upsert: true },
+      );
+    } catch (error) {
+      console.warn('[india-pe] current cache write failed:', error);
+    }
+  })();
+}
+
+/**
+ * Current values change once per trading day, so a 24-hour cache avoids
+ * repeating one Nifty Indices call per missing sector on every refresh.
+ */
+async function loadNiftyCurrentCache(): Promise<NiftyCurrentMap> {
+  const now = Date.now();
+  if (currentCache && now < currentCache.expiresAt) {
+    return freshCurrentValues(currentCache.values);
+  }
+
+  const stored = await readCurrentFromMongo();
+  const values = freshCurrentValues(stored ?? new Map());
+  currentCache = {
+    values,
+    // An empty cache should retry within the hour rather than staying cold.
+    expiresAt: values.size > 0 ? currentCacheExpiry(values) : now + PARTIAL_HISTORY_CACHE_MS,
+  };
+  return values;
+}
+
+async function fetchNiftyCurrentOne(
+  config: IndexConfig,
+  deadline: number,
+): Promise<NiftyCurrentValue | null> {
+  const remaining = deadline - Date.now();
+  if (remaining < 1_000) return null;
+
+  const now = new Date();
+  const from = new Date(now.getTime() - 10 * 24 * 60 * 60_000);
+  const tradingName = (config.niftyName ?? config.name).toUpperCase();
+  const cinfo = `{'name':'${tradingName}','startDate':'${niftyDate(
+    from,
+  )}','endDate':'${niftyDate(now)}','indexName':'${config.name}'}`;
+
+  try {
+    const response = await httpsPostJson(
+      NIFTY_INDICES_URL,
+      {
+        Accept: 'application/json, text/javascript, */*; q=0.01',
+        'Content-Type': 'application/json; charset=UTF-8',
+        'X-Requested-With': 'XMLHttpRequest',
+        Referer: 'https://www.niftyindices.com/reports/historical-data',
+        'User-Agent': NIFTY_INDICES_USER_AGENT,
+      },
+      JSON.stringify({ cinfo }),
+      Math.min(NIFTY_INDICES_TIMEOUT_MS, remaining),
+    );
+    if (response.status !== 200) {
+      throw new Error(`Nifty Indices responded with ${response.status}`);
+    }
+
+    const value = parseNiftyCurrent(response.body);
+    if (!value) throw new Error('Nifty Indices returned no usable P/E rows');
+    return value;
+  } catch (error) {
+    console.warn(`[india-pe] Nifty Indices ${config.name} failed:`, error);
+    return null;
+  }
+}
+
+async function fetchNiftyCurrentMissing(
+  configs: IndexConfig[],
+  existing: NiftyCurrentMap,
+  deadline: number,
+): Promise<NiftyCurrentMap> {
+  if (configs.length === 0) return existing;
+
+  console.log(
+    `[india-pe] using Nifty Indices fallback for ${configs.length} missing current value(s)`,
+  );
+  const fetched = await mapWithConcurrency(
+    configs,
+    NIFTY_INDICES_CONCURRENCY,
+    async (config) => [config.key, await fetchNiftyCurrentOne(config, deadline)] as const,
+  );
+
+  const values = new Map(existing);
+  let added = 0;
+  for (const [key, value] of fetched) {
+    if (!value) continue;
+    values.set(key, value);
+    added += 1;
+  }
+
+  console.log(
+    `[india-pe] Nifty Indices supplied ${added}/${configs.length} current value(s)`,
+  );
+  if (added > 0) {
+    currentCache = { values, expiresAt: currentCacheExpiry(values) };
+    writeCurrentToMongo(values);
+  }
+  return values;
+}
+
 function fallbackSlugsNeeded(
   nse: NseSnapshot | null,
   monthly: MonthlyHistory,
@@ -809,9 +1170,9 @@ function buildData(
   nse: NseSnapshot | null,
   monthly: MonthlyHistory,
   fallback: Map<string, DownstoxSnapshot | null>,
+  niftyCurrent: NiftyCurrentMap,
 ): IndiaPeData {
-  let usedNse = false;
-  let usedDownstox = false;
+  const used = new Set<ValuationSource>();
 
   const indices = INDEX_CONFIG.map((config): IndexValuation => {
     const key = normalizeIndexName(config.nseName);
@@ -819,18 +1180,26 @@ function buildData(
     const downstox = config.downstoxSlug
       ? fallback.get(config.downstoxSlug) ?? null
       : null;
+    const nifty = niftyCurrent.get(config.key) ?? null;
 
-    const pe = nseRow?.pe ?? downstox?.currentPe ?? null;
-    const pb = nseRow?.pb ?? downstox?.currentPb ?? null;
+    const pe = nseRow?.pe ?? downstox?.currentPe ?? nifty?.pe ?? null;
+    const pb = nseRow?.pb ?? downstox?.currentPb ?? nifty?.pb ?? null;
     const dividendYield =
-      nseRow?.dividendYield ?? downstox?.currentDividendYield ?? null;
+      nseRow?.dividendYield ?? downstox?.currentDividendYield ?? nifty?.dividendYield ?? null;
+
+    const currentSource: ValuationSource | null =
+      nseRow?.pe != null
+        ? 'nse'
+        : downstox?.currentPe != null
+          ? 'downstox'
+          : nifty?.pe != null
+            ? 'nifty-indices'
+            : null;
+    if (currentSource) used.add(currentSource);
 
     const nseHistory = buildHistory(monthly.get(key), pe);
     const downstoxHistory = buildHistory(downstox?.monthly, pe);
     const history = nseHistory ?? downstoxHistory;
-
-    if (nseRow?.pe != null) usedNse = true;
-    if (nseRow?.pe == null && downstox?.currentPe != null) usedDownstox = true;
 
     return {
       key: config.key,
@@ -843,17 +1212,20 @@ function buildData(
       earningsYield: pe != null && pe > 0 ? 100 / pe : null,
       history,
       historySource: nseHistory ? 'nse' : downstoxHistory ? 'downstox' : null,
+      currentSource,
     };
   });
 
+  const sources = [...used];
   const source =
-    usedNse && usedDownstox ? 'mixed' : usedNse ? 'nse' : usedDownstox ? 'downstox' : null;
+    sources.length === 0 ? null : sources.length === 1 ? sources[0] : 'mixed';
   const asOf =
     nse?.asOf ??
     [...fallback.values()].find((snapshot) => snapshot?.asOf)?.asOf ??
+    [...niftyCurrent.values()].find((value) => value.asOf)?.asOf ??
     null;
 
-  return { asOf, source, stale: false, indices };
+  return { asOf, source, sources, stale: false, indices };
 }
 
 function cacheHeadersFor(ttlMs: number): Record<string, string> {
@@ -877,10 +1249,33 @@ export async function GET() {
     );
   }
 
-  const [nse, historyState] = await Promise.all([
+  const [nse, historyState, cachedCurrent] = await Promise.all([
     fetchNseSnapshot(),
     loadNseHistory(),
+    loadNiftyCurrentCache(),
   ]);
+
+  const nsePeFor = (config: IndexConfig): number | null =>
+    nse?.rows.get(normalizeIndexName(config.nseName))?.pe ?? null;
+
+  /**
+   * Start Nifty Indices alongside Downstox for sectors Downstox does not cover.
+   * This keeps a cold response within the mobile client's 45-second budget when
+   * NSE is blocked. Values from Downstox still take precedence because the
+   * second wave below only fills whatever is left.
+   */
+  const niftyDeadline = Date.now() + NIFTY_INDICES_TOTAL_TIMEOUT_MS;
+  const niftyFirstWave = INDEX_CONFIG.filter(
+    (config) =>
+      nsePeFor(config) == null &&
+      !cachedCurrent.has(config.key) &&
+      config.downstoxSlug == null,
+  );
+  const niftyPromise = fetchNiftyCurrentMissing(
+    niftyFirstWave,
+    cachedCurrent,
+    niftyDeadline,
+  );
 
   const fallbackSlugs = fallbackSlugsNeeded(nse, historyState.monthly);
   if (fallbackSlugs.length > 0) {
@@ -889,7 +1284,27 @@ export async function GET() {
     );
   }
   const fallback = await fetchDownstoxFallback(fallbackSlugs);
-  const data = buildData(nse, historyState.monthly, fallback);
+  let niftyCurrent = await niftyPromise;
+
+  const attemptedNifty = new Set(niftyFirstWave.map((config) => config.key));
+  const niftySecondWave = INDEX_CONFIG.filter((config) => {
+    if (nsePeFor(config) != null) return false;
+    if (niftyCurrent.has(config.key)) return false;
+    if (attemptedNifty.has(config.key)) return false;
+    if (config.downstoxSlug) {
+      return fallback.get(config.downstoxSlug)?.currentPe == null;
+    }
+    return true;
+  });
+  if (niftySecondWave.length > 0 && Date.now() < niftyDeadline) {
+    niftyCurrent = await fetchNiftyCurrentMissing(
+      niftySecondWave,
+      niftyCurrent,
+      niftyDeadline,
+    );
+  }
+
+  const data = buildData(nse, historyState.monthly, fallback, niftyCurrent);
 
   if (!data.indices.some((index) => index.pe != null)) {
     if (cache) {

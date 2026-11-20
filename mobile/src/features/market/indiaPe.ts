@@ -4,6 +4,7 @@ import { ApiError, apiFetch } from '@/src/lib/api/client';
 
 export type IndiaIndexKey = string;
 export type IndiaIndexCategory = 'broad' | 'sector' | 'thematic';
+export type IndiaPeSource = 'nse' | 'downstox' | 'nifty-indices';
 
 export interface IndiaIndexHistory {
   sampleMonths: number;
@@ -25,13 +26,43 @@ export interface IndiaIndexValuation {
   earningsYield: number | null;
   history: IndiaIndexHistory | null;
   historySource: 'nse' | 'downstox' | null;
+  /** Where the current P/E/P/B/yield came from. */
+  currentSource: IndiaPeSource | null;
 }
 
 export interface IndiaPeData {
   asOf: string | null;
-  source: 'nse' | 'downstox' | 'mixed' | null;
+  source: IndiaPeSource | 'mixed' | null;
+  /** Every feed that supplied at least one current value. */
+  sources?: IndiaPeSource[];
   stale: boolean;
   indices: IndiaIndexValuation[];
+}
+
+/** Feed names for the card caption. Also tolerates older cached responses. */
+export function indiaPeSourceLabel(data: IndiaPeData): string {
+  const sources = new Set<IndiaPeSource>(data.sources ?? []);
+  for (const index of data.indices) {
+    if (index.currentSource) sources.add(index.currentSource);
+  }
+
+  const labels: string[] = [];
+  if (sources.has('nse')) labels.push('NSE');
+  if (sources.has('downstox')) labels.push('Downstox');
+  if (sources.has('nifty-indices')) labels.push('Nifty Indices');
+
+  if (labels.length === 0) {
+    if (data.source === 'downstox') return 'Downstox fallback';
+    if (data.source === 'nifty-indices') return 'Nifty Indices';
+    if (data.source === 'mixed') return 'Mixed sources';
+    return 'NSE close';
+  }
+  if (labels.length === 1) {
+    if (labels[0] === 'NSE') return 'NSE close';
+    if (labels[0] === 'Downstox') return 'Downstox fallback';
+    return labels[0];
+  }
+  return labels.join(' + ');
 }
 
 interface IndiaPeResponse {

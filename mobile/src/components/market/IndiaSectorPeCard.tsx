@@ -10,6 +10,7 @@ import { Skeleton } from '@/src/components/ui/Skeleton';
 import { ErrorState } from '@/src/components/ui/States';
 import { indexEntryVerdict } from '@/src/features/market/entrySignal';
 import {
+  indiaPeSourceLabel,
   useIndiaPe,
   type IndiaIndexValuation,
 } from '@/src/features/market/indiaPe';
@@ -151,12 +152,7 @@ export function IndiaSectorPeCard() {
     else noSignal += 1;
   }
 
-  const sourceLabel =
-    data.source === 'downstox'
-      ? 'Downstox fallback'
-      : data.source === 'mixed'
-        ? 'NSE + Downstox'
-        : 'NSE close';
+  const sourceLabel = indiaPeSourceLabel(data);
   const asOfLabel = `${formatAsOf(data.asOf)}${data.stale ? ' · last known' : ''}`;
 
   return (
@@ -277,7 +273,8 @@ export function IndiaSectorPeCard() {
       <Text style={[styles.note, { color: colors.muted }]}>
         Sorted cheapest first. Percentiles compare each index with its own last 60 monthly
         readings; newer indices show their current P/E until 24 monthly readings accumulate.
-        History uses NSE month-end archives, with Downstox filling any missing window.
+        History uses NSE month-end archives, with Downstox filling any missing window. Current
+        values fall back to Downstox, then the official Nifty Indices feed.
       </Text>
     </Card>
   );
