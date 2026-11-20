@@ -24,6 +24,21 @@ export const ASSET_TYPE_LABELS: Record<AssetType, string> = {
   DEBT: 'Debt',
 };
 
+export const CAP_OVERRIDE_OPTIONS = [
+  '',
+  'Large Cap',
+  'Mid Cap',
+  'Small Cap',
+] as const;
+
+export const LIQUIDITY_OPTIONS = [
+  '',
+  'Daily',
+  'Weekly',
+  'Monthly',
+  'Illiquid',
+] as const;
+
 export const assetFormSchema = z.object({
   name: z.string().trim().min(1, 'Enter the asset name.').max(80, 'Keep the name under 80 characters.'),
   symbol: z
@@ -39,6 +54,10 @@ export const assetFormSchema = z.object({
     .union([z.literal(''), z.coerce.number().positive('Price must be greater than zero.')])
     .optional(),
   currency: z.enum(['INR', 'USD']),
+  manualSector: z.string().trim().max(60, 'Keep the sector under 60 characters.').optional(),
+  manualCap: z.enum(CAP_OVERRIDE_OPTIONS).optional(),
+  manualLiquidity: z.enum(LIQUIDITY_OPTIONS).optional(),
+  account: z.string().trim().max(40, 'Keep the account name under 40 characters.').optional(),
 });
 
 export type AssetFormValues = z.input<typeof assetFormSchema>;

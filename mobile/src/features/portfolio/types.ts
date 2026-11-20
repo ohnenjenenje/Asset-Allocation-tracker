@@ -10,6 +10,11 @@ export type Asset = {
   entryPrice: number;
   manualPrice?: number;
   manualSector?: string;
+  /** Manual classification overrides, used before provider or inferred data. */
+  manualCap?: string;
+  manualLiquidity?: LiquidityTier;
+  /** Household account this holding belongs to. Defaults to the primary account. */
+  account?: string;
   purchaseDate?: string;
   /** Last quote returned by an exchange integration. */
   currentPrice?: number;
@@ -37,10 +42,46 @@ export type PolicySource = 'template' | 'custom' | 'migrated';
 export type PolicyReviewCadence = 'quarterly' | 'semiannual' | 'annual';
 export type PolicyRebalanceMethod = 'threshold' | 'calendar' | 'hybrid';
 
+/**
+ * Institutional decision levels. Roots are always policy nodes. Composition
+ * nodes explain how a sleeve is built; promoted nodes become monitored or
+ * actionable policy nodes with their own explicit ranges.
+ */
+export type PolicyDecisionLevel = 'policy' | 'monitor' | 'composition';
+
+/** Allowed range as a percentage of the total portfolio. */
+export type PolicyRange = {
+  min: number;
+  max: number;
+};
+
+export type LiquidityTier = 'Daily' | 'Weekly' | 'Monthly' | 'Illiquid';
+
 export type PolicyRebalance = {
   method: PolicyRebalanceMethod;
   cashFlowFirst: boolean;
   minCashPct: number;
+};
+
+/** Transparent, assumption-based risk model used for risk budgeting. */
+export type PolicyRiskModel = {
+  /** Annualised expected volatility in percent, keyed by sleeve path. */
+  volatility: Record<string, number>;
+  /** Default pairwise correlation for sleeves without an explicit pair. */
+  correlation: number;
+  /** Optional pairwise correlation overrides, keyed by `a|b`. */
+  correlations?: Record<string, number>;
+};
+
+export type PolicyCurrencyConfig = {
+  baseCurrency: 'INR';
+  /** Target hedged share (percent) by currency. Unlisted currencies stay unhedged. */
+  hedgeTargets?: Record<string, number>;
+};
+
+export type PolicyLiquidityConfig = {
+  /** Minimum share of the portfolio that must remain daily or weekly liquid. */
+  minLiquidPct: number;
 };
 
 /**
@@ -62,6 +103,25 @@ export type Policy = {
   reviewCadence: PolicyReviewCadence;
   confirmedAt: string | null;
   source: PolicySource;
+  /** Explicit policy ranges as % of total. Roots fall back to target ± band. */
+  ranges?: Record<string, PolicyRange>;
+  /** Overrides for non-root nodes. Unlisted children are composition nodes. */
+  decisionLevels?: Record<string, PolicyDecisionLevel>;
+  /** Optional benchmark label per policy node. */
+  benchmarks?: Record<string, string>;
+  /** Carry an explicit Unallocated remainder instead of requiring 100%. */
+  allowUnallocated?: boolean;
+  /** Separate sector/industry policy, expressed as % of equity exposure. */
+  sectorTargets?: Record<string, number>;
+  sectorRanges?: Record<string, PolicyRange>;
+  /** Target share of total portfolio risk, in percent, by sleeve path. */
+  riskBudget?: Record<string, number>;
+  riskModel?: PolicyRiskModel;
+  currencyPolicy?: PolicyCurrencyConfig;
+  liquidityPolicy?: PolicyLiquidityConfig;
+  notes?: string;
+  approvedBy?: string;
+  changeNote?: string;
 };
 
 export type FundHolding = {

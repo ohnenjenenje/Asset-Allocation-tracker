@@ -12,6 +12,8 @@ import type { Asset } from './types';
 import {
   ASSET_TYPES,
   ASSET_TYPE_LABELS,
+  CAP_OVERRIDE_OPTIONS,
+  LIQUIDITY_OPTIONS,
   validateAssetForm,
   type AssetFormOutput,
   type AssetFormValues,
@@ -45,6 +47,18 @@ export function AssetForm({
     entryPrice: initial ? String(initial.entryPrice) : '',
     manualPrice: initial?.manualPrice != null ? String(initial.manualPrice) : '',
     currency: initial?.currency === 'USD' ? 'USD' : 'INR',
+    manualSector: initial?.manualSector ?? '',
+    manualCap: (CAP_OVERRIDE_OPTIONS as readonly string[]).includes(
+      initial?.manualCap ?? '',
+    )
+      ? (initial?.manualCap as AssetFormValues['manualCap'])
+      : '',
+    manualLiquidity: (LIQUIDITY_OPTIONS as readonly string[]).includes(
+      initial?.manualLiquidity ?? '',
+    )
+      ? (initial?.manualLiquidity as AssetFormValues['manualLiquidity'])
+      : '',
+    account: initial?.account ?? '',
   });
   const [errors, setErrors] = useState<Partial<Record<keyof AssetFormValues, string>>>({});
 
@@ -148,6 +162,66 @@ export function AssetForm({
           onChangeText={(text) => update('manualPrice', text)}
           error={errors.manualPrice}
           hint="Leave empty to use live market data."
+          editable={!disabled}
+        />
+      </Card>
+
+      <Card style={styles.card}>
+        <Text style={[type.label, { color: colors.muted }]}>
+          Classification overrides
+        </Text>
+        <Text style={[type.caption, { color: colors.muted }]}>
+          Manual values win over provider data. Use them for custom sectors, cap bands,
+          liquidity tiers or account tagging. Leave everything on Auto for inferred
+          classification.
+        </Text>
+
+        <TextField
+          label="Sector override"
+          placeholder="e.g. Financials"
+          value={String(values.manualSector ?? '')}
+          onChangeText={(text) => update('manualSector', text)}
+          error={errors.manualSector}
+          autoCapitalize="words"
+          editable={!disabled}
+        />
+
+        <Text style={[type.caption, { color: colors.textSecondary }]}>Cap band</Text>
+        <View style={styles.chips}>
+          {CAP_OVERRIDE_OPTIONS.map((option) => (
+            <Chip
+              key={option || 'auto'}
+              label={option || 'Auto'}
+              selected={(values.manualCap ?? '') === option}
+              onPress={disabled ? undefined : () => update('manualCap', option)}
+            />
+          ))}
+        </View>
+
+        <Text style={[type.caption, { color: colors.textSecondary }]}>
+          Liquidity tier
+        </Text>
+        <View style={styles.chips}>
+          {LIQUIDITY_OPTIONS.map((option) => (
+            <Chip
+              key={option || 'auto'}
+              label={option || 'Auto'}
+              selected={(values.manualLiquidity ?? '') === option}
+              onPress={
+                disabled ? undefined : () => update('manualLiquidity', option)
+              }
+            />
+          ))}
+        </View>
+
+        <TextField
+          label="Account (optional)"
+          placeholder="e.g. Primary, Retirement"
+          value={String(values.account ?? '')}
+          onChangeText={(text) => update('account', text)}
+          error={errors.account}
+          hint="Used for household consolidation. Empty means the primary account."
+          autoCapitalize="words"
           editable={!disabled}
         />
       </Card>

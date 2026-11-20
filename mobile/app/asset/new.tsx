@@ -37,6 +37,10 @@ export default function NewAssetScreen() {
       quantity: values.quantity,
       entryPrice: values.entryPrice,
       manualPrice: typeof values.manualPrice === 'number' ? values.manualPrice : undefined,
+      manualSector: values.manualSector?.trim() || undefined,
+      manualCap: values.manualCap || undefined,
+      manualLiquidity: values.manualLiquidity || undefined,
+      account: values.account?.trim() || undefined,
       currency: values.currency,
     };
 

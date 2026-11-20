@@ -259,6 +259,34 @@ function PolicyEditor({
     config.policy.reviewCadence ?? 'quarterly',
   );
   const [showValidation, setShowValidation] = useState(false);
+  const [customRanges, setCustomRanges] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(
+      paths.map((path) => [path, config.policy.ranges?.[path] !== undefined]),
+    ),
+  );
+  const [rangeInputs, setRangeInputs] = useState<
+    Record<string, { min: string; max: string }>
+  >(() => {
+    const next: Record<string, { min: string; max: string }> = {};
+    for (const path of paths) {
+      const stored = config.ranges[path];
+      const target = config.rootTargets[path] ?? 0;
+      const band = config.bands[path] ?? defaultBandFor(path);
+      next[path] = {
+        min: String(round2(stored?.min ?? Math.max(0, target - band))),
+        max: String(round2(stored?.max ?? Math.min(100, target + band))),
+      };
+    }
+    return next;
+  });
+  const [benchmarks, setBenchmarks] = useState<Record<string, string>>(() => {
+    const next: Record<string, string> = {};
+    for (const path of paths) next[path] = config.benchmarks[path] ?? '';
+    return next;
+  });
+  const [notes, setNotes] = useState(config.policy.notes ?? '');
+  const [changeNote, setChangeNote] = useState('');
+  const [approvedBy, setApprovedBy] = useState(config.policy.approvedBy ?? '');
 
   const parsedTargets = useMemo(() => {
     const values: Record<string, number> = {};
@@ -304,6 +332,36 @@ function PolicyEditor({
     return { values, errors };
   }, [bands, paths]);
 
+  const parsedRanges = useMemo(() => {
+    const values: Record<string, { min: number; max: number }> = {};
+    const errors: Record<string, string> = {};
+    for (const path of paths) {
+      if (!customRanges[path]) continue;
+      const input = rangeInputs[path] ?? { min: '', max: '' };
+      const min = Number(input.min);
+      const max = Number(input.max);
+      if (input.min.trim() === '' || input.max.trim() === '') {
+        errors[path] = 'Required';
+        continue;
+      }
+      if (!Number.isFinite(min) || !Number.isFinite(max)) {
+        errors[path] = 'Enter numbers';
+        continue;
+      }
+      if (min < 0 || max > 100 || max < min) {
+        errors[path] = 'Use 0–100 with max ≥ min';
+        continue;
+      }
+      const target = parsedTargets.values[path] ?? 0;
+      if (target < min || target > max) {
+        errors[path] = `Target ${formatPercent(target)} is outside the range`;
+        continue;
+      }
+      values[path] = { min, max };
+    }
+    return { values, errors };
+  }, [customRanges, parsedTargets.values, paths, rangeInputs]);
+
   const totalTarget = paths.reduce(
     (sum, path) => sum + (parsedTargets.values[path] ?? 0),
     0,
@@ -311,10 +369,15 @@ function PolicyEditor({
   const totalValid = Math.abs(totalTarget - 100) <= 0.01;
   const inputsValid =
     Object.keys(parsedTargets.errors).length === 0 &&
-    Object.keys(parsedBands.errors).length === 0;
+    Object.keys(parsedBands.errors).length === 0 &&
+    Object.keys(parsedRanges.errors).length === 0;
 
   const dirty = useMemo(() => {
     if (cadence !== config.policy.reviewCadence) return true;
+    if (notes !== (config.policy.notes ?? '')) return true;
+    if (changeNote.trim() !== '') return true;
+    if (approvedBy !== (config.policy.approvedBy ?? '')) return true;
+
     return paths.some((path) => {
       const targetChanged =
         round2(parsedTargets.values[path] ?? 0) !==
@@ -322,15 +385,35 @@ function PolicyEditor({
       const bandChanged =
         round1(parsedBands.values[path] ?? defaultBandFor(path)) !==
         round1(config.bands[path] ?? defaultBandFor(path));
-      return targetChanged || bandChanged;
+      const storedRange = config.policy.ranges?.[path];
+      const customChanged =
+        Boolean(customRanges[path]) !== Boolean(storedRange);
+      const rangeChanged =
+        Boolean(customRanges[path]) &&
+        storedRange != null &&
+        (round2(parsedRanges.values[path]?.min ?? 0) !== round2(storedRange.min) ||
+          round2(parsedRanges.values[path]?.max ?? 0) !== round2(storedRange.max));
+      const benchmarkChanged =
+        (benchmarks[path] ?? '').trim() !== (config.benchmarks[path] ?? '');
+      return targetChanged || bandChanged || customChanged || rangeChanged || benchmarkChanged;
     });
   }, [
+    approvedBy,
+    benchmarks,
     cadence,
+    changeNote,
+    config.benchmarks,
+    config.policy.approvedBy,
+    config.policy.notes,
+    config.policy.ranges,
     config.policy.reviewCadence,
     config.rootTargets,
     config.bands,
+    customRanges,
+    notes,
     parsedTargets.values,
     parsedBands.values,
+    parsedRanges.values,
     paths,
   ]);
 
@@ -360,10 +443,31 @@ function PolicyEditor({
     setTargets(scaledTargetInputs(paths, parsedTargets.values));
   };
 
+  const toggleRange = (path: string) => {
+    const nextValue = !customRanges[path];
+    setCustomRanges((current) => ({ ...current, [path]: nextValue }));
+    if (!nextValue) return;
+
+    setRangeInputs((current) => {
+      if (current[path]) return current;
+      const target = parsedTargets.values[path] ?? 0;
+      const band = parsedBands.values[path] ?? defaultBandFor(path);
+      return {
+        ...current,
+        [path]: {
+          min: String(round2(Math.max(0, target - band))),
+          max: String(round2(Math.min(100, target + band))),
+        },
+      };
+    });
+  };
+
   const loadTemplate = () => {
     setTargets(targetInputs(paths, DEFAULT_IDEAL_ALLOCATION));
     setBands(bandInputs(paths, DEFAULT_POLICY_BANDS));
     setCadence('quarterly');
+    setCustomRanges({});
+    setRangeInputs({});
   };
 
   const confirm = () => {
@@ -388,11 +492,41 @@ function PolicyEditor({
       }
     }
 
+    const nextRanges = { ...(config.policy.ranges ?? {}) };
+    for (const path of paths) {
+      if (customRanges[path]) {
+        const range = parsedRanges.values[path];
+        if (range) nextRanges[path] = range;
+      } else {
+        delete nextRanges[path];
+      }
+    }
+
+    const nextBenchmarks = { ...(config.policy.benchmarks ?? {}) };
+    for (const path of paths) {
+      const value = (benchmarks[path] ?? '').trim();
+      if (value) nextBenchmarks[path] = value;
+      else delete nextBenchmarks[path];
+    }
+
     save.mutate(
       {
         targets: mergeRootTargets(config.policy.targets, rootTargets),
         bands: nextBands,
         reviewCadence: cadence,
+        ranges: nextRanges,
+        decisionLevels: config.policy.decisionLevels,
+        benchmarks: nextBenchmarks,
+        sectorTargets: config.policy.sectorTargets,
+        sectorRanges: config.policy.sectorRanges,
+        riskBudget: config.policy.riskBudget,
+        riskModel: config.policy.riskModel,
+        currencyPolicy: config.policy.currencyPolicy,
+        liquidityPolicy: config.policy.liquidityPolicy,
+        allowUnallocated: config.policy.allowUnallocated,
+        notes: notes.trim(),
+        approvedBy: approvedBy.trim(),
+        changeNote: changeNote.trim(),
       },
       { onSuccess: () => router.back() },
     );
@@ -461,7 +595,7 @@ function PolicyEditor({
       <View>
         <SectionHeader
           title="Sleeve targets"
-          subtitle="Root sleeves are % of total; children stay % of parent; bands are ±pp"
+          subtitle="Root sleeves are % of total; bands ±pp; an explicit range overrides the band"
           actionLabel="Load template"
           onAction={isDemo ? undefined : loadTemplate}
         />
@@ -534,10 +668,158 @@ function PolicyEditor({
                     />
                   </View>
                 </View>
+
+                <View style={[styles.divider, { backgroundColor: colors.border }]} />
+
+                <View style={styles.rangeHeader}>
+                  <View style={styles.rangeText}>
+                    <Text style={[type.bodyMedium, { color: colors.text }]}>
+                      Custom policy range
+                    </Text>
+                    <Text style={[type.caption, { color: colors.muted }]}>
+                      {customRanges[path]
+                        ? `Allowed ${rangeInputs[path]?.min || '—'}–${
+                            rangeInputs[path]?.max || '—'
+                          }% of portfolio`
+                        : `Defaults to ±${parsedBands.values[path] ?? defaultBandFor(
+                            path,
+                          )} pp around the target`}
+                    </Text>
+                  </View>
+                  <Chip
+                    label={customRanges[path] ? 'On' : 'Off'}
+                    selected={Boolean(customRanges[path])}
+                    onPress={isDemo ? undefined : () => toggleRange(path)}
+                  />
+                </View>
+
+                {customRanges[path] ? (
+                  <View style={styles.sleeveInputs}>
+                    <View style={styles.inputHalf}>
+                      <TextField
+                        label="Range min %"
+                        value={rangeInputs[path]?.min ?? ''}
+                        onChangeText={(value) =>
+                          setRangeInputs((current) => ({
+                            ...current,
+                            [path]: {
+                              min: value,
+                              max: current[path]?.max ?? '',
+                            },
+                          }))
+                        }
+                        keyboardType="decimal-pad"
+                        inputMode="decimal"
+                        selectTextOnFocus
+                        editable={!isDemo}
+                      />
+                    </View>
+                    <View style={styles.inputHalf}>
+                      <TextField
+                        label="Range max %"
+                        value={rangeInputs[path]?.max ?? ''}
+                        onChangeText={(value) =>
+                          setRangeInputs((current) => ({
+                            ...current,
+                            [path]: {
+                              min: current[path]?.min ?? '',
+                              max: value,
+                            },
+                          }))
+                        }
+                        keyboardType="decimal-pad"
+                        inputMode="decimal"
+                        selectTextOnFocus
+                        editable={!isDemo}
+                      />
+                    </View>
+                  </View>
+                ) : null}
+
+                {customRanges[path] && showValidation && parsedRanges.errors[path] ? (
+                  <Text style={[type.caption, { color: colors.negative }]}>
+                    {parsedRanges.errors[path]}
+                  </Text>
+                ) : null}
+
+                <TextField
+                  label="Benchmark (optional)"
+                  placeholder="e.g. Nifty 500 TRI"
+                  value={benchmarks[path] ?? ''}
+                  onChangeText={(value) =>
+                    setBenchmarks((current) => ({ ...current, [path]: value }))
+                  }
+                  autoCapitalize="characters"
+                  editable={!isDemo}
+                  hint="Shown in the policy report. No return comparison is implied."
+                />
               </Card>
             );
           })}
         </View>
+      </View>
+
+      <View>
+        <SectionHeader
+          title="Sleeve composition"
+          subtitle="Optional sub-targets that explain how each sleeve is built"
+        />
+        <Card style={styles.settingsCard}>
+          <Text style={[type.bodyMedium, { color: colors.text }]}>
+            Composition targets
+          </Text>
+          <Text style={[type.caption, { color: colors.muted }]}>
+            Add only the groups you actually use, such as Domestic/Global Equity or
+            Gold/Silver. Roots stay the only policy level; composition nodes do not change
+            bands, drift or the rebalance plan unless you promote them.
+          </Text>
+          <Button
+            label={isDemo ? 'View composition' : 'Manage composition'}
+            onPress={() => router.push('/breakdown')}
+            variant="secondary"
+            size="sm"
+            icon="layers"
+            fullWidth
+          />
+        </Card>
+      </View>
+
+      <View>
+        <SectionHeader
+          title="Institutional tools"
+          subtitle="Monitoring, risk budgeting and governed reporting"
+        />
+        <Card style={styles.settingsCard}>
+          <Button
+            label="Compliance & ranges"
+            onPress={() => router.push('/compliance')}
+            variant="secondary"
+            size="sm"
+            icon="shield"
+            fullWidth
+          />
+          <Button
+            label="Risk & liquidity"
+            onPress={() => router.push('/risk')}
+            variant="secondary"
+            size="sm"
+            icon="activity"
+            fullWidth
+          />
+          <Button
+            label="Policy report"
+            onPress={() => router.push('/report')}
+            variant="secondary"
+            size="sm"
+            icon="file-text"
+            fullWidth
+          />
+          <Text style={[type.caption, { color: colors.muted }]}>
+            Compliance compares explicit ranges and hard limits. Risk uses transparent
+            volatility and correlation assumptions. The report consolidates accounts and
+            the policy audit trail.
+          </Text>
+        </Card>
       </View>
 
       <View>
@@ -584,6 +866,43 @@ function PolicyEditor({
               {config.policy.rebalance.minCashPct}% before rebalancing
             </Text>
           </View>
+        </Card>
+      </View>
+
+      <View>
+        <SectionHeader
+          title="Governance"
+          subtitle="Notes and approval attach to the next policy version"
+        />
+        <Card style={styles.settingsCard}>
+          <TextField
+            label="Policy notes"
+            placeholder="Mandate, constraints, liquidity needs…"
+            value={notes}
+            onChangeText={setNotes}
+            multiline
+            numberOfLines={3}
+            style={styles.notesInput}
+            editable={!isDemo}
+            hint="Standing context for this policy. Prefilled from the current version."
+          />
+          <TextField
+            label="Change note"
+            placeholder="What changed and why"
+            value={changeNote}
+            onChangeText={setChangeNote}
+            editable={!isDemo}
+            hint="Recorded with the new version in the policy history."
+          />
+          <TextField
+            label="Approved by"
+            placeholder="e.g. Investment committee"
+            value={approvedBy}
+            onChangeText={setApprovedBy}
+            autoCapitalize="words"
+            editable={!isDemo}
+            hint="Optional approver of record for this version."
+          />
         </Card>
       </View>
 
@@ -666,7 +985,11 @@ function PolicyEditor({
           <Banner
             tone="warning"
             icon="alert-triangle"
-            message="Fix the highlighted target or band inputs before saving."
+            message={
+              Object.values(parsedRanges.errors)[0]
+                ? `Range check: ${Object.values(parsedRanges.errors)[0]}`
+                : 'Fix the highlighted target, band or range inputs before saving.'
+            }
           />
         ) : null}
         {inputsValid && !totalValid ? (
@@ -712,7 +1035,14 @@ const styles = StyleSheet.create({
   sleeveTitle: { flex: 1, gap: 2 },
   sleeveInputs: { flexDirection: 'row', gap: space.sm },
   inputHalf: { flex: 1 },
+  rangeHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+  },
+  rangeText: { flex: 1, gap: 2 },
   settingsCard: { gap: space.md },
+  notesInput: { minHeight: 88, textAlignVertical: 'top', paddingTop: space.sm },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
   divider: { height: StyleSheet.hairlineWidth },
   factRow: {

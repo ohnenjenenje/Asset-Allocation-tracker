@@ -268,6 +268,20 @@ function capFromQuote(
   return marketCapBand(marketCap, currentCurrency(asset, prices), usdToInr);
 }
 
+/** A manual cap override always wins; otherwise quote data then name inference. */
+function capForAsset(
+  asset: Asset,
+  prices: Record<string, PriceData>,
+  usdToInr: number,
+  categoryName?: string | null,
+): string | null {
+  if (asset.manualCap?.trim()) return asset.manualCap.trim();
+  return (
+    capFromQuote(asset, prices, usdToInr) ??
+    getCapCategory(asset.name, categoryName)
+  );
+}
+
 /** The equity share of an asset; debt funds and non-equity assets return 0. */
 function equityPortion(
   asset: Asset,
@@ -389,7 +403,7 @@ export function analyzePortfolio(input: {
               addPercent((stock * weights.small) / weights.total, 'Equities > Domestic Equity > Small Cap');
               addPercent((stock * weights.others) / weights.total, 'Equities > Domestic Equity');
             } else {
-              const cap = getCapCategory(asset.name, data.categoryName);
+              const cap = capForAsset(asset, prices, usdToInr, data.categoryName);
               addPercent(
                 stock,
                 cap === 'Large Cap' || cap === 'Mid Cap' || cap === 'Small Cap'
@@ -416,8 +430,7 @@ export function analyzePortfolio(input: {
 
     if (finalCategory === 'Equities') {
       if (isDomesticEquity(asset)) {
-        const cap =
-          capFromQuote(asset, prices, usdToInr) ?? getCapCategory(asset.name || asset.symbol);
+        const cap = capForAsset(asset, prices, usdToInr);
         finalCategory =
           cap === 'Large Cap' || cap === 'Mid Cap' || cap === 'Small Cap'
             ? `Equities > Domestic Equity > ${cap}`
@@ -435,7 +448,7 @@ export function analyzePortfolio(input: {
       } else if (isGlobalFund(data?.categoryName, asset.name)) {
         finalCategory = 'Equities > Global Equity';
       } else {
-        const cap = getCapCategory(asset.name, data?.categoryName);
+        const cap = capForAsset(asset, prices, usdToInr, data?.categoryName);
         finalCategory =
           cap === 'Large Cap' || cap === 'Mid Cap' || cap === 'Small Cap'
             ? `Equities > Domestic Equity > ${cap}`
@@ -696,8 +709,7 @@ export function analyzePortfolio(input: {
     }
 
     const cap =
-      capFromQuote(asset, prices, usdToInr) ??
-      getCapCategory(asset.name, data?.categoryName) ??
+      capForAsset(asset, prices, usdToInr, data?.categoryName) ??
       'Other / Uncategorized';
     addToMarketCap(cap, equityValue, isDirectEquity(asset), asset.name, asset.symbol);
   }
@@ -758,11 +770,9 @@ export function analyzePortfolio(input: {
     const sectors = data?.sectorWeightings ?? [];
     const weights = capWeights(data);
     const direct = isDirectEquity(asset);
-    const defaultCap = direct
-      ? (capFromQuote(asset, prices, usdToInr) ??
-        getCapCategory(asset.name) ??
-        'Other / Uncategorized')
-      : (getCapCategory(asset.name, data?.categoryName) ?? 'Other / Uncategorized');
+    const defaultCap =
+      capForAsset(asset, prices, usdToInr, data?.categoryName) ??
+      'Other / Uncategorized';
 
     const distributeToCaps = (sectorName: string, value: number) => {
       const addToCap = (cap: string, amount: number) => {
@@ -1006,9 +1016,7 @@ export function analyzePortfolio(input: {
       asset.name,
       totalValue,
       asset.type,
-      capFromQuote(asset, prices, usdToInr) ??
-        getCapCategory(asset.name, data?.categoryName) ??
-        undefined,
+      capForAsset(asset, prices, usdToInr, data?.categoryName) ?? undefined,
     );
   }
 

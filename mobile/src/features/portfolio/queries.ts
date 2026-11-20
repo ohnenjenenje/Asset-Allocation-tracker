@@ -32,7 +32,12 @@ import type {
   Asset,
   FundData,
   Policy,
+  PolicyCurrencyConfig,
+  PolicyDecisionLevel,
+  PolicyLiquidityConfig,
+  PolicyRange,
   PolicyReviewCadence,
+  PolicyRiskModel,
   PortfolioSnapshot,
   ScreenerFilters,
 } from './types';
@@ -385,6 +390,19 @@ export interface SavePolicyVariables {
   targets: Record<string, number>;
   bands: Record<string, number>;
   reviewCadence: PolicyReviewCadence;
+  ranges?: Record<string, PolicyRange>;
+  decisionLevels?: Record<string, PolicyDecisionLevel>;
+  benchmarks?: Record<string, string>;
+  sectorTargets?: Record<string, number>;
+  sectorRanges?: Record<string, PolicyRange>;
+  riskBudget?: Record<string, number>;
+  riskModel?: PolicyRiskModel;
+  currencyPolicy?: PolicyCurrencyConfig;
+  liquidityPolicy?: PolicyLiquidityConfig;
+  allowUnallocated?: boolean;
+  notes?: string;
+  approvedBy?: string;
+  changeNote?: string;
 }
 
 interface SavedPolicy {
@@ -427,6 +445,19 @@ export function useSavePolicy() {
         targets: variables.targets,
         bands: variables.bands,
         reviewCadence: variables.reviewCadence,
+        ranges: variables.ranges,
+        decisionLevels: variables.decisionLevels,
+        benchmarks: variables.benchmarks,
+        sectorTargets: variables.sectorTargets,
+        sectorRanges: variables.sectorRanges,
+        riskBudget: variables.riskBudget,
+        riskModel: variables.riskModel,
+        currencyPolicy: variables.currencyPolicy,
+        liquidityPolicy: variables.liquidityPolicy,
+        allowUnallocated: variables.allowUnallocated,
+        notes: variables.notes,
+        approvedBy: variables.approvedBy,
+        changeNote: variables.changeNote,
       });
       const history = buildPolicyHistory(config.policy, config.history);
 
