@@ -35,7 +35,12 @@ export type PriceData = {
   quoteType?: string | null;
   sector?: string | null;
   source?: string | null;
+  /** When the client fetched the quote. Prefer `asOf` for quote freshness. */
   lastUpdated?: number;
+  /** The provider's own quote/NAV timestamp, in epoch milliseconds. */
+  asOf?: number | null;
+  /** True when the value came from a cache/fallback rather than a live quote. */
+  stale?: boolean;
 };
 
 export type PolicySource = 'template' | 'custom' | 'migrated';
@@ -156,6 +161,8 @@ export type FundMarketCapWeightage = {
 export type FundData = {
   symbol?: string;
   source?: string | null;
+  /** When the look-through composition was last refreshed. */
+  lastUpdated?: number;
   categoryName?: string | null;
   holdings?: FundHolding[];
   sectorWeightings?: FundSectorWeighting[];

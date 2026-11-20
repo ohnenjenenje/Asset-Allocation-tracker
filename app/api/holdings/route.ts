@@ -189,12 +189,13 @@ const TICKERTAPE_ETF_SCHEME_CODES: Record<string, string> = {
   '148408': 'NIPD', // Nippon India ETF Nifty IT
 };
 
-const etfSidCache = new Map<string, string | null>();
+const etfSidCache = new Map<string, { value: string | null; expires: number }>();
 const indexLookthroughCache = new Map<
   string,
   { expires: number; holdings: any[]; sectorWeightings: any[] } | null
 >();
 const INDEX_LOOKTHROUGH_TTL_MS = 12 * 60 * 60 * 1000;
+const ETF_SID_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 async function fetchTickertapeJson(url: string) {
   const res = await fetch(url, { headers: TICKERTAPE_HEADERS, cache: 'no-store' });
@@ -222,7 +223,8 @@ function normalizeFundName(value: string) {
 async function resolveTickertapeEtfSid(baseTicker: string, name?: string | null) {
   const mapped = TICKERTAPE_ETF_SIDS[baseTicker];
   if (mapped) return mapped;
-  if (etfSidCache.has(baseTicker)) return etfSidCache.get(baseTicker) ?? null;
+  const cachedSid = etfSidCache.get(baseTicker);
+  if (cachedSid && cachedSid.expires > Date.now()) return cachedSid.value;
 
   let sid: string | null = null;
   const queries = Array.from(new Set([baseTicker, name || ''].filter(Boolean)));
@@ -260,7 +262,10 @@ async function resolveTickertapeEtfSid(baseTicker: string, name?: string | null)
     }
   }
 
-  etfSidCache.set(baseTicker, sid);
+  etfSidCache.set(baseTicker, {
+    value: sid,
+    expires: Date.now() + ETF_SID_TTL_MS,
+  });
   return sid;
 }
 

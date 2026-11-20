@@ -19,6 +19,11 @@ export interface Holding {
   pnl: number;
   pnlPercent: number;
   hasLivePrice: boolean;
+  /** Provider timestamp for the quote, when one was used. */
+  quoteAsOf?: number | null;
+  quoteSource?: string | null;
+  /** True when the value came from a cache/fallback rather than a live quote. */
+  quoteStale?: boolean;
 }
 
 export interface PortfolioSummary {
@@ -83,6 +88,7 @@ export function summarize(
     const currentValue = toPaise(currentPrice * asset.quantity);
     const investedValue = toPaise(entryPrice * asset.quantity);
     const pnl = currentValue - investedValue;
+    const manual = asset.manualPrice !== undefined && asset.manualPrice !== null;
 
     return {
       asset,
@@ -92,6 +98,9 @@ export function summarize(
       pnl,
       pnlPercent: investedValue > 0 ? (pnl / investedValue) * 100 : 0,
       hasLivePrice: hasLivePrice(asset, prices),
+      quoteAsOf: manual ? null : (quote?.asOf ?? null),
+      quoteSource: manual ? 'Manual' : (quote?.source ?? null),
+      quoteStale: manual ? false : Boolean(quote?.stale),
     };
   });
 

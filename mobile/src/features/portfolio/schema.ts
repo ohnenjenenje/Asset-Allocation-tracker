@@ -7,6 +7,7 @@ export const ASSET_TYPES = [
   'CRYPTO',
   'GOLD',
   'SILVER',
+  'COMMODITY',
   'CASH',
   'DEBT',
 ] as const;
@@ -20,9 +21,35 @@ export const ASSET_TYPE_LABELS: Record<AssetType, string> = {
   CRYPTO: 'Crypto',
   GOLD: 'Gold',
   SILVER: 'Silver',
+  COMMODITY: 'Commodity',
   CASH: 'Cash',
   DEBT: 'Debt',
 };
+
+/**
+ * Backend documents use several generations of type names. Map them onto the
+ * editable form enum instead of silently falling back to STOCK, which would
+ * reclassify bonds, crypto and commodities as equity the next time they are
+ * saved from the mobile app.
+ */
+const LEGACY_ASSET_TYPE_ALIASES: Record<string, AssetType> = {
+  EQUITY: 'STOCK',
+  'MUTUAL FUND': 'MUTUALFUND',
+  CRYPTOCURRENCY: 'CRYPTO',
+  COMMODITIES: 'COMMODITY',
+  BOND: 'DEBT',
+  BONDS: 'DEBT',
+  'FIXED INCOME': 'DEBT',
+};
+
+/** Resolve a stored asset type to a value the edit form can display. */
+export function assetTypeForForm(type?: string | null): AssetType {
+  const upper = (type ?? '').toUpperCase().trim();
+  if ((ASSET_TYPES as readonly string[]).includes(upper)) {
+    return upper as AssetType;
+  }
+  return LEGACY_ASSET_TYPE_ALIASES[upper] ?? 'STOCK';
+}
 
 export const CAP_OVERRIDE_OPTIONS = [
   '',

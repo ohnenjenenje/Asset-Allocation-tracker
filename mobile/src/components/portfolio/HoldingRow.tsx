@@ -3,6 +3,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type { Holding } from '@/src/features/portfolio/aggregate';
 import { formatCompactINR, formatPercent } from '@/src/lib/format/money';
+import { formatRelativeTime } from '@/src/lib/format/time';
 import { numeric, radius, space, type } from '@/src/lib/theme/tokens';
 import { useTheme } from '@/src/lib/theme/ThemeProvider';
 
@@ -46,6 +47,12 @@ export function HoldingRow({
   const pnlLabel = hasLivePrice
     ? `${pnl >= 0 ? 'up' : 'down'} ${formatPercent(Math.abs(pnlPercent))}`
     : 'cost basis';
+  const ageLabel = holding.quoteAsOf ? formatRelativeTime(holding.quoteAsOf) : '';
+  const freshnessLabel = holding.quoteStale
+    ? `cached${ageLabel ? ` · ${ageLabel}` : ''}`
+    : ageLabel && ageLabel !== 'just now'
+      ? `as of ${ageLabel}`
+      : '';
 
   const body = (
     <View style={styles.body}>
@@ -71,6 +78,22 @@ export function HoldingRow({
               <View style={styles.staleRow}>
                 <Feather name="clock" size={9} color={colors.muted} />
                 <Text style={[styles.meta, { color: colors.muted }]}>cost basis</Text>
+              </View>
+            ) : freshnessLabel ? (
+              <View style={styles.staleRow}>
+                <Feather
+                  name="clock"
+                  size={9}
+                  color={holding.quoteStale ? colors.warning : colors.muted}
+                />
+                <Text
+                  style={[
+                    styles.meta,
+                    { color: holding.quoteStale ? colors.warning : colors.muted },
+                  ]}
+                >
+                  {freshnessLabel}
+                </Text>
               </View>
             ) : null}
           </View>

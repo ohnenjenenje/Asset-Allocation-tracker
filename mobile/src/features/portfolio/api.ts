@@ -1,6 +1,6 @@
 import { ApiError, apiFetch } from '@/src/lib/api/client';
 
-import { guessCurrency } from './normalize';
+import { guessCurrency, normalizeExchangeAsset } from './normalize';
 import type {
   Asset,
   FundAssetAllocation,
@@ -142,6 +142,8 @@ interface RawQuote {
   sector?: string | null;
   source?: string | null;
   lastUpdated?: number;
+  asOf?: number | null;
+  stale?: boolean;
 }
 
 function normalizeQuote(raw: RawQuote): PriceData | null {
@@ -156,6 +158,8 @@ function normalizeQuote(raw: RawQuote): PriceData | null {
     sector: raw.sector ?? null,
     source: raw.source ?? null,
     lastUpdated: raw.lastUpdated,
+    asOf: typeof raw.asOf === 'number' ? raw.asOf : null,
+    stale: Boolean(raw.stale),
   };
 }
 
@@ -165,13 +169,18 @@ function normalizeQuote(raw: RawQuote): PriceData | null {
  */
 export async function fetchPrices(
   symbols: readonly string[],
-  options: { refresh?: boolean; signal?: AbortSignal; token?: string | null } = {},
+  options: {
+    /** Ask the backend to write the fetched quotes back to Google Sheets. */
+    sync?: boolean;
+    signal?: AbortSignal;
+    token?: string | null;
+  } = {},
 ): Promise<Record<string, PriceData>> {
   const unique = [...new Set(symbols.filter(Boolean))];
   if (unique.length === 0) return {};
 
   const query = new URLSearchParams({ symbols: unique.join(',') });
-  if (options.refresh) query.set('refresh', 'true');
+  if (options.sync) query.set('sync', 'true');
 
   const response = await apiFetch<RawQuote[]>(`/api/price?${query.toString()}`, {
     signal: options.signal,
@@ -185,6 +194,53 @@ export async function fetchPrices(
     if (quote) quotes[quote.symbol] = quote;
   }
   return quotes;
+}
+
+interface RawExchangeAsset {
+  symbol?: string;
+  name?: string;
+  quantity?: number;
+  type?: string;
+  currency?: string;
+  currentPrice?: number;
+  entryPrice?: number;
+  exchange?: string;
+}
+
+/**
+ * Fetch live exchange balances. These endpoints use server-side API keys, so
+ * the mobile app only needs the auth token. A failure is non-fatal: callers
+ * fall back to the cached snapshot and show its age.
+ */
+export async function fetchExchangeBalances(
+  exchange: 'binance' | 'coindcx',
+  options: { signal?: AbortSignal; token?: string | null } = {},
+): Promise<Asset[]> {
+  const label = exchange === 'binance' ? 'Binance' : 'CoinDCX';
+  const response = await apiFetch<RawExchangeAsset[]>(`/api/crypto/${exchange}`, {
+    signal: options.signal,
+    token: options.token,
+    // Binance often needs to load its market catalogue before responding.
+    timeoutMs: 60_000,
+  });
+
+  if (!Array.isArray(response)) {
+    throw new ApiError('Malformed exchange response', 502);
+  }
+
+  return response.map((raw) =>
+    normalizeExchangeAsset(
+      {
+        ...raw,
+        id: `${exchange}-${String(raw.symbol ?? raw.name ?? '').toUpperCase()}`,
+        name: raw.name ?? raw.symbol ?? 'Unknown',
+        entryPrice: Number(raw.entryPrice) || 0,
+        currency: raw.currency ?? 'USD',
+        type: raw.type ?? 'CRYPTO',
+      } as Asset & { currentPrice?: number },
+      label,
+    ),
+  );
 }
 
 interface RawFundData {

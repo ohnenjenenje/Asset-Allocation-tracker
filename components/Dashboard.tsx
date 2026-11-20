@@ -109,25 +109,40 @@ const CustomTreemapContent = (props: any) => {
   );
 };
 
-const PriceStatusIndicator = ({ lastUpdated, isFetching, symbol }: { lastUpdated?: number, isFetching: boolean, symbol: string }) => {
+const formatQuoteAge = (asOf: number) => {
+  const minutes = Math.max(0, Math.floor((Date.now() - asOf) / 60_000));
+  if (minutes < 1) return 'now';
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+};
+
+const PriceStatusIndicator = ({ asOf, stale, isFetching }: { asOf?: number | null, stale?: boolean, isFetching: boolean }) => {
   if (isFetching) return (
     <div className="flex items-center gap-1 text-[10px] text-blue-500 font-medium">
       <div className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
       <span>Updating...</span>
     </div>
   );
-  if (!lastUpdated) return (
-    <div className="flex items-center gap-1 text-[10px] text-zinc-400 font-medium">
-      <div className="w-1.5 h-1.5 rounded-full bg-zinc-300" />
-      <span>New</span>
+  if (!asOf) return (
+    <div
+      className={`flex items-center gap-1 text-[10px] font-medium ${stale ? 'text-amber-600 dark:text-amber-400' : 'text-zinc-400'}`}
+      title={stale ? 'Showing a cached value; no live quote timestamp is available.' : undefined}
+    >
+      <div className={`w-1.5 h-1.5 rounded-full ${stale ? 'bg-amber-500' : 'bg-zinc-300'}`} />
+      <span>{stale ? 'Cached' : 'New'}</span>
     </div>
   );
-  
-  const isFresh = Date.now() - lastUpdated < 5 * 60 * 1000;
+
+  const isFresh = !stale && Date.now() - asOf < 5 * 60 * 1000;
   return (
-    <div className={`flex items-center gap-1 text-[10px] font-medium ${isFresh ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>
+    <div
+      className={`flex items-center gap-1 text-[10px] font-medium ${isFresh ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}
+      title={new Date(asOf).toLocaleString()}
+    >
       <div className={`w-1.5 h-1.5 rounded-full ${isFresh ? 'bg-emerald-500' : 'bg-amber-500'}`} />
-      <span>{isFresh ? 'Live' : 'Old'}</span>
+      <span>{stale ? 'Cached' : isFresh ? 'Live' : `Old · ${formatQuoteAge(asOf)}`}</span>
     </div>
   );
 };
@@ -150,6 +165,8 @@ const exchangePrices = (
       quoteType: asset.type === 'CASH' ? 'CASH' : 'CRYPTO',
       source,
       lastUpdated,
+      asOf: lastUpdated,
+      stale: source.toLowerCase().includes('cached'),
     };
   });
   return quotes;
@@ -521,14 +538,16 @@ export default function Dashboard() {
       const restored = cached.assets.map((asset) =>
         normalizeExchangeAsset({ ...asset, source: 'Cached' } as any, exchangeName),
       );
-      const lastSynced = Number(cached.lastSynced) || Date.now();
+      // No stored timestamp means genuinely old cached data; leave `asOf`
+      // empty so the UI shows "Cached" instead of pretending it is current.
+      const lastSynced = Number(cached.lastSynced) || 0;
 
       setter(restored);
       setPrices(prev => ({
         ...prev,
         ...exchangePrices(restored, lastSynced, `${exchangeName} (cached)`),
       }));
-      setStatus({ state: 'cached', lastSynced });
+      setStatus({ state: 'cached', lastSynced: lastSynced || undefined });
     };
 
     if (binanceStatus.state === 'error') {
@@ -1087,7 +1106,7 @@ export default function Dashboard() {
           </div>
 
           <button
-            onClick={() => { fetchPrices(true); forceRefreshHoldings(); }}
+            onClick={() => { fetchPrices(true, undefined, true); forceRefreshHoldings(); }}
             disabled={isLoadingPrices || assets.length === 0}
             className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-zinc-200 bg-white text-zinc-600 transition-colors hover:bg-zinc-50 hover:text-zinc-900 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
             title="Refresh all data"
@@ -2135,10 +2154,10 @@ export default function Dashboard() {
                                         {item.exchange}
                                       </span>
                                     )}
-                                    <PriceStatusIndicator 
-                                      lastUpdated={priceData?.lastUpdated} 
-                                      isFetching={isLoadingPrices && !priceData} 
-                                      symbol={item.symbol} 
+                                    <PriceStatusIndicator
+                                      asOf={priceData?.asOf}
+                                      stale={priceData?.stale}
+                                      isFetching={isLoadingPrices && !priceData}
                                     />
                                     {(item.symbol === 'GOLD-INR-GRAM' || item.symbol === 'SILVER-INR-GRAM' || item.symbol === 'CASH-INR') && !isGroupHead && (
                                       <button 

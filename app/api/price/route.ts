@@ -7,13 +7,43 @@ const yahoo = new YahooFinance();
 // Use the yahoo-finance2 client for quotes. Yahoo's raw v7/quote endpoint
 // currently returns 401 unless a crumb/cookie is supplied, while the client
 // handles that handshake for us. GC=F / SI=F supply the gold and silver prices.
+//
+// A very short cache coalesces the stock/FX/futures lookups made by concurrent
+// chunks without making a quote meaningfully stale. The quote's own
+// `regularMarketTime` is returned separately as `asOf`.
+const QUOTE_CACHE_TTL_MS = 30_000;
+const quoteCache = new Map<string, { quote: any; fetchedAt: number }>();
+
 const safeQuote = async (symbol: string) => {
+  const cached = quoteCache.get(symbol);
+  if (cached && Date.now() - cached.fetchedAt < QUOTE_CACHE_TTL_MS) {
+    return cached.quote;
+  }
+
   try {
-    return await yahoo.quote(symbol);
+    const quote = await yahoo.quote(symbol);
+    if (quote) quoteCache.set(symbol, { quote, fetchedAt: Date.now() });
+    return quote;
   } catch (e) {
     console.error(`Error in Yahoo quote for ${symbol}:`, e);
     return null;
   }
+};
+
+/** Yahoo returns `regularMarketTime` as a Date; normalise it to epoch ms. */
+const quoteTimeMs = (quote: any): number | null => {
+  const raw = quote?.regularMarketTime;
+  if (!raw) return null;
+  const ms = raw instanceof Date ? raw.getTime() : new Date(raw).getTime();
+  return Number.isFinite(ms) ? ms : null;
+};
+
+/** MFAPI returns NAV dates as DD-MM-YYYY in India. */
+const parseNavDate = (value?: string | null): number | null => {
+  const match = /^(\d{2})-(\d{2})-(\d{4})$/.exec(String(value ?? ''));
+  if (!match) return null;
+  const ms = new Date(`${match[3]}-${match[2]}-${match[1]}T00:00:00+05:30`).getTime();
+  return Number.isFinite(ms) ? ms : null;
 };
 
 const safeQuoteSummary = async (symbol: string, options: any) => {
@@ -82,7 +112,11 @@ export async function GET(request: Request) {
     }
 
     const symbols = symbolsParam.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+    // Reads are live by default. `sync=true` is the only mode that writes to
+    // Google Sheets; `refresh=true` is kept as a backwards-compatible alias.
     const refresh = searchParams.get('refresh') === 'true';
+    const sync = searchParams.get('sync') === 'true' || refresh;
+    const live = searchParams.get('live') !== 'false' || refresh;
     
     // Manual mapping for known problematic Yahoo symbols to AMFI codes
     const MANUAL_MAP: Record<string, string> = {
@@ -97,39 +131,48 @@ export async function GET(request: Request) {
 
     const token = await getAuthToken();
     const sheetId = process.env.GOOGLE_SHEET_ID;
+    const canUseSheet = Boolean(token && sheetId);
 
-    if (!token || !sheetId) {
-      return NextResponse.json({ 
-        error: 'Google Sheets credentials not configured. Please set GOOGLE_CLIENT_EMAIL, GOOGLE_PRIVATE_KEY, and GOOGLE_SHEET_ID.' 
+    if (!canUseSheet && (!live || sync)) {
+      return NextResponse.json({
+        error: 'Google Sheets credentials not configured. Please set GOOGLE_CLIENT_EMAIL, GOOGLE_PRIVATE_KEY, and GOOGLE_SHEET_ID.',
       }, { status: 500 });
     }
 
-    // 1. Read existing data
-    const now = Date.now();
-    let responseData;
-    
-    if (cachedSheetData && (now - lastSheetFetch < CACHE_TTL) && !refresh) {
-      responseData = cachedSheetData;
-    } else {
-      console.log('Fetching sheet data from Google...');
-      const getRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/A:I?valueRenderOption=UNFORMATTED_VALUE`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
+    // 1. Read existing data. The sheet is only a metadata/fallback layer for
+    // live reads, so a Sheets outage must not take the price API down.
+    let responseData: any = { values: [] };
+
+    if (canUseSheet) {
+      const now = Date.now();
+      try {
+        if (cachedSheetData && (now - lastSheetFetch < CACHE_TTL) && !sync) {
+          responseData = cachedSheetData;
+        } else {
+          console.log('Fetching sheet data from Google...');
+          const getRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/A:I?valueRenderOption=UNFORMATTED_VALUE`, {
+            headers: {
+              'Authorization': `Bearer ${token}`
+            }
+          });
+
+          if (!getRes.ok) {
+            const errorText = await getRes.text();
+            console.error(`ERROR: Failed to fetch sheet data: ${getRes.status} ${errorText.substring(0, 200)}`);
+            throw new Error(`Failed to fetch sheet data: ${getRes.status}`);
+          }
+
+          responseData = await getRes.json();
+          cachedSheetData = responseData;
+          lastSheetFetch = now;
+          console.log('Successfully fetched and cached sheet data.');
         }
-      });
-      
-      if (!getRes.ok) {
-        const errorText = await getRes.text();
-        console.error(`ERROR: Failed to fetch sheet data: ${getRes.status} ${errorText.substring(0, 200)}`);
-        throw new Error(`Failed to fetch sheet data: ${getRes.status}`);
+      } catch (e: any) {
+        if (!live) throw e;
+        console.warn('Sheet read failed; continuing with live quotes only:', e?.message || e);
       }
-      
-      responseData = await getRes.json();
-      cachedSheetData = responseData;
-      lastSheetFetch = now;
-      console.log('Successfully fetched and cached sheet data.');
     }
-    
+
     const rows = responseData.values || [];
     const existingData: Record<string, any> = {};
     const existingSymbols = new Set<string>();
@@ -179,20 +222,30 @@ export async function GET(request: Request) {
       const isMarketCapMissing = !isGoldOrSilver && isNaN(d.marketCap);
       const isYahooSymbolMissing = isMF && !d.yahooSymbol;
       const isSectorMissing = !isMF && !d.sector;
-      
+
+      // Commodity prices are derived from USD/oz futures and the USD/INR rate,
+      // so a stored sheet price goes stale as soon as either input moves.
+      // Always recompute them instead of serving the cached sheet value.
+      if (isGoldOrSilver) return true;
+
       // Mutual funds are static in the sheet, so we consider them 'broken' to force a regular fetch.
-      // For Gold/Silver, only force fetch if price is missing.
-      return (isMF && !isGoldOrSilver) || (isGoldOrSilver && isPriceMissing) || isPriceMissing || isMarketCapMissing || isYahooSymbolMissing || isSectorMissing;
+      return isMF || isPriceMissing || isMarketCapMissing || isYahooSymbolMissing || isSectorMissing;
     });
     
-    let symbolsToUpdate = [...new Set([...missingSymbols, ...brokenSymbols])];
-    if (refresh) {
+    let symbolsToUpdate = live
+      ? [...new Set(symbols)]
+      : [...new Set([...missingSymbols, ...brokenSymbols])];
+    if (sync) {
       symbolsToUpdate = [...new Set([...symbolsToUpdate, ...symbols])];
     }
 
+    console.log("Live mode:", live, "Sheet sync:", sync);
     console.log("Missing:", missingSymbols);
     console.log("Broken (price or market cap):", brokenSymbols);
     console.log("To Update:", symbolsToUpdate);
+
+    // The quote's own timestamp and whether we had to fall back to the sheet.
+    const quoteMeta: Record<string, { asOf: number | null; stale: boolean }> = {};
 
     // Tickertape Fetch array removed
     
@@ -218,33 +271,28 @@ export async function GET(request: Request) {
       };
 
       // Fetch prices and sectors for symbols to update
-      const mfPrices: Record<string, { price: number | null, name: string | null, yahooSymbol: string | null, sector: string | null, source?: string, quoteType?: string }> = {};
+      const mfPrices: Record<string, { price: number | null, name: string | null, yahooSymbol: string | null, sector: string | null, source?: string, quoteType?: string, asOf?: number | null }> = {};
       const stockPrices: Record<string, any> = {};
+
+      // Gold and silver are stored as INR per gram. Fetch the USD/INR rate once
+      // per request so both metals use the same fresh conversion rate.
+      const needsCommodityFx = symbolsToUpdate.some(
+        (sym) => sym === 'GOLD-INR-GRAM' || sym === 'SILVER-INR-GRAM',
+      );
+      const commodityFxQuote = needsCommodityFx
+        ? (await safeQuote('INR=X') as any)
+        : null;
 
       await Promise.all(symbolsToUpdate.map(async (sym) => {
         if (sym === 'GOLD-INR-GRAM' || sym === 'SILVER-INR-GRAM') {
-          // Check Google Sheet first, unless manual refresh was explicitly requested
+          // Keep a sheet price only as a fallback when the live quote fails.
           const sheetKeys = sym === 'GOLD-INR-GRAM' ? ['XAUINR'] : ['XAGINR'];
           let sheetPrice = null;
-          
-          if (!refresh) {
-            for (const key of sheetKeys) {
-              if (existingData[key] && existingData[key].regularMarketPrice) {
-                sheetPrice = existingData[key].regularMarketPrice;
-                break;
-              }
+          for (const key of sheetKeys) {
+            if (existingData[key] && existingData[key].regularMarketPrice) {
+              sheetPrice = existingData[key].regularMarketPrice;
+              break;
             }
-          }
-
-          if (sheetPrice) {
-            mfPrices[sym] = {
-              price: sheetPrice,
-              name: sym === 'GOLD-INR-GRAM' ? 'Physical Gold 24K (Per Gram)' : 'Physical Silver (Per Gram)',
-              yahooSymbol: null,
-              sector: 'Precious Metals',
-              source: 'Google Sheet'
-            };
-            return;
           }
 
           try {
@@ -258,8 +306,11 @@ export async function GET(request: Request) {
               // 1 Troy Ounce = 31.1034768 grams
               const troyOunceInGrams = 31.1034768;
 
-              // Fetch standard USD to INR rate, fallback to 94.22 if unavailable
-              const usdToInr = existingData['INR=X']?.regularMarketPrice || 94.22;
+              const freshFx = Number(commodityFxQuote?.regularMarketPrice) > 0;
+              const usdToInr =
+                (freshFx ? Number(commodityFxQuote?.regularMarketPrice) : null) ||
+                existingData['INR=X']?.regularMarketPrice ||
+                94.22;
 
               // Base conversion: (USD / Troy Ounce) -> (USD / Gram) -> (INR / Gram)
               let finalInrPrice = (priceUsd / troyOunceInGrams) * usdToInr;
@@ -269,17 +320,44 @@ export async function GET(request: Request) {
               const gstRate = 0.03;
               finalInrPrice *= (1 + importDutyRate) * (1 + gstRate);
 
+              const futuresTime = quoteTimeMs(quote);
+              const fxTime = quoteTimeMs(commodityFxQuote);
+              // Yahoo's USD/INR quote often carries an older market timestamp
+              // than the futures contract. The metals price is driven by the
+              // futures quote, so use its timestamp for display; only treat FX
+              // as stale when it is unavailable or genuinely day-old.
+              const fxTooOld =
+                fxTime != null && Date.now() - fxTime > 24 * 60 * 60 * 1000;
+              quoteMeta[sym] = {
+                asOf: futuresTime ?? fxTime ?? null,
+                stale: !freshFx || fxTooOld,
+              };
+
               mfPrices[sym] = {
                 price: finalInrPrice,
                 name: sym === 'GOLD-INR-GRAM' ? 'Physical Gold 24K (Per Gram)' : 'Physical Silver (Per Gram)',
                 yahooSymbol: ySym,
                 sector: 'Precious Metals',
-                source: 'Yahoo Finance'
+                source: 'Yahoo Finance',
+                asOf: quoteMeta[sym].asOf,
               };
             }
           } catch(e) {
             console.error(`Failed to fetch ${sym} price`, e);
           }
+
+          if (!mfPrices[sym] && sheetPrice) {
+            quoteMeta[sym] = { asOf: null, stale: true };
+            mfPrices[sym] = {
+              price: sheetPrice,
+              name: sym === 'GOLD-INR-GRAM' ? 'Physical Gold 24K (Per Gram)' : 'Physical Silver (Per Gram)',
+              yahooSymbol: null,
+              sector: 'Precious Metals',
+              source: 'Google Sheet',
+              asOf: null,
+            };
+          }
+          if (!mfPrices[sym]) quoteMeta[sym] = { asOf: null, stale: true };
           return;
         }
 
@@ -306,7 +384,8 @@ export async function GET(request: Request) {
                     yahooSymbol: sym.startsWith('0P') ? sym : null,
                     sector: null,
                     source: 'MFAPI',
-                          quoteType: (data.meta?.scheme_category?.toUpperCase().includes("ETF") || data.meta?.scheme_name?.toUpperCase().includes("ETF")) ? "ETF" : "MUTUALFUND"
+                    asOf: parseNavDate(data.data[0].date),
+                    quoteType: (data.meta?.scheme_category?.toUpperCase().includes("ETF") || data.meta?.scheme_name?.toUpperCase().includes("ETF")) ? "ETF" : "MUTUALFUND"
                   };
                   mfapiSuccess = true;
                 }
@@ -351,6 +430,7 @@ export async function GET(request: Request) {
                           yahooSymbol: sym.startsWith('0P') ? sym : null,
                           sector: null,
                           source: 'MFAPI',
+                          asOf: parseNavDate(detailData.data[0].date),
                           quoteType: (detailData.meta?.scheme_category?.toUpperCase().includes("ETF") || detailData.meta?.scheme_name?.toUpperCase().includes("ETF")) ? "ETF" : "MUTUALFUND"
                         };
                         mfapiSuccess = true;
@@ -407,7 +487,8 @@ export async function GET(request: Request) {
                     name: result.shortName || result.longName || sym,
                     yahooSymbol: foundYahooSymbol,
                     sector: null,
-                    source: 'Yahoo Finance'
+                    source: 'Yahoo Finance',
+                    asOf: quoteTimeMs(result)
                   };
                   mfapiSuccess = true;
                 }
@@ -459,14 +540,23 @@ export async function GET(request: Request) {
           } catch (e) {
             console.error(`Failed to fetch MF price for ${sym}`, e);
           }
+
+          if (mfPrices[sym]) {
+            quoteMeta[sym] = { asOf: mfPrices[sym].asOf ?? null, stale: false };
+          } else {
+            // The response will keep the sheet's stored NAV, which is cached.
+            quoteMeta[sym] = { asOf: null, stale: true };
+          }
           return;
         }
 
         // For non-MFs (Stocks), use Yahoo Finance
+        quoteMeta[sym] = { asOf: null, stale: true };
         try {
           const fetchSym = MANUAL_MAP[sym] || sym;
           const quote = await safeQuote(fetchSym) as any;
           if (quote) {
+            const hasPrice = Number(quote.regularMarketPrice) > 0;
             stockPrices[sym] = {
               symbol: sym,
               regularMarketPrice: quote.regularMarketPrice || 0,
@@ -478,6 +568,12 @@ export async function GET(request: Request) {
               source: 'Yahoo Finance',
               lastUpdated: Date.now()
             };
+            if (hasPrice) {
+              quoteMeta[sym] = {
+                asOf: quoteTimeMs(quote) ?? Date.now(),
+                stale: false,
+              };
+            }
             
             // Try fetching sector separately, it's less critical and often fails
             try {
@@ -503,8 +599,9 @@ export async function GET(request: Request) {
         }
       }));
 
-      // If the sheet is completely empty, add headers first
-      if (rows.length === 0) {
+      // If the sheet is completely empty, add headers first. Live reads never
+      // mutate the sheet; only an explicit sync does.
+      if (sync && rows.length === 0) {
         const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/A1:I1?valueInputOption=USER_ENTERED`, {
           method: 'PUT',
           headers: {
@@ -516,7 +613,7 @@ export async function GET(request: Request) {
           })
         });
         if (!res.ok) throw new Error(`Failed to append headers: ${res.status} ${await res.text()}`);
-      } else if (rows[0].length < 9) {
+      } else if (sync && rows[0].length < 9) {
         // Update headers if missing the 9th column
         const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/A1:I1?valueInputOption=USER_ENTERED`, {
           method: 'PUT',
@@ -601,7 +698,7 @@ export async function GET(request: Request) {
         }
       }
 
-      if (updateData.length > 0) {
+      if (sync && updateData.length > 0) {
         const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values:batchUpdate`, {
           method: 'POST',
           headers: {
@@ -617,7 +714,7 @@ export async function GET(request: Request) {
       }
 
       // Append missing symbols
-      if (missingSymbols.length > 0) {
+      if (sync && missingSymbols.length > 0) {
         const appendData = missingSymbols.map(sym => {
           const gSym = getGFinanceSymbol(sym);
           const isCommodity = sym === 'GOLD-INR-GRAM' || sym === 'SILVER-INR-GRAM';
@@ -682,6 +779,12 @@ export async function GET(request: Request) {
         if (!res.ok) throw new Error(`Failed to append missing symbols: ${res.status} ${await res.text()}`);
       }
 
+      if (sync) {
+        console.log(
+          `Sheet sync complete: ${updateData.length} updated, ${missingSymbols.length} appended`,
+        );
+      }
+
       symbolsToUpdate.forEach(sym => {
         const isCommodity = sym === 'GOLD-INR-GRAM' || sym === 'SILVER-INR-GRAM';
         const isMF = sym.startsWith('0P') || /^\d+$/.test(sym) || sym.startsWith('MF_') || /^INF[A-Z0-9]{9}$/i.test(sym) || isCommodity;
@@ -704,10 +807,16 @@ export async function GET(request: Request) {
             marketCap: stockPrices[sym]?.marketCap || null,
             yahooSymbol: mfPrices[sym]?.yahooSymbol || null,
             sector: (sym === 'GOLD-INR-GRAM' || sym === 'SILVER-INR-GRAM') ? 'Precious Metals' : (isMF ? null : (stockPrices[sym]?.sector || null)),
-            source: source || null
+            source: source || null,
+            asOf: quoteMeta[sym]?.asOf ?? null,
+            stale: quoteMeta[sym]?.stale ?? false,
           };
         } else {
           existingData[sym].source = source || existingData[sym].source;
+          if (quoteMeta[sym]) {
+            existingData[sym].asOf = quoteMeta[sym].asOf;
+            existingData[sym].stale = quoteMeta[sym].stale;
+          }
           if (stockPrices[sym]) {
             existingData[sym].regularMarketPrice = stockPrices[sym].regularMarketPrice || existingData[sym].regularMarketPrice;
             existingData[sym].marketCap = stockPrices[sym].marketCap || existingData[sym].marketCap;
@@ -736,9 +845,30 @@ export async function GET(request: Request) {
       });
     }
 
-    // 4. Return requested symbols
-    const results = symbols.map(sym => existingData[sym]).filter(Boolean);
-    return NextResponse.json(results);
+    // 4. Return requested symbols with the quote timestamp and fallback flag.
+    const results = symbols
+      .map((sym) => {
+        const data = existingData[sym];
+        if (!data) return null;
+        const meta = quoteMeta[sym];
+        return {
+          ...data,
+          asOf: meta ? meta.asOf : (typeof data.asOf === 'number' ? data.asOf : null),
+          // Without quote metadata the value came from the sheet (or a stored
+          // fallback), so `live=false` must still flag it as cached.
+          stale: meta
+            ? meta.stale
+            : typeof data.stale === 'boolean'
+              ? data.stale
+              : !live,
+          // Fetch time remains separate from the quote's own timestamp.
+          lastUpdated: Date.now(),
+        };
+      })
+      .filter(Boolean);
+    return NextResponse.json(results, {
+      headers: { 'Cache-Control': 'no-store' },
+    });
 
   } catch (error: any) {
     console.error('Price API fatal error:', error);

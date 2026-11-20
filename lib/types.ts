@@ -26,7 +26,12 @@ export type PriceData = {
   quoteType?: string;
   sector?: string;
   source?: string;
+  /** When the client fetched the quote. Prefer `asOf` for quote freshness. */
   lastUpdated: number;
+  /** The provider's own quote/NAV timestamp, in epoch milliseconds. */
+  asOf?: number | null;
+  /** True when the value came from a cache/fallback rather than a live quote. */
+  stale?: boolean;
 };
 
 export type ChatMessage = {

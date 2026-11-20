@@ -99,8 +99,8 @@ async function searchAsset(query: string, token?: string | null) {
 }
 
 async function quote(symbol: string, token?: string | null) {
-  // No `refresh`: a forced refresh writes prices back to the Google Sheet, and
-  // a read-only assistant should never mutate the user's sheet.
+  // Reads are live by default and never write to the sheet; `sync=true` is the
+  // only mutating mode, and the assistant never asks for it.
   const quotes = await fetchPrices([symbol], { token });
   const quoteData = quotes[symbol];
   if (!quoteData) {
@@ -112,6 +112,8 @@ async function quote(symbol: string, token?: string | null) {
     currency: quoteData.currency,
     name: quoteData.shortName,
     source: quoteData.source,
+    asOf: quoteData.asOf ?? null,
+    stale: Boolean(quoteData.stale),
     lastUpdated: quoteData.lastUpdated,
   };
 }

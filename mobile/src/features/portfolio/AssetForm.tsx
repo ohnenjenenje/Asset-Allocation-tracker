@@ -22,6 +22,7 @@ import {
   ASSET_TYPE_LABELS,
   CAP_OVERRIDE_OPTIONS,
   LIQUIDITY_OPTIONS,
+  assetTypeForForm,
   validateAssetForm,
   type AssetFormOutput,
   type AssetFormValues,
@@ -53,9 +54,7 @@ export function AssetForm({
   const [values, setValues] = useState<InstrumentValues>({
     name: initial?.name ?? '',
     symbol: initial?.symbol ?? '',
-    type: (ASSET_TYPES as readonly string[]).includes(initial?.type ?? '')
-      ? (initial?.type as AssetFormValues['type'])
-      : 'STOCK',
+    type: assetTypeForForm(initial?.type),
     manualPrice: initial?.manualPrice != null ? String(initial.manualPrice) : '',
     currency: initial?.currency === 'USD' ? 'USD' : 'INR',
     manualSector: initial?.manualSector ?? '',

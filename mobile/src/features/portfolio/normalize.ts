@@ -157,6 +157,8 @@ export function readCachedExchange(
           shortName: asset.name,
           source: `${exchangeName} (cached)`,
           lastUpdated: syncedAt,
+          asOf: syncedAt || null,
+          stale: true,
         };
       }
     }

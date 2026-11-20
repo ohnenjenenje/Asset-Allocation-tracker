@@ -12,6 +12,7 @@ import { useAuth } from '@/src/features/auth/AuthProvider';
 import { DEFAULT_USD_TO_INR, flattenAssets, summarize } from './aggregate';
 import { analyzePortfolio, DEFAULT_IDEAL_ALLOCATION, hasFundLookThrough } from './analytics';
 import {
+  fetchExchangeBalances,
   fetchFundData,
   fetchPrices,
   fetchScreener,
@@ -39,6 +40,7 @@ import type {
   PolicyReviewCadence,
   PolicyRiskModel,
   PortfolioSnapshot,
+  PriceData,
   ScreenerFilters,
 } from './types';
 
@@ -48,6 +50,8 @@ export const portfolioKeys = {
   prices: (symbols: readonly string[]) =>
     [...portfolioKeys.all, 'prices', [...symbols].sort().join(',')] as const,
   fund: (symbol: string) => [...portfolioKeys.all, 'fund', symbol] as const,
+  exchange: (name: 'binance' | 'coindcx') =>
+    [...portfolioKeys.all, 'exchange', name] as const,
   screener: (filters: ScreenerFilters) => ['screener', filters] as const,
 };
 
@@ -82,10 +86,79 @@ export function usePrices(symbols: readonly string[]) {
     queryKey: portfolioKeys.prices(unique),
     queryFn: async ({ signal }) =>
       fetchPrices(unique, { signal, token: await getToken() }),
+    // The backend returns live quotes by default and never writes to the
+    // sheet unless `sync=true` is explicit, so this remains read-only.
     enabled: status === 'signedIn' && !isDemo && unique.length > 0,
     staleTime: 60_000,
     refetchInterval: 5 * 60_000,
   });
+}
+
+/**
+ * Live exchange balances. The web dashboard is no longer the only writer:
+ * mobile refreshes the same server-side integrations, and falls back to the
+ * snapshot cache (with its age visible) when an exchange is unavailable.
+ */
+function useExchangeBalances() {
+  const { status, isDemo, getToken } = useAuth();
+  const enabled = status === 'signedIn' && !isDemo;
+
+  const binance = useQuery({
+    queryKey: portfolioKeys.exchange('binance'),
+    queryFn: async ({ signal }) =>
+      fetchExchangeBalances('binance', { signal, token: await getToken() }),
+    enabled,
+    staleTime: 5 * 60_000,
+    gcTime: 60 * 60_000,
+    refetchInterval: 15 * 60_000,
+    retry: 0,
+  });
+
+  const coindcx = useQuery({
+    queryKey: portfolioKeys.exchange('coindcx'),
+    queryFn: async ({ signal }) =>
+      fetchExchangeBalances('coindcx', { signal, token: await getToken() }),
+    enabled,
+    staleTime: 5 * 60_000,
+    gcTime: 60 * 60_000,
+    refetchInterval: 15 * 60_000,
+    retry: 0,
+  });
+
+  return {
+    binance,
+    coindcx,
+    isFetching: binance.isFetching || coindcx.isFetching,
+    isRefetching: binance.isRefetching || coindcx.isRefetching,
+    refetch: async () => {
+      await Promise.all([binance.refetch(), coindcx.refetch()]);
+    },
+  };
+}
+
+function exchangePrices(
+  assets: Asset[],
+  asOf: number,
+  source: string,
+  stale: boolean,
+): Record<string, PriceData> {
+  const quotes: Record<string, PriceData> = {};
+  for (const asset of assets) {
+    const price = Number(asset.currentPrice);
+    if (!Number.isFinite(price) || price <= 0) continue;
+    quotes[asset.symbol] = {
+      symbol: asset.symbol,
+      regularMarketPrice: price,
+      currency: asset.currency || 'USD',
+      shortName: asset.name,
+      quoteType: asset.type === 'CASH' ? 'CASH' : 'CRYPTO',
+      source,
+      lastUpdated: asOf,
+      asOf,
+      stale,
+    };
+  }
+  return quotes;
 }
 
 interface FundRequest {
@@ -96,9 +169,9 @@ interface FundRequest {
 /**
  * Look-through data for every held fund/ETF.
  *
- * Funds already cached on the user snapshot are used as seeds and never
- * refetched; only gaps trigger `/api/holdings`. Results stay in the query cache
- * for a day because holdings change quarterly at most.
+ * Snapshot seeds render immediately, but the query is still enabled so they
+ * refresh in the background. A weekly stale time matches how often fund
+ * compositions change; gaps still participate in the loading progress.
  */
 export function useFundHoldings(
   requests: readonly FundRequest[],
@@ -120,11 +193,13 @@ export function useFundHoldings(
       queryKey: portfolioKeys.fund(fund.symbol),
       queryFn: async ({ signal }: { signal: AbortSignal }) =>
         fetchFundData(fund.symbol, fund.name, { signal, token: await getToken() }),
-      enabled:
-        status === 'signedIn' &&
-        !isDemo &&
-        !hasFundLookThrough(seeds?.[fund.symbol]),
-      staleTime: 24 * 60 * 60_000,
+      enabled: status === 'signedIn' && !isDemo,
+      // Seeds render instantly. Their stored refresh time lets a recent web
+      // fetch suppress redundant work while older data refreshes in the
+      // background; untimestamped legacy seeds are treated as stale.
+      initialData: seeds?.[fund.symbol],
+      initialDataUpdatedAt: seeds?.[fund.symbol]?.lastUpdated ?? 0,
+      staleTime: 7 * 24 * 60 * 60_000,
       gcTime: 7 * 24 * 60 * 60_000,
       retry: 1,
     })),
@@ -185,6 +260,7 @@ export interface PortfolioLoadProgress {
  */
 export function usePortfolioData() {
   const snapshotQuery = usePortfolioSnapshot();
+  const exchangeQuery = useExchangeBalances();
   const { isDemo } = useAuth();
 
   const savedAssets = useMemo<Asset[]>(
@@ -192,19 +268,95 @@ export function usePortfolioData() {
     [isDemo, snapshotQuery.data],
   );
 
-  // Exchange balances are read-only; the web dashboard caches them on the same
-  // user document. Normalize old `/USDT` symbols and merge them for display.
-  const cachedExchange = useMemo(
-    () =>
-      isDemo
-        ? { assets: [] as Asset[], prices: {}, lastSynced: 0 }
-        : readCachedExchange(snapshotQuery.data?.cachedCrypto),
-    [isDemo, snapshotQuery.data],
-  );
+  // React Query returns a new result object every render, so the memo depends
+  // on the stable fields inside it rather than the query objects themselves.
+  const binanceSuccess = exchangeQuery.binance.isSuccess;
+  const binanceData = exchangeQuery.binance.data;
+  const binanceUpdatedAt = exchangeQuery.binance.dataUpdatedAt;
+  const coindcxSuccess = exchangeQuery.coindcx.isSuccess;
+  const coindcxData = exchangeQuery.coindcx.data;
+  const coindcxUpdatedAt = exchangeQuery.coindcx.dataUpdatedAt;
+
+  // Prefer live exchange balances; keep the snapshot cache only for exchanges
+  // that did not answer, and preserve its age for the UI.
+  const exchange = useMemo(() => {
+    if (isDemo) {
+      return {
+        assets: [] as Asset[],
+        prices: {} as Record<string, PriceData>,
+        isCached: false,
+        lastSyncedAt: null as number | null,
+      };
+    }
+
+    const cached = readCachedExchange(snapshotQuery.data?.cachedCrypto);
+    const sources = [
+      {
+        name: 'Binance',
+        success: binanceSuccess,
+        assets: binanceData,
+        updatedAt: binanceUpdatedAt,
+      },
+      {
+        name: 'CoinDCX',
+        success: coindcxSuccess,
+        assets: coindcxData,
+        updatedAt: coindcxUpdatedAt,
+      },
+    ];
+    const liveNames = new Set(
+      sources
+        .filter((source) => source.success)
+        .map((source) => source.name.toLowerCase()),
+    );
+
+    const staleAssets = cached.assets.filter(
+      (asset) => !liveNames.has((asset.exchange ?? '').toLowerCase()),
+    );
+    const staleSymbols = new Set(staleAssets.map((asset) => asset.symbol));
+    const stalePrices = Object.fromEntries(
+      Object.entries(cached.prices).filter(([symbol]) => staleSymbols.has(symbol)),
+    ) as Record<string, PriceData>;
+
+    const liveAssets: Asset[] = [];
+    const livePrices: Record<string, PriceData> = {};
+    const syncedAt: number[] = [];
+
+    for (const source of sources) {
+      if (!source.success || !source.assets) continue;
+      liveAssets.push(...source.assets);
+      Object.assign(
+        livePrices,
+        exchangePrices(source.assets, source.updatedAt, `${source.name} API`, false),
+      );
+      syncedAt.push(source.updatedAt);
+    }
+
+    for (const asset of staleAssets) {
+      const asOf = Number(cached.prices[asset.symbol]?.asOf);
+      if (Number.isFinite(asOf) && asOf > 0) syncedAt.push(asOf);
+    }
+
+    return {
+      assets: [...staleAssets, ...liveAssets],
+      prices: { ...stalePrices, ...livePrices },
+      isCached: staleAssets.length > 0,
+      lastSyncedAt: syncedAt.length > 0 ? Math.max(...syncedAt) : null,
+    };
+  }, [
+    isDemo,
+    snapshotQuery.data,
+    binanceSuccess,
+    binanceData,
+    binanceUpdatedAt,
+    coindcxSuccess,
+    coindcxData,
+    coindcxUpdatedAt,
+  ]);
 
   const assets = useMemo<Asset[]>(
-    () => [...savedAssets, ...cachedExchange.assets],
-    [savedAssets, cachedExchange.assets],
+    () => [...savedAssets, ...exchange.assets],
+    [savedAssets, exchange.assets],
   );
 
   const symbols = useMemo(() => {
@@ -224,10 +376,24 @@ export function usePortfolioData() {
   const pricesQuery = usePrices(symbols);
   const prices = useMemo(() => {
     if (isDemo) return demoPrices;
-    // Cached exchange quotes keep last-known values visible while fresh Yahoo
-    // quotes are loading; fresh quotes win once they arrive.
-    return { ...cachedExchange.prices, ...(pricesQuery.data ?? {}) };
-  }, [isDemo, cachedExchange.prices, pricesQuery.data]);
+    // Cached exchange quotes keep last-known values visible while fresh quotes
+    // are loading; live exchange and Yahoo quotes win once they arrive.
+    return { ...exchange.prices, ...(pricesQuery.data ?? {}) };
+  }, [isDemo, exchange.prices, pricesQuery.data]);
+
+  const quoteFreshness = useMemo(() => {
+    const quotes = Object.values(prices).filter(
+      (quote) => quote.regularMarketPrice != null,
+    );
+    const timestamps = quotes
+      .map((quote) => quote.asOf)
+      .filter((value): value is number => typeof value === 'number' && value > 0);
+
+    return {
+      quotesAsOf: timestamps.length > 0 ? Math.min(...timestamps) : null,
+      staleQuoteCount: quotes.filter((quote) => quote.stale).length,
+    };
+  }, [prices]);
   const usdToInr = prices['INR=X']?.regularMarketPrice ?? DEFAULT_USD_TO_INR;
 
   const fundRequests = useMemo<FundRequest[]>(
@@ -324,10 +490,16 @@ export function usePortfolioData() {
     isDemo,
     progress,
     lastSyncedAt: isDemo ? null : snapshotQuery.dataUpdatedAt || null,
+    quotesAsOf: quoteFreshness.quotesAsOf,
+    staleQuoteCount: quoteFreshness.staleQuoteCount,
+    exchangeIsCached: exchange.isCached,
+    exchangeLastSyncedAt: exchange.lastSyncedAt,
     isLoading: isDemo ? false : snapshotQuery.isLoading,
     isRefreshing: isDemo
       ? false
-      : snapshotQuery.isRefetching || pricesQuery.isRefetching,
+      : snapshotQuery.isRefetching ||
+        pricesQuery.isRefetching ||
+        exchangeQuery.isRefetching,
     isFundLoading: isDemo ? false : fundQuery.isLoading,
     error: snapshotQuery.error,
     priceError: pricesQuery.error,
@@ -338,6 +510,7 @@ export function usePortfolioData() {
         snapshotQuery.refetch(),
         pricesQuery.refetch(),
         fundQuery.refetch(),
+        exchangeQuery.refetch(),
       ]);
     },
     refetchFunds: fundQuery.refetch,

@@ -459,8 +459,17 @@ export function usePortfolioData(
       const isLikelyETF = type === 'ETF' || nameLower.includes('etf') || nameLower.includes('bees') || symLower.includes('bees') || symLower === 'alpha.ns' || symLower === 'alpha.bo';
       const isFund = type === 'MUTUALFUND' || isLikelyETF;
 
+      // Compositions change slowly, but never refreshing them leaves stale
+      // sector/holding data indefinitely. Seed data from before timestamps
+      // existed is treated as stale once, then refreshed weekly.
+      const fundLastUpdated = Number(existing?.lastUpdated) || 0;
+      const isFundDataStale =
+        fundLastUpdated > 0
+          ? Date.now() - fundLastUpdated > 7 * 24 * 60 * 60 * 1000
+          : Boolean(existing);
+
       const needsFetch = isFund && 
-        (!existing || hasStaleFields || missingMarketCap) && 
+        (!existing || hasStaleFields || missingMarketCap || isFundDataStale) && 
         !loadingHoldings.current[asset.symbol];
         
       if (needsFetch) {
@@ -482,8 +491,9 @@ export function usePortfolioData(
           })
           .then(data => {
             if (data && data.holdings && data.holdings.length > 0) {
+              const freshData = { ...data, lastUpdated: Date.now() };
               setFundHoldings(prev => {
-                const newHoldings = { ...prev, [asset.symbol]: data };
+                const newHoldings = { ...prev, [asset.symbol]: freshData };
                 syncToDb({ fundHoldings: newHoldings });
                 return newHoldings;
               });

@@ -13,6 +13,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { HoldingRow } from '@/src/components/portfolio/HoldingRow';
+import { QuoteFreshnessBanner } from '@/src/components/portfolio/QuoteFreshnessBanner';
 import { Banner } from '@/src/components/ui/Banner';
 import { Card } from '@/src/components/ui/Card';
 import { Chip } from '@/src/components/ui/Chip';
@@ -40,7 +41,17 @@ export default function HoldingsScreen() {
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
   const { isDemo } = useAuth();
-  const { summary, progress, isLoading, isRefreshing, error, refetch } = usePortfolioData();
+  const {
+    summary,
+    progress,
+    staleQuoteCount,
+    exchangeIsCached,
+    exchangeLastSyncedAt,
+    isLoading,
+    isRefreshing,
+    error,
+    refetch,
+  } = usePortfolioData();
 
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('All');
@@ -104,6 +115,13 @@ export default function HoldingsScreen() {
       {isDemo ? (
         <Banner tone="warning" icon="eye" message="Demo data is read-only. Sign in to edit holdings." />
       ) : null}
+
+      <QuoteFreshnessBanner
+        staleQuoteCount={staleQuoteCount}
+        exchangeIsCached={exchangeIsCached}
+        exchangeLastSyncedAt={exchangeLastSyncedAt}
+        onRefresh={isDemo ? undefined : refetch}
+      />
 
       {progress.active && !isLoading ? (
         <LoadingProgress progress={progress} compact />

@@ -12,7 +12,11 @@ export function usePrices(assets: Asset[], fundHoldings: Record<string, any>) {
   const [isLoadingPrices, setIsLoadingPrices] = useState(false);
   const [priceProgress, setPriceProgress] = useState<{ done: number; total: number } | null>(null);
 
-  const fetchPrices = useCallback(async (forceRefresh = false, specificSymbols?: string[]) => {
+  const fetchPrices = useCallback(async (
+    forceRefresh = false,
+    specificSymbols?: string[],
+    syncToSheet = false,
+  ) => {
     if (assets.length === 0) return;
     
     setIsLoadingPrices(true);
@@ -36,12 +40,6 @@ export function usePrices(assets: Asset[], fundHoldings: Record<string, any>) {
         symbols = symbols.filter(s => specificSymbols.includes(s));
       } else if (!forceRefresh) {
         symbols = symbols.filter(s => !pricesRef.current[s]);
-      } else {
-        symbols = symbols.filter(s => {
-          if (!pricesRef.current[s]) return true;
-          if (s === 'GOLD-INR-GRAM' || s === 'SILVER-INR-GRAM' || s === 'CASH-INR') return false;
-          return true;
-        });
       }
 
       if (symbols.length === 0) {
@@ -67,7 +65,7 @@ export function usePrices(assets: Asset[], fundHoldings: Record<string, any>) {
           const timeoutId = setTimeout(() => controller.abort('Timeout fetching prices'), 60000);
           
           try {
-            const res = await fetch(`/api/price?symbols=${encodeURIComponent(chunk.join(','))}${forceRefresh ? '&refresh=true' : ''}`, {
+            const res = await fetch(`/api/price?symbols=${encodeURIComponent(chunk.join(','))}${syncToSheet ? '&sync=true' : ''}`, {
               signal: controller.signal
             });
             clearTimeout(timeoutId);
@@ -104,7 +102,9 @@ export function usePrices(assets: Asset[], fundHoldings: Record<string, any>) {
                   quoteType: item.quoteType,
                   sector: item.sector,
                   source: item.source,
-                  lastUpdated: Date.now()
+                  lastUpdated: item.lastUpdated ?? Date.now(),
+                  asOf: typeof item.asOf === 'number' ? item.asOf : null,
+                  stale: Boolean(item.stale),
                 };
               });
               success = true;

@@ -6,6 +6,7 @@ import { Donut } from '@/src/components/charts/Donut';
 import { AllocationHealthCard } from '@/src/components/portfolio/AllocationHealthCard';
 import { HoldingRow } from '@/src/components/portfolio/HoldingRow';
 import { PolicyAllocationLegend } from '@/src/components/portfolio/PolicyAllocationLegend';
+import { QuoteFreshnessBanner } from '@/src/components/portfolio/QuoteFreshnessBanner';
 import { AllocationAnalysisCard } from '@/src/components/portfolio/insights/AllocationAnalysisCard';
 import { Badge } from '@/src/components/ui/Badge';
 import { Banner } from '@/src/components/ui/Banner';
@@ -57,6 +58,10 @@ export default function AllocationHomeScreen() {
     policyEvaluation,
     progress,
     lastSyncedAt,
+    quotesAsOf,
+    staleQuoteCount,
+    exchangeIsCached,
+    exchangeLastSyncedAt,
     isLoading,
     isRefreshing,
     error,
@@ -114,10 +119,13 @@ export default function AllocationHomeScreen() {
     .sort((a, b) => Math.abs(b.driftPp) - Math.abs(a.driftPp));
 
   const syncedLabel = lastSyncedAt ? formatRelativeTime(lastSyncedAt) : null;
+  const quotesLabel = quotesAsOf ? formatRelativeTime(quotesAsOf) : null;
   const subtitle = isRefreshing && syncedLabel
     ? 'Refreshing your allocation…'
     : syncedLabel
-      ? `Updated ${syncedLabel} · ${summary.assetCount} holdings`
+      ? `Updated ${syncedLabel} · ${summary.assetCount} holdings${
+          quotesLabel ? ` · quotes ${quotesLabel}` : ''
+        }`
       : 'Target versus current allocation';
 
   const donutTone = needsTargets
@@ -159,6 +167,13 @@ export default function AllocationHomeScreen() {
             message="You are exploring a bundled demo. Sign out and use your account to sync real holdings."
           />
         ) : null}
+
+        <QuoteFreshnessBanner
+          staleQuoteCount={staleQuoteCount}
+          exchangeIsCached={exchangeIsCached}
+          exchangeLastSyncedAt={exchangeLastSyncedAt}
+          onRefresh={isDemo ? undefined : refetch}
+        />
 
         {error ? (
           <Card>
