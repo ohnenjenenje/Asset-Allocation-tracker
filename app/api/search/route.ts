@@ -25,11 +25,35 @@ const MF_APIS = (process.env.MF_API_ENDPOINTS || 'https://api.mfapi.in/mf/search
 
 // Global cache for the full list of mutual funds (approx 37k items, ~5MB)
 let cachedMfList: any[] = [];
+let cachedMfIndex: Array<{
+  schemeCode: string;
+  schemeName: string;
+  name: string;
+  nameNoSpaces: string;
+}> = [];
 let mfListLastFetched = 0;
+
+function buildMfIndex(list: any[]) {
+  return list
+    .filter((mf: any) => mf?.schemeCode != null && typeof mf?.schemeName === 'string')
+    .map((mf: any) => {
+      const name = mf.schemeName.toLowerCase();
+      return {
+        schemeCode: String(mf.schemeCode),
+        schemeName: mf.schemeName,
+        name,
+        nameNoSpaces: name.replace(/\s+/g, ''),
+      };
+    });
+}
 
 async function getFullMfList() {
   const now = Date.now();
-  // Cache for 24 hours
+  if (cachedMfIndex.length === 0 && cachedMfList.length > 0) {
+    cachedMfIndex = buildMfIndex(cachedMfList);
+  }
+  // Cache for 24 hours. The index is built once so each search only has to
+  // score pre-normalized names instead of lowercasing 37k schemes again.
   if (cachedMfList.length > 0 && (now - mfListLastFetched < 24 * 60 * 60 * 1000)) {
     return cachedMfList;
   }
@@ -37,6 +61,7 @@ async function getFullMfList() {
     const res = await fetch('https://api.mfapi.in/mf');
     if (res.ok) {
       cachedMfList = await res.json();
+      cachedMfIndex = buildMfIndex(cachedMfList);
       mfListLastFetched = now;
     }
   } catch (error) {
@@ -330,13 +355,13 @@ export async function GET(request: Request) {
       const allMfs = await getFullMfList();
       
       if (allMfs && allMfs.length > 0) {
-        const words = q.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
+        const qLower = q.toLowerCase();
+        const words = qLower.replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
+        const qNoSpaces = qLower.replace(/\s+/g, '');
         
-        const qNoSpaces = q.toLowerCase().replace(/\s+/g, '');
-        
-        const scored = allMfs.map((mf: any) => {
-          const name = mf.schemeName.toLowerCase();
-          const nameNoSpaces = name.replace(/\s+/g, '');
+        const scored = cachedMfIndex.map((mf) => {
+          const name = mf.name;
+          const nameNoSpaces = mf.nameNoSpaces;
           let score = 0;
           let allMatched = true;
           
@@ -359,7 +384,7 @@ export async function GET(request: Request) {
           }
           
           // Bonus for exact phrase match
-          if (name.includes(q.toLowerCase()) || (qNoSpaces.length > 4 && nameNoSpaces.includes(qNoSpaces))) score += 50;
+          if (name.includes(qLower) || (qNoSpaces.length > 4 && nameNoSpaces.includes(qNoSpaces))) score += 50;
           
           return { ...mf, score, allMatched };
         });
