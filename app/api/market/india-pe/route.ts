@@ -1231,7 +1231,7 @@ function buildData(
 function cacheHeadersFor(ttlMs: number): Record<string, string> {
   const seconds = Math.ceil(ttlMs / 1000);
   return {
-    'Cache-Control': `public, s-maxage=${seconds}, stale-while-revalidate=${seconds / 2}`,
+    'Cache-Control': `public, s-maxage=${seconds}, stale-while-revalidate=${Math.floor(seconds / 2)}`,
   };
 }
 
