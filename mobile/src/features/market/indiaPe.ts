@@ -80,9 +80,10 @@ export async function fetchIndiaPe(
 ): Promise<IndiaPeData> {
   const response = await apiFetch<IndiaPeResponse>('/api/market/india-pe', {
     signal: options.signal,
-    // A cold Render instance may rebuild the monthly NSE archive cache, so this
-    // endpoint gets a longer budget than the usual portfolio queries.
-    timeoutMs: 45_000,
+    // A cold Render instance may rebuild the monthly NSE archive cache and fill
+    // the Nifty Indices fallback, so this endpoint gets a longer budget than the
+    // usual portfolio queries.
+    timeoutMs: 60_000,
   });
 
   if (!response.success || !response.data) {

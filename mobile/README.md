@@ -292,16 +292,17 @@ with the eight cheapest visible until you tap **Show all**.
   (`/BackPage/getpepbHistoricaldataDBtoString`) is the final current-value
   fallback. It covers every official sectoral index and is the workaround for
   cloud hosts that NSE blocks; Render cannot reach the NSE current CSV. It needs
-  a browser-like User-Agent and one POST per missing index. The route requests a
-  short recent date window, runs six calls at a time with a 10-second per-call
-  timeout and a 20-second total budget, and skips it entirely when NSE or Downstox
-  already supplied the value. A short second pass fills any gap left by a failed
-  Downstox call. It maps display names to Nifty's own trading names
-  where they differ (for example `NIFTY CONSR DURBL`, `NIFTY OIL AND GAS`,
-  `Nifty Ind Defence`). Tested values matched NSE (for example Capital Goods
-  41.11, Cement 33.76, Power 17.93, Retail 181.76). Each row records
-  `currentSource` (`nse`, `downstox` or `nifty-indices`) and the response lists
-  every feed used in `sources`.
+  a browser-like User-Agent and one POST per index NSE did not supply. The route
+  requests a short recent date window, runs six calls at a time with a 14-second
+  per-call timeout and a 24-second first-pass budget, then retries failures once
+  with a fresh 15-second budget. With NSE blocked it fetches all 45 indices, even
+  those Downstox also covers, so the cache is complete if Downstox later fails;
+  Downstox values still take precedence. It maps display names to Nifty's own
+  trading names where they differ (for example `NIFTY CONSR DURBL`,
+  `NIFTY OIL AND GAS`, `Nifty Ind Defence`). Tested values matched NSE (for
+  example Capital Goods 41.11, Cement 33.76, Power 17.93, Retail 181.76). Each
+  row records `currentSource` (`nse`, `downstox` or `nifty-indices`) and the
+  response lists every feed used in `sources`.
 - An index needs at least 24 monthly readings before a percentile and signal are
   shown. Until then the current P/E is displayed with **No signal**. Percentiles
   compare each index with its own last 60 monthly readings; the bottom quartile
@@ -316,13 +317,13 @@ with the eight cheapest visible until you tap **Show all**.
   warm server makes roughly 60 archive requests per day; a cold instance rebuilds
   once. That is about 1 MB of archive CSV and a few thousand stored P/E points,
   with negligible CPU and memory cost.
-- The Nifty Indices fallback is bounded to one call per still-missing index, at
-  most 27 on a cold Render instance when NSE is unavailable. A warm cache makes
+- The Nifty Indices fallback is bounded to one call per index NSE did not supply,
+  at most 45 on a cold Render instance when NSE is unavailable. A warm cache makes
   zero calls. Each response is a small JSON payload (about 15 KB for a two-week
-  window), so a full cold fill is roughly 400 KB; there is no documented rate
-  limit, and the six-way concurrency with a 10-second timeout keeps the burst
-  short. Calls normally take 0.1–6 seconds, which is why results are cached and
-  the total wait is capped at 20 seconds.
+  window), so a full cold fill is roughly 675 KB; there is no documented rate
+  limit, and the six-way concurrency with a 14-second timeout keeps the burst
+  short. Calls normally take 0.1–13 seconds, which is why results are cached and
+  the total wait is capped at 39 seconds.
 - The built response is cached in memory for one hour, shortened to 15 minutes
   when any current quote is missing. Monthly history is cached in memory and in
   MongoDB (`portfolio_tracker.market_cache`, document
@@ -331,8 +332,8 @@ with the eight cheapest visible until you tap **Show all**.
   document in the same collection (`india-pe-current-v1`) with a 24-hour TTL, so
   at most one fill happens per day. If every feed fails, the endpoint serves the
   last cached value marked `stale`, or HTTP 503 when there is no cache. The
-  mobile query refetches every six hours, allows 45 seconds for a cold history
-  rebuild and offers a manual refresh on both cards.
+  mobile query refetches every six hours, allows 60 seconds for a cold history
+  rebuild and fallback fill, and offers a manual refresh on both cards.
 
 The index configuration and source mapping live in
 `app/api/market/india-pe/route.ts`; the cards are

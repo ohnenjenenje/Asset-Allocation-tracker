@@ -36,10 +36,10 @@ const HISTORY_TOTAL_TIMEOUT_MS = 18_000;
 const UPSTREAM_ATTEMPTS = 2;
 const DOWNSTOX_TIMEOUT_MS = 12_000;
 const DOWNSTOX_FALLBACK_TIMEOUT_MS = 12_000;
-const NIFTY_INDICES_TIMEOUT_MS = 10_000;
-const NIFTY_INDICES_TOTAL_TIMEOUT_MS = 20_000;
-/** A fresh, short budget lets Nifty fill gaps left by a failed Downstox call. */
-const NIFTY_INDICES_SECOND_WAVE_TIMEOUT_MS = 8_000;
+const NIFTY_INDICES_TIMEOUT_MS = 14_000;
+const NIFTY_INDICES_TOTAL_TIMEOUT_MS = 24_000;
+/** A fresh budget retries any call that failed or timed out in the first pass. */
+const NIFTY_INDICES_SECOND_WAVE_TIMEOUT_MS = 15_000;
 const NIFTY_INDICES_CONCURRENCY = 6;
 const MONGO_CONNECT_TIMEOUT_MS = 8_000;
 const MONGO_QUERY_TIMEOUT_MS = 2_000;
@@ -1261,17 +1261,14 @@ export async function GET() {
     nse?.rows.get(normalizeIndexName(config.nseName))?.pe ?? null;
 
   /**
-   * Start Nifty Indices alongside Downstox for sectors Downstox does not cover.
-   * This keeps a cold response within the mobile client's 45-second budget when
-   * NSE is blocked. Values from Downstox still take precedence because the
-   * second wave below only fills whatever is left.
+   * Start Nifty Indices alongside Downstox for every index NSE did not supply.
+   * Fetching the Downstox-covered names too makes the current cache complete, so
+   * a later deploy can still show 45/45 if Downstox fails. Downstox values still
+   * take precedence in buildData; the cached Nifty values only fill gaps.
    */
   const niftyDeadline = Date.now() + NIFTY_INDICES_TOTAL_TIMEOUT_MS;
   const niftyFirstWave = INDEX_CONFIG.filter(
-    (config) =>
-      nsePeFor(config) == null &&
-      !cachedCurrent.has(config.key) &&
-      config.downstoxSlug == null,
+    (config) => nsePeFor(config) == null && !cachedCurrent.has(config.key),
   );
   const niftyPromise = fetchNiftyCurrentMissing(
     niftyFirstWave,
@@ -1288,11 +1285,9 @@ export async function GET() {
   const fallback = await fetchDownstoxFallback(fallbackSlugs);
   let niftyCurrent = await niftyPromise;
 
-  const attemptedNifty = new Set(niftyFirstWave.map((config) => config.key));
   const niftySecondWave = INDEX_CONFIG.filter((config) => {
     if (nsePeFor(config) != null) return false;
     if (niftyCurrent.has(config.key)) return false;
-    if (attemptedNifty.has(config.key)) return false;
     if (config.downstoxSlug) {
       return fallback.get(config.downstoxSlug)?.currentPe == null;
     }
