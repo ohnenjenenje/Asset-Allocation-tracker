@@ -9,6 +9,7 @@ interface SearchFieldProps {
   onChangeText: (value: string) => void;
   placeholder?: string;
   accessibilityLabel?: string;
+  editable?: boolean;
 }
 
 /** Compact search row for long, filterable lists. */
@@ -17,6 +18,7 @@ export function SearchField({
   onChangeText,
   placeholder = 'Search',
   accessibilityLabel = 'Search',
+  editable = true,
 }: SearchFieldProps) {
   const { colors } = useTheme();
 
@@ -35,6 +37,7 @@ export function SearchField({
         placeholderTextColor={colors.muted}
         selectionColor={colors.accent}
         accessibilityLabel={accessibilityLabel}
+        editable={editable}
         autoCapitalize="none"
         autoCorrect={false}
         returnKeyType="search"

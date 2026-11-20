@@ -113,6 +113,19 @@ The backend stores prices in rupees. The client converts to **integer paise**
 at the API boundary and performs all portfolio math in paise, formatting only
 at render time. This avoids floating-point drift in P&L and allocation values.
 
+### Add and edit assets
+
+The add flow starts with a debounced search against `/api/search`, the same
+endpoint the web app uses, so a partial name such as `reli` suggests
+`RELIANCE.NS` alongside mutual funds. Selecting a result fills the name, ticker,
+asset type and currency; every field remains editable. The edit flow keeps the
+instrument fields manual so an existing holding is never silently re-pointed.
+
+Quantity, average price and invested amount stay in sync: entering any two
+fills the third. The derived value is recalculated when either input changes,
+and editing the derived field switches which value is derived. `entryPrice`
+remains the persisted average cost, so no new backend field is required.
+
 ### Portfolio analytics
 
 The **Insights** tab ports the web app's look-through engine

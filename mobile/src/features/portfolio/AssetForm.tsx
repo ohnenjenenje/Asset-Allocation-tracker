@@ -8,7 +8,15 @@ import { TextField } from '@/src/components/ui/TextField';
 import { space, type } from '@/src/lib/theme/tokens';
 import { useTheme } from '@/src/lib/theme/ThemeProvider';
 
+import { AssetSearch } from './AssetSearch';
 import type { Asset } from './types';
+import {
+  applyPositionEdit,
+  filledPositionFields,
+  initialPositionState,
+  parsePositionNumber,
+  type PositionField,
+} from './positionFields';
 import {
   ASSET_TYPES,
   ASSET_TYPE_LABELS,
@@ -28,6 +36,11 @@ interface AssetFormProps {
   onSubmit: (values: AssetFormOutput) => void;
 }
 
+type InstrumentValues = Omit<AssetFormValues, 'quantity' | 'entryPrice'>;
+type FormErrors = Partial<
+  Record<keyof AssetFormValues | 'investedAmount', string>
+>;
+
 export function AssetForm({
   initial,
   submitLabel,
@@ -37,14 +50,12 @@ export function AssetForm({
   onSubmit,
 }: AssetFormProps) {
   const { colors } = useTheme();
-  const [values, setValues] = useState<AssetFormValues>({
+  const [values, setValues] = useState<InstrumentValues>({
     name: initial?.name ?? '',
     symbol: initial?.symbol ?? '',
     type: (ASSET_TYPES as readonly string[]).includes(initial?.type ?? '')
       ? (initial?.type as AssetFormValues['type'])
       : 'STOCK',
-    quantity: initial ? String(initial.quantity) : '',
-    entryPrice: initial ? String(initial.entryPrice) : '',
     manualPrice: initial?.manualPrice != null ? String(initial.manualPrice) : '',
     currency: initial?.currency === 'USD' ? 'USD' : 'INR',
     manualSector: initial?.manualSector ?? '',
@@ -60,21 +71,87 @@ export function AssetForm({
       : '',
     account: initial?.account ?? '',
   });
-  const [errors, setErrors] = useState<Partial<Record<keyof AssetFormValues, string>>>({});
+  const [position, setPosition] = useState(() => initialPositionState(initial));
+  const [errors, setErrors] = useState<FormErrors>({});
+  const [formError, setFormError] = useState<string | null>(null);
 
-  const update = <K extends keyof AssetFormValues>(key: K, value: AssetFormValues[K]) => {
+  const update = <K extends keyof InstrumentValues>(
+    key: K,
+    value: InstrumentValues[K],
+  ) => {
     setValues((current) => ({ ...current, [key]: value }));
     if (errors[key]) setErrors((current) => ({ ...current, [key]: undefined }));
+    setFormError(null);
+  };
+
+  const updatePosition = (field: PositionField, text: string) => {
+    setPosition((current) => applyPositionEdit(current, field, text));
+    // Any position edit can change the derived field, so clear all three
+    // validation messages and let the next submit re-check them.
+    setErrors((current) => ({
+      ...current,
+      quantity: undefined,
+      entryPrice: undefined,
+      investedAmount: undefined,
+    }));
+    setFormError(null);
   };
 
   const handleSubmit = () => {
-    const result = validateAssetForm(values);
-    setErrors(result.errors);
-    if (result.success && result.data) onSubmit(result.data);
+    const result = validateAssetForm({
+      ...values,
+      quantity: position.quantity,
+      entryPrice: position.entryPrice,
+    });
+    const nextErrors: FormErrors = { ...result.errors };
+
+    if (
+      position.investedAmount.trim() &&
+      parsePositionNumber(position.investedAmount) == null
+    ) {
+      nextErrors.investedAmount = 'Enter a valid amount.';
+    }
+
+    setErrors(nextErrors);
+
+    if (filledPositionFields(position) < 2) {
+      setFormError(
+        'Enter at least two of quantity, average price or invested amount.',
+      );
+      return;
+    }
+
+    setFormError(null);
+    if (result.success && result.data && Object.keys(nextErrors).length === 0) {
+      onSubmit(result.data);
+    }
   };
 
   return (
     <View style={styles.wrapper}>
+      {!initial?.id && !disabled ? (
+        <Card style={styles.card}>
+          <Text style={[type.label, { color: colors.muted }]}>Find an asset</Text>
+          <AssetSearch
+            onSelect={(selection) => {
+              setValues((current) => ({
+                ...current,
+                name: selection.name,
+                symbol: selection.symbol,
+                type: selection.type,
+                currency: selection.currency,
+              }));
+              setErrors({});
+              setFormError(null);
+            }}
+          />
+          <Text style={[type.caption, { color: colors.muted }]}>
+            Start typing a name like “Reliance” or “gold” to pick the exact ticker.
+            You can still enter everything manually below.
+          </Text>
+        </Card>
+      ) : null}
+
       <Card style={styles.card}>
         <Text style={[type.label, { color: colors.muted }]}>Instrument</Text>
         <TextField
@@ -124,8 +201,8 @@ export function AssetForm({
               label="Quantity"
               placeholder="0"
               keyboardType="decimal-pad"
-              value={String(values.quantity)}
-              onChangeText={(text) => update('quantity', text)}
+              value={position.quantity}
+              onChangeText={(text) => updatePosition('quantity', text)}
               error={errors.quantity}
               editable={!disabled}
             />
@@ -135,13 +212,24 @@ export function AssetForm({
               label="Avg. price"
               placeholder="0.00"
               keyboardType="decimal-pad"
-              value={String(values.entryPrice)}
-              onChangeText={(text) => update('entryPrice', text)}
+              value={position.entryPrice}
+              onChangeText={(text) => updatePosition('entryPrice', text)}
               error={errors.entryPrice}
               editable={!disabled}
             />
           </View>
         </View>
+
+        <TextField
+          label="Invested amount"
+          placeholder="0.00"
+          keyboardType="decimal-pad"
+          value={position.investedAmount}
+          onChangeText={(text) => updatePosition('investedAmount', text)}
+          error={errors.investedAmount}
+          hint="Active saving. Enter any two of quantity, average price or invested amount and the third fills automatically."
+          editable={!disabled}
+        />
 
         <View style={styles.chips}>
           {(['INR', 'USD'] as const).map((currency) => (
@@ -225,6 +313,12 @@ export function AssetForm({
           editable={!disabled}
         />
       </Card>
+
+      {formError ? (
+        <Text style={[type.body, { color: colors.negative }]} accessibilityRole="alert">
+          {formError}
+        </Text>
+      ) : null}
 
       {serverError ? (
         <Text style={[type.body, { color: colors.negative }]} accessibilityRole="alert">

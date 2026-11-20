@@ -97,7 +97,171 @@ async function fetchWithFailover(endpoints: string[], query: string, transformFn
   return [];
 }
 
-// Tickertape API removed.
+const SEARCH_HEADERS: HeadersInit = {
+  'User-Agent':
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  Accept: 'application/json',
+};
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit = {},
+  timeoutMs = 4000,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Resolves to null instead of hanging when a promise has no timeout option. */
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(null);
+      },
+    );
+  });
+}
+
+/**
+ * Raw Yahoo search. yahoo-finance2's search parser can throw a schema
+ * validation error on newer quote payloads, which made production search
+ * return an empty list even though the price endpoint could reach Yahoo.
+ * The raw endpoint needs no crumb/cookie and gives us the same quotes.
+ */
+async function searchYahooDirect(query: string): Promise<any[]> {
+  const searchQ =
+    query.replace(/\b(nse|bse)\s*:?\s*/gi, '').replace(/\s+/g, ' ').trim() || query;
+  const hosts = ['query1.finance.yahoo.com', 'query2.finance.yahoo.com'];
+
+  for (const host of hosts) {
+    const url = `https://${host}/v1/finance/search?q=${encodeURIComponent(
+      searchQ,
+    )}&quotesCount=10&newsCount=0`;
+
+    try {
+      const res = await fetchWithTimeout(url, {
+        headers: { ...SEARCH_HEADERS, Referer: 'https://finance.yahoo.com/' },
+      });
+      if (!res.ok) {
+        console.error(`Yahoo search failed on ${host}: ${res.status}`);
+        continue;
+      }
+
+      const data = await res.json();
+      const quotes = Array.isArray(data?.quotes) ? data.quotes : [];
+      const mapped = quotes
+        .filter((quote: any) => typeof quote?.symbol === 'string' && quote.symbol)
+        .map((quote: any) => ({
+          symbol: quote.symbol,
+          shortname: quote.shortname,
+          longname: quote.longname,
+          quoteType: quote.quoteType,
+          source: 'Yahoo Finance',
+        }));
+      if (mapped.length > 0) {
+        return mapped;
+      }
+    } catch (e: any) {
+      console.error(`Yahoo search error on ${host}:`, e.message || e);
+    }
+  }
+
+  return [];
+}
+
+/**
+ * Keyless Indian-equity fallback. Tickertape returns NSE tickers, so append
+ * .NS to keep the selected asset compatible with the Yahoo price route.
+ */
+async function searchTickertape(query: string): Promise<any[]> {
+  const url = `https://api.tickertape.in/search?text=${encodeURIComponent(query)}`;
+
+  try {
+    const res = await fetchWithTimeout(url, {
+      headers: {
+        ...SEARCH_HEADERS,
+        Origin: 'https://www.tickertape.in',
+        Referer: 'https://www.tickertape.in/',
+      },
+    });
+    if (!res.ok) {
+      console.error(`Tickertape search failed: ${res.status}`);
+      return [];
+    }
+
+    const data = await res.json();
+    const stocks = Array.isArray(data?.data?.stocks) ? data.data.stocks : [];
+    return stocks
+      .filter((stock: any) => typeof stock?.ticker === 'string' && stock.ticker.trim())
+      .map((stock: any) => ({
+        symbol: `${stock.ticker.trim().toUpperCase()}.NS`,
+        shortname: stock.name,
+        longname: stock.name,
+        quoteType: stock.type === 'etf' ? 'ETF' : 'EQUITY',
+        source: 'Tickertape',
+      }));
+  } catch (e: any) {
+    console.error('Tickertape search error:', e.message || e);
+    return [];
+  }
+}
+
+/**
+ * Last-resort Indian-equity fallback. Moneycontrol's suggestion payload embeds
+ * the NSE ticker in the second field of its <span> (ISIN, TICKER, CODE).
+ */
+async function searchMoneycontrol(query: string): Promise<any[]> {
+  const url = `https://www.moneycontrol.com/mccode/common/autosuggestion_solr.php?classic=true&query=${encodeURIComponent(
+    query,
+  )}&type=1&format=json`;
+
+  try {
+    const res = await fetchWithTimeout(url, {
+      headers: { ...SEARCH_HEADERS, Referer: 'https://www.moneycontrol.com/' },
+    });
+    if (!res.ok) {
+      console.error(`Moneycontrol search failed: ${res.status}`);
+      return [];
+    }
+
+    const data = await res.json();
+    const rows = Array.isArray(data) ? data : [];
+    const quotes: any[] = [];
+
+    for (const row of rows) {
+      const span = String(row?.pdt_dis_nm || '').match(/<span>([^<]+)<\/span>/i);
+      const parts = span?.[1]?.split(',').map((part) => part.trim()) ?? [];
+      const ticker = parts[1]?.toUpperCase();
+      const name = row?.name || row?.stock_name;
+      if (!ticker || !name) continue;
+
+      quotes.push({
+        symbol: `${ticker}.NS`,
+        shortname: name,
+        longname: name,
+        quoteType: 'EQUITY',
+        source: 'Moneycontrol',
+      });
+    }
+
+    return quotes;
+  } catch (e: any) {
+    console.error('Moneycontrol search error:', e.message || e);
+    return [];
+  }
+}
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -257,26 +421,41 @@ export async function GET(request: Request) {
 
     // 4. Search Yahoo Finance (primary for Auto, fallback for IndianAPI)
     if (stockQuotes.length === 0 || effectiveSource === 'yahoo') {
-      try {
-        // Yahoo's search works best without a forced exchange suffix. The old
-        // code appended " NSE", which made queries like "reliance" return zero
-        // results. Strip an NSE/BSE token if the user typed one, then search.
-        const searchQ =
-          q.replace(/\b(nse|bse)\s*:?\s*/gi, '').replace(/\s+/g, ' ').trim() || q;
+      console.log('Searching Yahoo Finance for:', q);
+      stockQuotes = await searchYahooDirect(q);
 
-        console.log('Searching Yahoo Finance for:', searchQ);
-        const yahooData = await yahoo.search(searchQ, { quotesCount: 6, newsCount: 0 });
-        stockQuotes = (yahooData?.quotes || []).map((quote: any) => ({
-          symbol: quote.symbol,
-          shortname: quote.shortname,
-          longname: quote.longname,
-          quoteType: quote.quoteType,
-          source: 'Yahoo Finance'
-        }));
-        console.log('Yahoo Finance search successful.');
-      } catch (e: any) {
-        console.error('Yahoo Finance search error:', e.message || e);
+      // Raw Yahoo is the primary path because it does not depend on
+      // yahoo-finance2's schema. Keep the client as a second attempt in case
+      // Yahoo changes the raw endpoint, then use keyless Indian sources.
+      if (stockQuotes.length === 0) {
+        try {
+          const yahooData = await withTimeout(
+            yahoo.search(q, { quotesCount: 10, newsCount: 0 }),
+            4000,
+          );
+          stockQuotes = (yahooData?.quotes || []).map((quote: any) => ({
+            symbol: quote.symbol,
+            shortname: quote.shortname,
+            longname: quote.longname,
+            quoteType: quote.quoteType,
+            source: 'Yahoo Finance',
+          }));
+        } catch (e: any) {
+          console.error('Yahoo Finance client search error:', e.message || e);
+        }
       }
+
+      if (stockQuotes.length === 0) {
+        console.log('Yahoo returned no quotes; trying Tickertape.');
+        stockQuotes = await searchTickertape(q);
+      }
+
+      if (stockQuotes.length === 0) {
+        console.log('Tickertape returned no quotes; trying Moneycontrol.');
+        stockQuotes = await searchMoneycontrol(q);
+      }
+
+      console.log(`Stock search returned ${stockQuotes.length} quotes.`);
     }
 
     // Interleave stockQuotes and mfQuotes for a better mixed result.
