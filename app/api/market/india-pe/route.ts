@@ -38,6 +38,8 @@ const DOWNSTOX_TIMEOUT_MS = 12_000;
 const DOWNSTOX_FALLBACK_TIMEOUT_MS = 12_000;
 const NIFTY_INDICES_TIMEOUT_MS = 10_000;
 const NIFTY_INDICES_TOTAL_TIMEOUT_MS = 20_000;
+/** A fresh, short budget lets Nifty fill gaps left by a failed Downstox call. */
+const NIFTY_INDICES_SECOND_WAVE_TIMEOUT_MS = 8_000;
 const NIFTY_INDICES_CONCURRENCY = 6;
 const MONGO_CONNECT_TIMEOUT_MS = 8_000;
 const MONGO_QUERY_TIMEOUT_MS = 2_000;
@@ -1296,11 +1298,11 @@ export async function GET() {
     }
     return true;
   });
-  if (niftySecondWave.length > 0 && Date.now() < niftyDeadline) {
+  if (niftySecondWave.length > 0) {
     niftyCurrent = await fetchNiftyCurrentMissing(
       niftySecondWave,
       niftyCurrent,
-      niftyDeadline,
+      Date.now() + NIFTY_INDICES_SECOND_WAVE_TIMEOUT_MS,
     );
   }
 

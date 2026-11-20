@@ -295,7 +295,8 @@ with the eight cheapest visible until you tap **Show all**.
   a browser-like User-Agent and one POST per missing index. The route requests a
   short recent date window, runs six calls at a time with a 10-second per-call
   timeout and a 20-second total budget, and skips it entirely when NSE or Downstox
-  already supplied the value. It maps display names to Nifty's own trading names
+  already supplied the value. A short second pass fills any gap left by a failed
+  Downstox call. It maps display names to Nifty's own trading names
   where they differ (for example `NIFTY CONSR DURBL`, `NIFTY OIL AND GAS`,
   `Nifty Ind Defence`). Tested values matched NSE (for example Capital Goods
   41.11, Cement 33.76, Power 17.93, Retail 181.76). Each row records
