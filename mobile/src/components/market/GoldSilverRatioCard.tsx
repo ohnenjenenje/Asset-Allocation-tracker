@@ -1,61 +1,27 @@
 import { Feather } from '@expo/vector-icons';
 import { StyleSheet, Text, View } from 'react-native';
 
-import { Badge, type BadgeTone } from '@/src/components/ui/Badge';
+import { Badge } from '@/src/components/ui/Badge';
 import { Card } from '@/src/components/ui/Card';
 import { IconButton } from '@/src/components/ui/IconButton';
 import { Skeleton } from '@/src/components/ui/Skeleton';
 import { ErrorState } from '@/src/components/ui/States';
 import { goldSilverEntryVerdict } from '@/src/features/market/entrySignal';
+import { useGoldSilverRatio } from '@/src/features/market/goldSilver';
 import {
-  useGoldSilverRatio,
-  type CrossCheckStatus,
-} from '@/src/features/market/goldSilver';
+  crossCheckView,
+  formatUsd,
+  goldSilverCheckSourceLabel,
+  goldSilverSourceLabel,
+} from '@/src/features/market/goldSilverFormat';
 import { classifyGoldSilverRatio } from '@/src/features/market/ratioSignal';
 import { formatPercent } from '@/src/lib/format/money';
 import { formatRelativeTime } from '@/src/lib/format/time';
 import { numeric, radius, space, type } from '@/src/lib/theme/tokens';
 import { useTheme } from '@/src/lib/theme/ThemeProvider';
 
+import { GoldSilverScale } from './GoldSilverScale';
 import { MarketSignalBadge } from './MarketSignalBadge';
-
-const usdFormatter = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-  maximumFractionDigits: 2,
-});
-
-function formatUsd(value: number | null): string {
-  if (value == null || !Number.isFinite(value)) return '—';
-  try {
-    return usdFormatter.format(value);
-  } catch {
-    return `$${value.toFixed(2)}`;
-  }
-}
-
-function crossCheckView(status: CrossCheckStatus): { label: string; tone: BadgeTone } {
-  switch (status) {
-    case 'match':
-      return { label: 'Match', tone: 'positive' };
-    case 'mismatch':
-      return { label: 'Differs', tone: 'warning' };
-    case 'stale':
-      return { label: 'Stale', tone: 'warning' };
-    default:
-      return { label: 'No check', tone: 'neutral' };
-  }
-}
-
-// The scale is a view, not a data range: clamp extreme readings to the edges.
-const SCALE_MIN = 40;
-const SCALE_MAX = 100;
-
-function scalePosition(ratio: number): number {
-  if (!Number.isFinite(ratio)) return 0;
-  const clamped = Math.min(Math.max(ratio, SCALE_MIN), SCALE_MAX);
-  return ((clamped - SCALE_MIN) / (SCALE_MAX - SCALE_MIN)) * 100;
-}
 
 /**
  * Market indicator rather than a portfolio holding. Yahoo's chart feed supplies
@@ -107,7 +73,7 @@ export function GoldSilverRatioCard() {
   const ratio = data.ratio;
   const check = crossCheckView(data.crossCheck.status);
   // Whichever feed is primary, the row names the *other* source as the check.
-  const crossCheckSource = data.primarySource === 'xaus' ? 'Yahoo' : 'xaus.com';
+  const crossCheckSource = goldSilverCheckSourceLabel(data.primarySource);
   const independentRatio =
     data.primarySource === 'xaus' ? null : data.xaus?.ratio ?? null;
   const difference =
@@ -126,8 +92,7 @@ export function GoldSilverRatioCard() {
   const updatedLabel = data.stale
     ? 'last known quote'
     : formatRelativeTime(updatedAt) || 'time unavailable';
-  const sourceLabel =
-    data.primarySource === 'xaus' ? 'xaus.com spot' : 'COMEX futures via Yahoo';
+  const sourceLabel = goldSilverSourceLabel(data.primarySource);
   const checkTone =
     data.crossCheck.status === 'match'
       ? colors.positive
@@ -148,7 +113,6 @@ export function GoldSilverRatioCard() {
       : signal.zone === 'gold'
         ? colors.warning
         : colors.muted;
-  const markerPosition = `${scalePosition(ratio)}%` as `${number}%`;
 
   return (
     <Card style={styles.card}>
@@ -191,33 +155,7 @@ export function GoldSilverRatioCard() {
             {signal.detail}
           </Text>
         </View>
-        <View style={styles.scale}>
-          <View style={[styles.scaleTrack, { backgroundColor: colors.border }]}>
-            <View style={[styles.scaleSegment, { flex: 10, backgroundColor: colors.warningSoft }]} />
-            <View style={[styles.scaleSegment, { flex: 30, backgroundColor: colors.border }]} />
-            <View style={[styles.scaleSegment, { flex: 20, backgroundColor: colors.accentSoft }]} />
-          </View>
-          <View
-            style={[styles.scaleMarker, { left: markerPosition, backgroundColor: colors.text }]}
-          />
-          <View style={styles.scaleLabels}>
-            <Text style={[styles.scaleLabel, { flex: 10, color: colors.warning }]}>Gold</Text>
-            <Text
-              style={[styles.scaleLabel, styles.scaleLabelCenter, { flex: 30, color: colors.muted }]}
-            >
-              Balanced
-            </Text>
-            <Text
-              style={[
-                styles.scaleLabel,
-                styles.scaleLabelRight,
-                { flex: 20, color: colors.accent },
-              ]}
-            >
-              Silver
-            </Text>
-          </View>
-        </View>
+        <GoldSilverScale ratio={ratio} />
       </View>
 
       <View style={[styles.prices, { backgroundColor: colors.cardMuted }]}>
@@ -300,26 +238,6 @@ const styles = StyleSheet.create({
   signalDetailRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6 },
   signalDot: { width: 6, height: 6, borderRadius: 3, marginTop: 5 },
   signalDetail: { flex: 1, fontSize: 11, lineHeight: 16 },
-  scale: { marginTop: 2, position: 'relative' },
-  scaleTrack: {
-    flexDirection: 'row',
-    height: 6,
-    borderRadius: radius.full,
-    overflow: 'hidden',
-  },
-  scaleSegment: { height: '100%' },
-  scaleMarker: {
-    position: 'absolute',
-    top: -3,
-    width: 3,
-    height: 12,
-    borderRadius: 2,
-    marginLeft: -1.5,
-  },
-  scaleLabels: { flexDirection: 'row', marginTop: 5 },
-  scaleLabel: { fontSize: 9, fontWeight: '600' },
-  scaleLabelCenter: { textAlign: 'center' },
-  scaleLabelRight: { textAlign: 'right' },
   prices: {
     flexDirection: 'row',
     borderRadius: radius.md,

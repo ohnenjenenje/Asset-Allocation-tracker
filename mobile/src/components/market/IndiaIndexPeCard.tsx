@@ -10,75 +10,44 @@ import { indexEntryVerdict } from '@/src/features/market/entrySignal';
 import {
   indiaPeSourceLabel,
   useIndiaPe,
-  type IndiaIndexValuation,
 } from '@/src/features/market/indiaPe';
 import {
+  currentSourceLabel,
+  formatAsOf,
+  formatHistoryWindow,
+  formatPe,
+  historyComparison,
+  historySourceLabel,
+  ordinalPercentile,
+  peZoneLabel,
+} from '@/src/features/market/peFormat';
+import {
+  describeMedianPosition,
+  discountToMedian,
+  formatRelativePe,
+  relativePe,
+} from '@/src/features/market/peMetrics';
+import {
   classifyPePercentile,
-  type PeZone,
+  peBoundaryLabel,
 } from '@/src/features/market/peSignal';
 import { formatPercent } from '@/src/lib/format/money';
 import { numeric, radius, space, type } from '@/src/lib/theme/tokens';
 import { useTheme } from '@/src/lib/theme/ThemeProvider';
 
 import { MarketSignalBadge } from './MarketSignalBadge';
+import { PePercentileScale } from './PePercentileScale';
 
-function formatNumber(value: number | null, digits = 2): string {
-  if (value == null || !Number.isFinite(value)) return '—';
-  return value.toFixed(digits);
-}
-
-function ordinal(value: number): string {
-  const rounded = Math.round(value);
-  const mod100 = rounded % 100;
-  if (mod100 >= 11 && mod100 <= 13) return `${rounded}th`;
-  switch (rounded % 10) {
-    case 1:
-      return `${rounded}st`;
-    case 2:
-      return `${rounded}nd`;
-    case 3:
-      return `${rounded}rd`;
-    default:
-      return `${rounded}th`;
-  }
-}
-
-function zoneLabel(zone: PeZone): string {
-  switch (zone) {
-    case 'cheap':
-      return 'Cheap';
-    case 'expensive':
-      return 'Expensive';
-    case 'fair':
-      return 'Fair';
-    default:
-      return 'No history';
-  }
-}
-
-function formatAsOf(value: string | null): string {
-  if (!value) return 'date unavailable';
-  const date = new Date(`${value}T00:00:00+05:30`);
-  if (Number.isNaN(date.getTime())) return value;
-  try {
-    return date.toLocaleDateString('en-IN', {
-      day: 'numeric',
-      month: 'short',
-      year: 'numeric',
-    });
-  } catch {
-    return value;
-  }
-}
-
-function historyComparison(index: IndiaIndexValuation): string | null {
-  const history = index.history;
-  if (!history || history.percentile == null) return null;
-
-  const percentile = history.percentile;
-  const share = Math.round(percentile <= 50 ? 100 - percentile : percentile);
-  const direction = percentile <= 50 ? 'Cheaper' : 'More expensive';
-  return `${direction} than ${share}% of the last ${history.sampleMonths} months`;
+function DetailCell({ label, value }: { label: string; value: string }) {
+  const { colors } = useTheme();
+  return (
+    <View style={styles.detailCell}>
+      <Text style={[styles.detailLabel, { color: colors.muted }]}>{label}</Text>
+      <Text style={[styles.detailValue, { color: colors.text }]} numberOfLines={2}>
+        {value}
+      </Text>
+    </View>
+  );
 }
 
 /**
@@ -140,9 +109,8 @@ export function IndiaIndexPeCard() {
         : entry.tone === 'accent'
           ? colors.accent
           : colors.muted;
-  const zoneColor =
-    zone === 'cheap' ? colors.positive : zone === 'expensive' ? colors.warning : colors.muted;
-  const markerPosition = `${Math.min(Math.max(percentile ?? 0, 0), 100)}%` as `${number}%`;
+  const discount = discountToMedian(primary.pe, history?.medianPe ?? null);
+  const boundary = peBoundaryLabel(percentile);
   const peers = data.indices.filter(
     (index) => index.featured && index.key !== primary.key,
   );
@@ -177,7 +145,7 @@ export function IndiaIndexPeCard() {
             <Text style={[type.bodyMedium, { color: colors.textSecondary }]}>{primary.name}</Text>
             <View style={styles.peLine}>
               <Text style={[styles.peValue, numeric, { color: colors.text }]}>
-                {formatNumber(primary.pe)}
+                {formatPe(primary.pe)}
               </Text>
               <Text style={[styles.peUnit, { color: colors.muted }]}>P/E</Text>
             </View>
@@ -189,8 +157,8 @@ export function IndiaIndexPeCard() {
           />
         </View>
         <Text style={[styles.heroMeta, { color: colors.muted }]}>
-          {zoneLabel(zone)} valuation · 5y median {formatNumber(history?.medianPe ?? null)}
-          {percentile != null ? ` · ${ordinal(percentile)} percentile` : ''}
+          {peZoneLabel(zone)} valuation · 5y median {formatPe(history?.medianPe ?? null)}
+          {percentile != null ? ` · ${ordinalPercentile(percentile)} percentile` : ''}
         </Text>
         <Text style={[styles.entryHeadline, { color: entryColor }]}>
           {entry.headline}
@@ -201,7 +169,7 @@ export function IndiaIndexPeCard() {
         <View style={styles.stat}>
           <Text style={[styles.statLabel, { color: colors.muted }]}>P/B</Text>
           <Text style={[styles.statValue, numeric, { color: colors.text }]}>
-            {formatNumber(primary.pb)}
+            {formatPe(primary.pb)}
           </Text>
         </View>
         <View style={[styles.statDivider, { backgroundColor: colors.border }]} />
@@ -226,49 +194,16 @@ export function IndiaIndexPeCard() {
             <Text style={[styles.historyTitle, { color: colors.text }]}>
               Versus its own 5-year history
             </Text>
-            <Text style={[styles.historyPercentile, numeric, { color: zoneColor }]}>
-              {ordinal(percentile)}
+            <Text style={[styles.historyPercentile, numeric, { color: entryColor }]}>
+              {ordinalPercentile(percentile)}
             </Text>
           </View>
-          <View style={styles.scale}>
-            <View style={styles.scaleTrack}>
-              <View
-                style={[styles.scaleSegment, { flex: 25, backgroundColor: colors.positiveSoft }]}
-              />
-              <View
-                style={[styles.scaleSegment, { flex: 50, backgroundColor: colors.cardMuted }]}
-              />
-              <View
-                style={[styles.scaleSegment, { flex: 25, backgroundColor: colors.warningSoft }]}
-              />
-            </View>
-            <View
-              style={[styles.scaleMarker, { left: markerPosition, backgroundColor: zoneColor }]}
-            />
-            <View style={styles.scaleLabels}>
-              <Text style={[styles.scaleLabel, { flex: 25, color: colors.positive }]}>Cheap</Text>
-              <Text
-                style={[
-                  styles.scaleLabel,
-                  styles.scaleLabelCenter,
-                  { flex: 50, color: colors.muted },
-                ]}
-              >
-                Fair
-              </Text>
-              <Text
-                style={[
-                  styles.scaleLabel,
-                  styles.scaleLabelRight,
-                  { flex: 25, color: colors.warning },
-                ]}
-              >
-                Expensive
-              </Text>
-            </View>
-          </View>
+          <PePercentileScale percentile={percentile} showCutoffs />
+          {boundary ? (
+            <Text style={[styles.boundary, { color: colors.warning }]}>{boundary}</Text>
+          ) : null}
           <Text style={[styles.historyDetail, { color: colors.muted }]}>
-            {historyComparison(primary) ?? 'History baseline unavailable.'}
+            {historyComparison(history) ?? 'History baseline unavailable.'}
           </Text>
         </View>
       ) : (
@@ -277,25 +212,57 @@ export function IndiaIndexPeCard() {
         </Text>
       )}
 
+      <View style={[styles.details, { backgroundColor: colors.cardMuted }]}>
+        <View style={styles.detailRow}>
+          <DetailCell label="5y median" value={formatPe(history?.medianPe ?? null)} />
+          <DetailCell
+            label="Vs median"
+            value={describeMedianPosition(discount) ?? '—'}
+          />
+        </View>
+        <View style={[styles.detailDivider, { backgroundColor: colors.border }]} />
+        <View style={styles.detailRow}>
+          <DetailCell label="History window" value={formatHistoryWindow(history)} />
+          <DetailCell
+            label="Sample"
+            value={history ? `${history.sampleMonths} months` : '—'}
+          />
+        </View>
+        <View style={[styles.detailDivider, { backgroundColor: colors.border }]} />
+        <View style={styles.detailRow}>
+          <DetailCell
+            label="Current source"
+            value={currentSourceLabel(primary.currentSource)}
+          />
+          <DetailCell
+            label="History source"
+            value={historySourceLabel(primary.historySource)}
+          />
+        </View>
+      </View>
+
       <View style={[styles.peers, { borderTopColor: colors.border }]}>
         {peers.map((peer) => {
           const peerZone = classifyPePercentile(peer.history?.percentile ?? null);
           const peerEntry = indexEntryVerdict(peerZone);
           const peerPercentile = peer.history?.percentile;
+          const peerDiscount = discountToMedian(peer.pe, peer.history?.medianPe ?? null);
+          const peerRelative = relativePe(peer.pe, primary.pe);
           return (
             <View key={peer.key} style={styles.peerRow}>
               <View style={styles.peerName}>
                 <Text style={[styles.peerTitle, { color: colors.text }]}>{peer.name}</Text>
-                <Text style={[styles.peerMeta, { color: colors.muted }]}>
+                <Text style={[styles.peerMeta, { color: colors.muted }]} numberOfLines={2}>
                   {peerPercentile != null
-                    ? `${zoneLabel(peerZone)} · ${ordinal(peerPercentile)} pct · median ${formatNumber(
+                    ? `${peZoneLabel(peerZone)} · ${ordinalPercentile(peerPercentile)} pct · median ${formatPe(
                         peer.history?.medianPe ?? null,
-                      )}`
+                      )} · ${describeMedianPosition(peerDiscount) ?? 'median unavailable'}`
                     : 'History unavailable'}
+                  {peerRelative != null ? ` · ${formatRelativePe(peerRelative)} Nifty 50` : ''}
                 </Text>
               </View>
               <Text style={[styles.peerPe, numeric, { color: colors.text }]}>
-                {formatNumber(peer.pe)}
+                {formatPe(peer.pe)}
               </Text>
               <Badge label={peerEntry.label} tone={peerEntry.tone} />
             </View>
@@ -305,8 +272,9 @@ export function IndiaIndexPeCard() {
 
       <Text style={[styles.note, { color: colors.muted }]}>
         P/E is price divided by trailing earnings. Percentiles compare each index with its own last
-        60 monthly readings; they describe the past, not a forecast. History uses post-2021
-        consolidated earnings.
+        60 monthly readings; the bottom quartile includes the 25th-percentile boundary. The median
+        discount is secondary context, not a separate signal. History uses post-2021 consolidated
+        earnings.
       </Text>
     </Card>
   );
@@ -345,32 +313,19 @@ const styles = StyleSheet.create({
   historyHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   historyTitle: { fontSize: 12, fontWeight: '600' },
   historyPercentile: { fontSize: 12, fontWeight: '600' },
-  scale: { position: 'relative' },
-  scaleTrack: {
-    flexDirection: 'row',
-    height: 6,
-    borderRadius: radius.full,
-    overflow: 'hidden',
-  },
-  scaleSegment: { height: '100%' },
-  scaleMarker: {
-    position: 'absolute',
-    top: -3,
-    width: 3,
-    height: 12,
-    borderRadius: 2,
-    marginLeft: -1.5,
-  },
-  scaleLabels: { flexDirection: 'row', marginTop: 5 },
-  scaleLabel: { fontSize: 9, fontWeight: '600' },
-  scaleLabelCenter: { textAlign: 'center' },
-  scaleLabelRight: { textAlign: 'right' },
+  boundary: { fontSize: 10, fontWeight: '600', marginTop: -space.xs },
   historyDetail: { fontSize: 10.5, lineHeight: 15 },
+  details: { borderRadius: radius.md, padding: space.md, gap: space.sm },
+  detailRow: { flexDirection: 'row', gap: space.md },
+  detailDivider: { height: StyleSheet.hairlineWidth },
+  detailCell: { flex: 1, gap: 1 },
+  detailLabel: { ...type.label, fontSize: 8.5, letterSpacing: 0.4 },
+  detailValue: { fontSize: 11, fontWeight: '500', lineHeight: 15 },
   peers: { borderTopWidth: StyleSheet.hairlineWidth, paddingTop: space.sm, gap: space.sm },
   peerRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   peerName: { flex: 1, gap: 1 },
   peerTitle: { fontSize: 12, fontWeight: '500' },
-  peerMeta: { fontSize: 9.5 },
+  peerMeta: { fontSize: 9.5, lineHeight: 13 },
   peerPe: { fontSize: 13, fontWeight: '600' },
   note: { ...type.caption, fontSize: 10.5, lineHeight: 15 },
 });

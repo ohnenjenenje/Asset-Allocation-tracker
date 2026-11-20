@@ -82,6 +82,7 @@ planner runs against the same types as the app.
 ```
 app/                      routes only
   (tabs)/                 Allocation (home) · Holdings · Insights · Research · Settings
+    research/             Signals/Tools shell + gold-silver, india-pe, sectors details
   screener.tsx            stock screener (opened from Research)
   policy.tsx              sleeve targets, bands and review cadence (modal)
   rebalance.tsx           contribution-first rebalance planner
@@ -93,6 +94,7 @@ app/                      routes only
 src/
   components/ui/          design-system primitives
   components/charts/      SVG visualisations
+  components/market/      signal cards, detail explorers and feed comparisons
   components/portfolio/   composed portfolio widgets
   components/portfolio/insights/  exposure, fund, matrix and drift panels
   features/assistant/     chat loop, model picker + portfolio tool executors
@@ -238,9 +240,38 @@ treated as Groq keys.
 public keys, so the proxy cannot be used anonymously in production. Local
 `next dev` allows tokenless requests for testing.
 
+### Research signals
+
+The Research tab is a nested stack: the tab bar stays visible while a signal
+detail is open. The root screen switches between **Signals** and **Tools** and
+keeps that selection when you return from a detail.
+
+**Signals** has three compact, pressable cards:
+
+- **Gold / silver ratio** — current ratio, signal badge, 1 oz equivalence,
+  the 40–100 band, both metal prices, the independent cross-check and freshness.
+- **India index P/E** — Nifty 50 P/E, signal badge, five-year median,
+  percentile, sample size, the three featured peers and source/date.
+- **Sector valuations** — the 43-index signal universe, the Buy / Neutral /
+  Expensive / No signal summary, a distribution bar and the three cheapest
+  indices.
+
+Each card opens a full detail screen. Gold/silver adds the complete Yahoo vs
+xaus.com feed table and the band methodology. India P/E adds P/B, dividend
+yield, earnings yield, history window, current/history source and the full
+featured-peer table with median discounts and relative P/E. Sector valuations
+opens the complete 45-row explorer with category filters (Sector & thematic 43
+by default, Broad 2, All 45), zone filters, search, cheapest/discount/name
+sorting and expandable rows. Broad indices are labelled **Benchmark** because
+they are the comparison, not sector peers.
+
+**Tools** keeps the existing Screener, AI assistant and Portfolio insights
+cards. Pull-to-refresh is available on Signals only; detail screens use the
+refresh control on their full card.
+
 ### Gold/silver ratio
 
-The Research tab shows a market indicator card backed by
+The Research → Signals tab shows a compact market card backed by
 `GET /api/market/gold-silver`:
 
 - Yahoo Finance's public chart endpoint supplies `GC=F` / `SI=F` COMEX
@@ -267,10 +298,11 @@ The Research tab shows a market indicator card backed by
 
 ### India index P/E
 
-The Research tab has two valuation cards backed by `GET /api/market/india-pe`.
-The first is the headline card (Nifty 50, Nifty Bank, Nifty IT and Nifty Midcap
-100); the second lists every sectoral and thematic index, sorted cheapest first
-with the eight cheapest visible until you tap **Show all**.
+The Research → Signals tab has two index cards backed by
+`GET /api/market/india-pe`. The India card summarises Nifty 50 and the three
+featured peers; the sector card summarises the 43-index universe and opens the
+full explorer. The detail screens reuse the same React Query cache, so opening a
+card does not trigger a second network request.
 
 - NSE's daily index closing file (`ind_close_all.csv`, keyless) supplies the
   latest P/E, P/B and dividend yield. It currently covers 169 indices, 146 with a
@@ -305,10 +337,23 @@ with the eight cheapest visible until you tap **Show all**.
   response lists every feed used in `sources`.
 - An index needs at least 24 monthly readings before a percentile and signal are
   shown. Until then the current P/E is displayed with **No signal**. Percentiles
-  compare each index with its own last 60 monthly readings; the bottom quartile
-  is `cheap` (Buy zone), the middle half `fair` (Neutral) and the top quartile
-  `expensive`. This is relative-value context, not a forecast. The window sits
-  after NSE's 2021 switch to consolidated earnings.
+  compare each index with its own last 60 monthly readings. Quartile membership
+  is inclusive: at or below the 25th percentile is `cheap` (Buy zone), above 25
+  and below 75 is `fair` (Neutral), and at or above the 75th percentile is
+  `expensive`. A reading exactly at 25 or 75 is annotated **at cutoff**, because
+  it is the weakest point of its zone rather than a high-conviction signal. This
+  is relative-value context, not a forecast. The window sits after NSE's 2021
+  switch to consolidated earnings.
+- Two secondary metrics sit beside the percentile without changing the signal.
+  **Discount to median** is `(current P/E ÷ 5-year median P/E − 1) × 100`, so
+  −30% means the index trades 30% below its own median. **Relative P/E** is the
+  index P/E divided by Nifty 50, so 0.67x means a 33% discount to the broad
+  market. The sector explorer can sort by percentile or by discount, and broad
+  indices are labelled benchmarks so they do not distort the sector counts.
+- The Screener.in index chart is the same idea with less information: current
+  P/E against a flat median line. The app uses the official NSE monthly series
+  and the percentile classifier instead of scraping Screener.in, whose index
+  coverage is partial and which rate-limits automated requests.
 - All three feeds are free and need no API key. NSE has no documented rate limit,
   but it can throttle aggressive scraping, so the route is deliberately bounded:
   one current-file request per refresh, 60 monthly archive lookups (plus a short
@@ -336,9 +381,14 @@ with the eight cheapest visible until you tap **Show all**.
   rebuild and fallback fill, and offers a manual refresh on both cards.
 
 The index configuration and source mapping live in
-`app/api/market/india-pe/route.ts`; the cards are
-`mobile/src/components/market/IndiaIndexPeCard.tsx` and
-`IndiaSectorPeCard.tsx`.
+`lib/market/indiaIndexes.ts`, shared by the valuation route and the monthly
+history endpoint (`GET /api/market/india-pe/history?key=…`). The compact cards
+are `mobile/src/components/market/GoldSilverSignalCard.tsx`,
+`IndiaPeSignalCard.tsx` and `SectorPeSignalCard.tsx`. The full views are
+`GoldSilverRatioCard.tsx`, `GoldSilverFeedComparison.tsx`,
+`IndiaIndexPeCard.tsx` and `SectorPeExplorer.tsx`. The Screener.in-style monthly
+chart is `mobile/src/components/charts/PeHistoryChart.tsx`; it loads on demand
+from the cached Mongo series when a detail screen or sector row is opened.
 
 
 ### Auth and demo mode
