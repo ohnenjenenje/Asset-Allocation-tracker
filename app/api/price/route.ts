@@ -1,6 +1,12 @@
+import { setDefaultResultOrder } from 'node:dns';
 import { NextResponse } from 'next/server';
 import { GoogleAuth } from 'google-auth-library';
 import YahooFinance from 'yahoo-finance2';
+
+// Render resolves Yahoo Finance to IPv6 first but cannot route those
+// connections, which made every quote fall back to the sheet. Prefer IPv4 so
+// Node's fetch reaches Yahoo from the hosted environment.
+setDefaultResultOrder('ipv4first');
 
 const yahoo = new YahooFinance();
 
