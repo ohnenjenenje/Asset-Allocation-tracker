@@ -243,10 +243,18 @@ public keys, so the proxy cannot be used anonymously in production. Local
 The Research tab shows a market indicator card backed by
 `GET /api/market/gold-silver`:
 
-- Yahoo Finance `GC=F` / `SI=F` COMEX futures supply the primary ratio.
+- Yahoo Finance's public chart endpoint supplies `GC=F` / `SI=F` COMEX
+  futures and therefore the primary ratio. The route deliberately avoids
+  Yahoo's v7 quote endpoint because it now requires a crumb/cookie handshake
+  that cloud-hosted IPs often get rejected from; the chart endpoint needs no
+  crumb and is tried on both `query1` and `query2` before giving up.
 - `https://xaus.com/api/v1/spot` supplies an independent spot ratio for
   cross-checking. The response includes both quotes, the percentage gap and a
   status: `match` (within 1.5%), `mismatch`, `stale` or `unavailable`.
+- If one feed is down, the other becomes the primary and the card names the
+  missing source in the cross-check row (for example, "Yahoo cross-check —
+  futures quote unavailable, using xaus spot") instead of reporting xaus as
+  failed when it was actually Yahoo that was missing.
 - The card interprets the ratio as relative value: at or above 80, silver looks
   cheap versus gold; at or below 50, gold looks cheap versus silver; anything
   between is neutral. The 50/80 bands are a common heuristic, not investment

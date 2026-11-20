@@ -58,7 +58,7 @@ export async function fetchGoldSilver(
 }
 
 /**
- * Gold/silver ratio with an independent xaus.com cross-check. The endpoint
+ * Gold/silver ratio with an independent second-source cross-check. The endpoint
  * caches upstream calls for ten minutes, so poll less often than portfolio data.
  */
 export function useGoldSilverRatio() {

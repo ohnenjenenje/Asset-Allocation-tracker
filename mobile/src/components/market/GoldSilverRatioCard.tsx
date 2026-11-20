@@ -41,9 +41,9 @@ function crossCheckView(status: CrossCheckStatus): { label: string; tone: BadgeT
     case 'mismatch':
       return { label: 'Differs', tone: 'warning' };
     case 'stale':
-      return { label: 'xaus stale', tone: 'warning' };
+      return { label: 'Stale', tone: 'warning' };
     default:
-      return { label: 'N/A', tone: 'neutral' };
+      return { label: 'No check', tone: 'neutral' };
   }
 }
 
@@ -58,9 +58,10 @@ function scalePosition(ratio: number): number {
 }
 
 /**
- * Market indicator rather than a portfolio holding. Yahoo supplies the same
- * COMEX futures used for physical gold/silver valuations; xaus.com provides an
- * independent spot ratio so a bad feed is visible instead of silently trusted.
+ * Market indicator rather than a portfolio holding. Yahoo's chart feed supplies
+ * the COMEX futures used for physical gold/silver valuations; xaus.com provides
+ * an independent spot ratio. Either feed can be primary, and the row names the
+ * missing source so an unavailable cross-check is never mistaken for bad data.
  */
 export function GoldSilverRatioCard() {
   const { colors } = useTheme();
@@ -105,11 +106,22 @@ export function GoldSilverRatioCard() {
 
   const ratio = data.ratio;
   const check = crossCheckView(data.crossCheck.status);
-  const xausRatio = data.xaus?.ratio ?? null;
+  // Whichever feed is primary, the row names the *other* source as the check.
+  const crossCheckSource = data.primarySource === 'xaus' ? 'Yahoo' : 'xaus.com';
+  const independentRatio =
+    data.primarySource === 'xaus' ? null : data.xaus?.ratio ?? null;
   const difference =
     data.crossCheck.differencePct != null
       ? `${formatPercent(data.crossCheck.differencePct)} apart`
       : 'difference unavailable';
+  const crossCheckDetail =
+    data.crossCheck.status === 'unavailable'
+      ? data.primarySource === 'xaus'
+        ? 'Yahoo futures quote unavailable · using xaus spot'
+        : 'No independent xaus quote received'
+      : independentRatio != null
+        ? `${independentRatio.toFixed(2)} · ${difference}`
+        : 'Independent quote unavailable';
   const updatedAt = data.asOf ? Date.parse(data.asOf) : null;
   const updatedLabel = data.stale
     ? 'last known quote'
@@ -122,6 +134,12 @@ export function GoldSilverRatioCard() {
       : data.crossCheck.status === 'unavailable'
         ? colors.muted
         : colors.warning;
+  const checkIcon =
+    data.crossCheck.status === 'match'
+      ? 'check'
+      : data.crossCheck.status === 'unavailable'
+        ? 'help-circle'
+        : 'alert-circle';
   const signal = classifyGoldSilverRatio(ratio);
   const entry = goldSilverEntryVerdict(signal.zone);
   const signalTone =
@@ -223,19 +241,17 @@ export function GoldSilverRatioCard() {
       <View style={[styles.crossCheck, { borderTopColor: colors.border }]}>
         <View style={[styles.checkIcon, { backgroundColor: colors.cardMuted }]}>
           <Feather
-            name={data.crossCheck.status === 'match' ? 'check' : 'alert-circle'}
+            name={checkIcon}
             size={13}
             color={checkTone}
           />
         </View>
         <View style={styles.crossCheckText}>
           <Text style={[styles.crossCheckTitle, { color: colors.text }]}>
-            xaus.com cross-check
+            {crossCheckSource} cross-check
           </Text>
           <Text style={[styles.crossCheckDetail, { color: colors.muted }]}>
-            {xausRatio != null
-              ? `${xausRatio.toFixed(2)} · ${difference}`
-              : 'No independent quote received'}
+            {crossCheckDetail}
           </Text>
         </View>
         <Badge label={check.label} tone={check.tone} />
@@ -251,8 +267,9 @@ export function GoldSilverRatioCard() {
 
       <Text style={[styles.note, { color: colors.muted }]}>
         High ratio = silver cheap vs gold; low ratio = gold cheap vs silver. The 50/80 bands
-        are a relative-value heuristic, not investment advice — extremes can persist. xaus.com
-        is an independent spot check; small gaps reflect futures basis and timing.
+        are a relative-value heuristic, not investment advice — extremes can persist. Yahoo
+        COMEX futures and xaus.com spot are cross-checked; if one feed is down, the other is
+        used and the gap is marked unavailable.
       </Text>
     </Card>
   );
