@@ -6,6 +6,7 @@ import { Card } from '@/src/components/ui/Card';
 import { IconButton } from '@/src/components/ui/IconButton';
 import { Skeleton } from '@/src/components/ui/Skeleton';
 import { ErrorState } from '@/src/components/ui/States';
+import { goldSilverEntryVerdict } from '@/src/features/market/entrySignal';
 import {
   useGoldSilverRatio,
   type CrossCheckStatus,
@@ -15,6 +16,8 @@ import { formatPercent } from '@/src/lib/format/money';
 import { formatRelativeTime } from '@/src/lib/format/time';
 import { numeric, radius, space, type } from '@/src/lib/theme/tokens';
 import { useTheme } from '@/src/lib/theme/ThemeProvider';
+
+import { MarketSignalBadge } from './MarketSignalBadge';
 
 const usdFormatter = new Intl.NumberFormat('en-US', {
   style: 'currency',
@@ -120,6 +123,7 @@ export function GoldSilverRatioCard() {
         ? colors.muted
         : colors.warning;
   const signal = classifyGoldSilverRatio(ratio);
+  const entry = goldSilverEntryVerdict(signal.zone);
   const signalTone =
     signal.zone === 'silver'
       ? colors.accent
@@ -140,7 +144,11 @@ export function GoldSilverRatioCard() {
             Ounces of silver per ounce of gold
           </Text>
         </View>
-        <Badge label={check.label} tone={check.tone} />
+        <MarketSignalBadge
+          label={entry.label}
+          tone={entry.tone}
+          icon={entry.icon}
+        />
       </View>
 
       <View style={styles.ratioBlock}>
@@ -230,6 +238,7 @@ export function GoldSilverRatioCard() {
               : 'No independent quote received'}
           </Text>
         </View>
+        <Badge label={check.label} tone={check.tone} />
         <IconButton
           icon="refresh-cw"
           variant="plain"

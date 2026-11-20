@@ -1,11 +1,12 @@
 import { Feather } from '@expo/vector-icons';
 import { StyleSheet, Text, View } from 'react-native';
 
-import { Badge, type BadgeTone } from '@/src/components/ui/Badge';
+import { Badge } from '@/src/components/ui/Badge';
 import { Card } from '@/src/components/ui/Card';
 import { IconButton } from '@/src/components/ui/IconButton';
 import { Skeleton } from '@/src/components/ui/Skeleton';
 import { ErrorState } from '@/src/components/ui/States';
+import { indexEntryVerdict } from '@/src/features/market/entrySignal';
 import {
   useIndiaPe,
   type IndiaIndexValuation,
@@ -17,6 +18,8 @@ import {
 import { formatPercent } from '@/src/lib/format/money';
 import { numeric, radius, space, type } from '@/src/lib/theme/tokens';
 import { useTheme } from '@/src/lib/theme/ThemeProvider';
+
+import { MarketSignalBadge } from './MarketSignalBadge';
 
 function formatNumber(value: number | null, digits = 2): string {
   if (value == null || !Number.isFinite(value)) return '—';
@@ -49,19 +52,6 @@ function zoneLabel(zone: PeZone): string {
       return 'Fair';
     default:
       return 'No history';
-  }
-}
-
-function zoneTone(zone: PeZone): BadgeTone {
-  switch (zone) {
-    case 'cheap':
-      return 'positive';
-    case 'expensive':
-      return 'warning';
-    case 'fair':
-      return 'neutral';
-    default:
-      return 'neutral';
   }
 }
 
@@ -140,7 +130,15 @@ export function IndiaIndexPeCard() {
   const history = primary.history;
   const percentile = history?.percentile ?? null;
   const zone = classifyPePercentile(percentile);
-  const tone = zoneTone(zone);
+  const entry = indexEntryVerdict(zone);
+  const entryColor =
+    entry.tone === 'positive'
+      ? colors.positive
+      : entry.tone === 'warning'
+        ? colors.warning
+        : entry.tone === 'accent'
+          ? colors.accent
+          : colors.muted;
   const zoneColor =
     zone === 'cheap' ? colors.positive : zone === 'expensive' ? colors.warning : colors.muted;
   const markerPosition = `${Math.min(Math.max(percentile ?? 0, 0), 100)}%` as `${number}%`;
@@ -186,11 +184,18 @@ export function IndiaIndexPeCard() {
               <Text style={[styles.peUnit, { color: colors.muted }]}>P/E</Text>
             </View>
           </View>
-          <Badge label={zoneLabel(zone)} tone={tone} />
+          <MarketSignalBadge
+            label={entry.label}
+            tone={entry.tone}
+            icon={entry.icon}
+          />
         </View>
         <Text style={[styles.heroMeta, { color: colors.muted }]}>
-          5y median {formatNumber(history?.medianPe ?? null)}
+          {zoneLabel(zone)} valuation · 5y median {formatNumber(history?.medianPe ?? null)}
           {percentile != null ? ` · ${ordinal(percentile)} percentile` : ''}
+        </Text>
+        <Text style={[styles.entryHeadline, { color: entryColor }]}>
+          {entry.headline}
         </Text>
       </View>
 
@@ -277,15 +282,16 @@ export function IndiaIndexPeCard() {
       <View style={[styles.peers, { borderTopColor: colors.border }]}>
         {peers.map((peer) => {
           const peerZone = classifyPePercentile(peer.history?.percentile ?? null);
+          const peerEntry = indexEntryVerdict(peerZone);
           const peerPercentile = peer.history?.percentile;
           return (
             <View key={peer.key} style={styles.peerRow}>
               <View style={styles.peerName}>
                 <Text style={[styles.peerTitle, { color: colors.text }]}>{peer.name}</Text>
                 <Text style={[styles.peerMeta, { color: colors.muted }]}>
-                  {peer.history != null && peerPercentile != null
-                    ? `${ordinal(peerPercentile)} pct · median ${formatNumber(
-                        peer.history.medianPe,
+                  {peerPercentile != null
+                    ? `${zoneLabel(peerZone)} · ${ordinal(peerPercentile)} pct · median ${formatNumber(
+                        peer.history?.medianPe ?? null,
                       )}`
                     : 'History unavailable'}
                 </Text>
@@ -293,7 +299,7 @@ export function IndiaIndexPeCard() {
               <Text style={[styles.peerPe, numeric, { color: colors.text }]}>
                 {formatNumber(peer.pe)}
               </Text>
-              <Badge label={zoneLabel(peerZone)} tone={zoneTone(peerZone)} />
+              <Badge label={peerEntry.label} tone={peerEntry.tone} />
             </View>
           );
         })}
@@ -326,6 +332,7 @@ const styles = StyleSheet.create({
   peValue: { fontSize: 40, lineHeight: 44, fontWeight: '600', letterSpacing: -1.2 },
   peUnit: { fontSize: 13, fontWeight: '600' },
   heroMeta: { fontSize: 11 },
+  entryHeadline: { fontSize: 11.5, fontWeight: '600' },
   stats: {
     flexDirection: 'row',
     borderRadius: radius.md,
