@@ -5,6 +5,7 @@ import { StyleSheet, Text, View } from 'react-native';
 
 import { GoldSilverRatioCard } from '@/src/components/market/GoldSilverRatioCard';
 import { IndiaIndexPeCard } from '@/src/components/market/IndiaIndexPeCard';
+import { IndiaSectorPeCard } from '@/src/components/market/IndiaSectorPeCard';
 import { Card } from '@/src/components/ui/Card';
 import { Screen } from '@/src/components/ui/Screen';
 import { ScreenHeader } from '@/src/components/ui/ScreenHeader';
@@ -76,6 +77,7 @@ export default function ResearchScreen() {
           <View style={styles.marketCards}>
             <GoldSilverRatioCard />
             <IndiaIndexPeCard />
+            <IndiaSectorPeCard />
           </View>
         </View>
 

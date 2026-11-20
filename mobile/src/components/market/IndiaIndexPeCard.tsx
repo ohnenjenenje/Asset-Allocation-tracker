@@ -142,7 +142,9 @@ export function IndiaIndexPeCard() {
   const zoneColor =
     zone === 'cheap' ? colors.positive : zone === 'expensive' ? colors.warning : colors.muted;
   const markerPosition = `${Math.min(Math.max(percentile ?? 0, 0), 100)}%` as `${number}%`;
-  const peers = data.indices.filter((index) => index.key !== primary.key);
+  const peers = data.indices.filter(
+    (index) => index.featured && index.key !== primary.key,
+  );
   const sourceLabel =
     data.source === 'downstox'
       ? 'Downstox fallback'

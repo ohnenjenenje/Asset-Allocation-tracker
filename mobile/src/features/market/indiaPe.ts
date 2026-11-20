@@ -2,7 +2,8 @@ import { useQuery } from '@tanstack/react-query';
 
 import { ApiError, apiFetch } from '@/src/lib/api/client';
 
-export type IndiaIndexKey = 'nifty50' | 'niftyBank' | 'niftyIt' | 'niftyMidcap100';
+export type IndiaIndexKey = string;
+export type IndiaIndexCategory = 'broad' | 'sector' | 'thematic';
 
 export interface IndiaIndexHistory {
   sampleMonths: number;
@@ -16,11 +17,14 @@ export interface IndiaIndexHistory {
 export interface IndiaIndexValuation {
   key: IndiaIndexKey;
   name: string;
+  category: IndiaIndexCategory;
+  featured: boolean;
   pe: number | null;
   pb: number | null;
   dividendYield: number | null;
   earningsYield: number | null;
   history: IndiaIndexHistory | null;
+  historySource: 'nse' | 'downstox' | null;
 }
 
 export interface IndiaPeData {
@@ -45,7 +49,9 @@ export async function fetchIndiaPe(
 ): Promise<IndiaPeData> {
   const response = await apiFetch<IndiaPeResponse>('/api/market/india-pe', {
     signal: options.signal,
-    timeoutMs: 20_000,
+    // A cold Render instance may rebuild the monthly NSE archive cache, so this
+    // endpoint gets a longer budget than the usual portfolio queries.
+    timeoutMs: 45_000,
   });
 
   if (!response.success || !response.data) {

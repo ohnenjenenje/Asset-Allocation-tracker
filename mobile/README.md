@@ -267,23 +267,55 @@ The Research tab shows a market indicator card backed by
 
 ### India index P/E
 
-The Research tab's second market card is backed by
-`GET /api/market/india-pe`:
+The Research tab has two valuation cards backed by `GET /api/market/india-pe`.
+The first is the headline card (Nifty 50, Nifty Bank, Nifty IT and Nifty Midcap
+100); the second lists every sectoral and thematic index, sorted cheapest first
+with the eight cheapest visible until you tap **Show all**.
 
 - NSE's daily index closing file (`ind_close_all.csv`, keyless) supplies the
-  latest P/E, P/B and dividend yield for Nifty 50, Nifty Bank, Nifty IT and
-  Nifty Midcap 100.
-- Downstox supplies the same indices' monthly history. The card compares each
-  current P/E with that index's own last 60 monthly readings and labels the
-  bottom quartile `cheap`, the middle half `fair` and the top quartile
-  `expensive`.
-- This is relative-value context, not a forecast. The five-year window sits
+  latest P/E, P/B and dividend yield. It currently covers 169 indices, 146 with a
+  P/E; the route selects 43 sector/thematic indices plus the broad Nifty 50 and
+  Nifty Midcap 100 (45 rows in total; Bank and IT are already in the sector
+  list). The list comes from the official Nifty Indices sectoral list and the
+  commonly followed thematic indices.
+- NSE's date-stamped archive (`ind_close_all_DDMMYYYY.csv`) supplies monthly
+  history for the same indices. The route samples the last 60 completed calendar
+  months, walking back up to eight days from month-end for weekends and holidays.
+  This gives full five-year baselines for the older sectors and shorter windows
+  for newer ones such as Capital Goods, Telecom, Power, Hospitals, Insurance,
+  NBFC, Construction and Retail.
+- Downstox is the fallback, not the primary source. It is called only when NSE is
+  missing a current value or an index has fewer than 24 monthly readings; its
+  payload can fill current P/E/P/B/yield and history for the 18 liquid indices it
+  covers. Each result records `historySource` (`nse` or `downstox`).
+- An index needs at least 24 monthly readings before a percentile and signal are
+  shown. Until then the current P/E is displayed with **No signal**. Percentiles
+  compare each index with its own last 60 monthly readings; the bottom quartile
+  is `cheap` (Buy zone), the middle half `fair` (Neutral) and the top quartile
+  `expensive`. This is relative-value context, not a forecast. The window sits
   after NSE's 2021 switch to consolidated earnings.
-- If NSE is unavailable, Downstox's current values are used as the fallback. If
-  both fail, the endpoint serves the last cached value marked `stale`, or HTTP
-  503 when there is no cache. The cache lasts one hour, shortened to 15 minutes
-  when a history baseline is missing; the mobile query refetches every six
-  hours and offers a manual refresh.
+- Both feeds are free and need no API key. NSE has no documented rate limit, but
+  it can throttle aggressive scraping, so the route is deliberately bounded: one
+  current-file request per refresh, 60 monthly archive lookups (plus a short
+  walk-back for weekend/holiday month-ends), concurrency 6 and an 18-second
+  total archive deadline. History is cached for 24 hours (1 hour when partial),
+  so a warm server makes roughly 60 archive requests per day; a cold instance
+  rebuilds once. That is about 1 MB of archive CSV and a few thousand stored
+  P/E points, with negligible CPU and memory cost.
+- The built response is cached in memory for one hour, shortened to 15 minutes
+  when any current quote is missing. Monthly history is cached in memory and in
+  MongoDB (`portfolio_tracker.market_cache`, document
+  `india-pe-monthly-v1`) for 24 hours, or one hour when partial, so redeploys and
+  new instances do not re-scrape NSE. If both feeds fail, the endpoint serves the
+  last cached value marked `stale`, or HTTP 503 when there is no cache. The
+  mobile query refetches every six hours, allows 45 seconds for a cold history
+  rebuild and offers a manual refresh on both cards.
+
+The index configuration and source mapping live in
+`app/api/market/india-pe/route.ts`; the cards are
+`mobile/src/components/market/IndiaIndexPeCard.tsx` and
+`IndiaSectorPeCard.tsx`.
+
 
 ### Auth and demo mode
 

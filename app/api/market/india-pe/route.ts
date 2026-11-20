@@ -1,33 +1,112 @@
 import { get as httpsGet } from 'node:https';
 import { NextResponse } from 'next/server';
 
+import clientPromise from '@/lib/mongodb';
+
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /**
  * NSE publishes the end-of-day valuation file for every headline index at a
- * stable, keyless URL. Downstox mirrors the same NSE readings as monthly
- * history, which gives the current P/E a comparable five-year baseline.
+ * stable, keyless URL. It also archives the same file by date, which lets us
+ * build a monthly P/E history for every index without paying for a data feed.
+ * Downstox mirrors the same NSE readings and is kept as a fallback for the
+ * liquid indices it covers.
  */
 const NSE_URL = 'https://nsearchives.nseindia.com/content/indices/ind_close_all.csv';
+const NSE_ARCHIVE_BASE = 'https://nsearchives.nseindia.com/content/indices/ind_close_all_';
 const DOWNSTOX_BASE = 'https://downstox.com/api/index-pe';
 
 const CACHE_MS = 60 * 60_000;
 const SHORT_CACHE_MS = 15 * 60_000;
 const STALE_CACHE_MS = 5 * 60_000;
 const UPSTREAM_TIMEOUT_MS = 8_000;
+const ARCHIVE_TIMEOUT_MS = 10_000;
+const HISTORY_TOTAL_TIMEOUT_MS = 18_000;
 const UPSTREAM_ATTEMPTS = 2;
+const DOWNSTOX_TIMEOUT_MS = 12_000;
+const DOWNSTOX_FALLBACK_TIMEOUT_MS = 12_000;
+const MONGO_CONNECT_TIMEOUT_MS = 8_000;
+const MONGO_QUERY_TIMEOUT_MS = 2_000;
 const HISTORY_MONTHS = 60;
 const MIN_HISTORY_MONTHS = 24;
+const HISTORY_CONCURRENCY = 6;
+const HISTORY_CACHE_MS = 24 * 60 * 60_000;
+const PARTIAL_HISTORY_CACHE_MS = 60 * 60_000;
+/** Only persist a cold rebuild that is close to the full five-year window. */
+const HISTORY_WRITE_MIN_MONTHS = 48;
 
-const INDEX_CONFIG = [
-  { key: 'nifty50', name: 'Nifty 50', slug: 'nifty-50' },
-  { key: 'niftyBank', name: 'Nifty Bank', slug: 'nifty-bank' },
-  { key: 'niftyIt', name: 'Nifty IT', slug: 'nifty-it' },
-  { key: 'niftyMidcap100', name: 'NIFTY Midcap 100', slug: 'nifty-midcap-100' },
-] as const;
+const MONGO_DB = 'portfolio_tracker';
+const MONGO_COLLECTION = 'market_cache';
+const MONGO_HISTORY_ID = 'india-pe-monthly-v1';
 
-type IndexKey = (typeof INDEX_CONFIG)[number]['key'];
+type IndexCategory = 'broad' | 'sector' | 'thematic';
+
+interface IndexConfig {
+  key: string;
+  name: string;
+  /** Exact name in NSE's current file. Historical files are matched after normalization. */
+  nseName: string;
+  downstoxSlug: string | null;
+  category: IndexCategory;
+  featured: boolean;
+}
+
+/**
+ * The 34 indices on Nifty Indices' official sectoral list, plus the broad
+ * indices used by the headline card and the commonly followed thematic
+ * indices that are treated as sectors in practice. Keeping the list explicit
+ * avoids picking up bond, strategy and custom indices from the NSE file.
+ */
+const INDEX_CONFIG: IndexConfig[] = [
+  { key: 'nifty50', name: 'Nifty 50', nseName: 'Nifty 50', downstoxSlug: 'nifty-50', category: 'broad', featured: true },
+  { key: 'niftyMidcap100', name: 'Nifty Midcap 100', nseName: 'NIFTY Midcap 100', downstoxSlug: 'nifty-midcap-100', category: 'broad', featured: true },
+  { key: 'niftyBank', name: 'Nifty Bank', nseName: 'Nifty Bank', downstoxSlug: 'nifty-bank', category: 'sector', featured: true },
+  { key: 'niftyIt', name: 'Nifty IT', nseName: 'Nifty IT', downstoxSlug: 'nifty-it', category: 'sector', featured: true },
+  { key: 'niftyAuto', name: 'Nifty Auto', nseName: 'Nifty Auto', downstoxSlug: 'nifty-auto', category: 'sector', featured: false },
+  { key: 'niftyCapitalGoods', name: 'Nifty Capital Goods', nseName: 'Nifty Capital Goods', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'niftyCement', name: 'Nifty Cement', nseName: 'Nifty Cement', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'niftyChemicals', name: 'Nifty Chemicals', nseName: 'Nifty Chemicals', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'niftyCommercialTransport', name: 'Nifty Commercial & Transport Services', nseName: 'Nifty Commercial & Transport Services', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'niftyConstruction', name: 'Nifty Construction', nseName: 'Nifty Construction', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'niftyConsumerDurables', name: 'Nifty Consumer Durables', nseName: 'Nifty Consumer Durables', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'niftyConsumerServices', name: 'Nifty Consumer Services', nseName: 'Nifty Consumer Services', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'niftyFinancialServices', name: 'Nifty Financial Services', nseName: 'Nifty Financial Services', downstoxSlug: 'nifty-financial-services', category: 'sector', featured: false },
+  { key: 'niftyFinancialServices2550', name: 'Nifty Financial Services 25/50', nseName: 'Nifty Financial Services 25/50', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'niftyFinancialServicesExBank', name: 'Nifty Financial Services Ex-Bank', nseName: 'Nifty Financial Services Ex-Bank', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'niftyFmcg', name: 'Nifty FMCG', nseName: 'Nifty FMCG', downstoxSlug: 'nifty-fmcg', category: 'sector', featured: false },
+  { key: 'niftyHealthcare', name: 'Nifty Healthcare', nseName: 'Nifty Healthcare Index', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'niftyHospitals', name: 'Nifty Hospitals', nseName: 'Nifty Hospitals', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'niftyHousingFinance', name: 'Nifty Housing Finance', nseName: 'Nifty Housing Finance', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'niftyInsurance', name: 'Nifty Insurance', nseName: 'Nifty Insurance', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'niftyMedia', name: 'Nifty Media', nseName: 'Nifty Media', downstoxSlug: 'nifty-media', category: 'sector', featured: false },
+  { key: 'niftyMetal', name: 'Nifty Metal', nseName: 'Nifty Metal', downstoxSlug: 'nifty-metal', category: 'sector', featured: false },
+  { key: 'niftyNbfc', name: 'Nifty NBFC', nseName: 'Nifty NBFC', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'niftyOilGas', name: 'Nifty Oil & Gas', nseName: 'Nifty Oil & Gas', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'niftyPharma', name: 'Nifty Pharma', nseName: 'Nifty Pharma', downstoxSlug: 'nifty-pharma', category: 'sector', featured: false },
+  { key: 'niftyPower', name: 'Nifty Power', nseName: 'Nifty Power', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'niftyPrivateBank', name: 'Nifty Private Bank', nseName: 'Nifty Private Bank', downstoxSlug: 'nifty-private-bank', category: 'sector', featured: false },
+  { key: 'niftyPsuBank', name: 'Nifty PSU Bank', nseName: 'Nifty PSU Bank', downstoxSlug: 'nifty-psu-bank', category: 'sector', featured: false },
+  { key: 'niftyRealty', name: 'Nifty Realty', nseName: 'Nifty Realty', downstoxSlug: 'nifty-realty', category: 'sector', featured: false },
+  { key: 'niftyReitsRealty', name: 'Nifty REITs & Realty', nseName: 'Nifty REITs & Realty', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'niftyRetail', name: 'Nifty Retail', nseName: 'Nifty Retail', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'niftyTelecom', name: 'Nifty Telecommunications', nseName: 'Nifty Telecommunications', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'nifty500Healthcare', name: 'Nifty500 Healthcare', nseName: 'Nifty500 Healthcare', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'niftyMidSmallFinancialServices', name: 'Nifty MidSmall Financial Services', nseName: 'Nifty MidSmall Financial Services', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'niftyMidSmallHealthcare', name: 'Nifty MidSmall Healthcare', nseName: 'Nifty MidSmall Healthcare', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'niftyMidSmallItTelecom', name: 'Nifty MidSmall IT & Telecom', nseName: 'Nifty MidSmall IT & Telecom', downstoxSlug: null, category: 'sector', featured: false },
+  { key: 'niftyEnergy', name: 'Nifty Energy', nseName: 'Nifty Energy', downstoxSlug: 'nifty-energy', category: 'thematic', featured: false },
+  { key: 'niftyInfrastructure', name: 'Nifty Infrastructure', nseName: 'Nifty Infrastructure', downstoxSlug: 'nifty-infra', category: 'thematic', featured: false },
+  { key: 'niftyConsumption', name: 'Nifty India Consumption', nseName: 'Nifty India Consumption', downstoxSlug: 'nifty-consumption', category: 'thematic', featured: false },
+  { key: 'niftyCommodities', name: 'Nifty Commodities', nseName: 'Nifty Commodities', downstoxSlug: 'nifty-commodities', category: 'thematic', featured: false },
+  { key: 'niftyPse', name: 'Nifty PSE', nseName: 'Nifty PSE', downstoxSlug: null, category: 'thematic', featured: false },
+  { key: 'niftyCpse', name: 'Nifty CPSE', nseName: 'Nifty CPSE', downstoxSlug: 'nifty-cpse', category: 'thematic', featured: false },
+  { key: 'niftyMnc', name: 'Nifty MNC', nseName: 'Nifty MNC', downstoxSlug: null, category: 'thematic', featured: false },
+  { key: 'niftyServices', name: 'Nifty Services Sector', nseName: 'Nifty Services Sector', downstoxSlug: null, category: 'thematic', featured: false },
+  { key: 'niftyDefence', name: 'Nifty India Defence', nseName: 'Nifty India Defence', downstoxSlug: null, category: 'thematic', featured: false },
+];
+
+const NSE_INDEX_KEYS = new Set(INDEX_CONFIG.map((config) => normalizeIndexName(config.nseName)));
 
 interface IndexHistory {
   sampleMonths: number;
@@ -39,13 +118,16 @@ interface IndexHistory {
 }
 
 interface IndexValuation {
-  key: IndexKey;
+  key: string;
   name: string;
+  category: IndexCategory;
+  featured: boolean;
   pe: number | null;
   pb: number | null;
   dividendYield: number | null;
   earningsYield: number | null;
   history: IndexHistory | null;
+  historySource: 'nse' | 'downstox' | null;
 }
 
 interface IndiaPeData {
@@ -67,6 +149,15 @@ interface NseSnapshot {
   rows: Map<string, NseRow>;
 }
 
+interface MonthlyPe {
+  year: number;
+  /** Zero-indexed, matching Downstox's monthly payload. */
+  month: number;
+  pe: number;
+}
+
+type MonthlyHistory = Map<string, MonthlyPe[]>;
+
 interface DownstoxMonth {
   year: number;
   month: number;
@@ -81,7 +172,19 @@ interface DownstoxSnapshot {
   asOf: string | null;
 }
 
+interface StoredHistory {
+  _id: string;
+  updatedAt: Date;
+  monthsFound: number;
+  monthly: Record<string, MonthlyPe[]>;
+}
+
 let cache: { data: IndiaPeData; expiresAt: number } | null = null;
+let historyCache: { monthly: MonthlyHistory; monthsFound: number; expiresAt: number } | null = null;
+let historyRefresh: Promise<{
+  monthly: MonthlyHistory;
+  monthsFound: number;
+}> | null = null;
 
 function parseNumber(value: unknown): number | null {
   if (value == null) return null;
@@ -104,6 +207,16 @@ function dateToIso(value: string): string | null {
   const match = /^(\d{2})-(\d{2})-(\d{4})$/.exec(value.trim());
   if (!match) return null;
   return `${match[3]}-${match[2]}-${match[1]}`;
+}
+
+/** Matches "Oil & Gas", "Oil and Gas" and "… Index" across NSE file vintages. */
+function normalizeIndexName(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+index$/, '')
+    .trim();
 }
 
 interface TextResponse {
@@ -164,12 +277,14 @@ async function httpsGetTextWithRetry(
   url: string,
   headers: Record<string, string>,
   label: string,
+  timeoutMs = UPSTREAM_TIMEOUT_MS,
+  attempts = UPSTREAM_ATTEMPTS,
 ): Promise<TextResponse> {
   let lastError: unknown;
 
-  for (let attempt = 0; attempt < UPSTREAM_ATTEMPTS; attempt += 1) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      return await httpsGetText(url, headers, UPSTREAM_TIMEOUT_MS);
+      return await httpsGetText(url, headers, timeoutMs);
     } catch (error) {
       lastError = error;
     }
@@ -195,7 +310,10 @@ function parseNseCsv(csv: string): NseSnapshot | null {
     if (!name) continue;
 
     asOf ??= dateToIso(cols[1]);
-    rows.set(name.toLowerCase(), {
+    const key = normalizeIndexName(name);
+    if (!NSE_INDEX_KEYS.has(key)) continue;
+
+    rows.set(key, {
       name,
       pe: positiveNumber(cols[10]),
       pb: positiveNumber(cols[11]),
@@ -236,6 +354,332 @@ async function fetchNseSnapshot(): Promise<NseSnapshot | null> {
   }
 }
 
+function pad2(value: number): string {
+  return String(value).padStart(2, '0');
+}
+
+/** The last 60 completed calendar months, oldest first. */
+function completedMonths(count: number): Array<{ year: number; month: number }> {
+  const now = new Date();
+  const cursor = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+  const months: Array<{ year: number; month: number }> = [];
+
+  for (let index = 0; index < count; index += 1) {
+    months.push({ year: cursor.getUTCFullYear(), month: cursor.getUTCMonth() });
+    cursor.setUTCMonth(cursor.getUTCMonth() - 1);
+  }
+
+  return months.reverse();
+}
+
+/**
+ * Month-end files land on the last trading day, so a weekend or holiday date
+ * falls back to the preceding weekday. Only a 404 triggers that walk-back; a
+ * network error retries once and then gives up on the month.
+ */
+async function fetchNseArchiveMonth(
+  year: number,
+  month: number,
+  deadline: number,
+): Promise<string | null> {
+  for (let back = 0; back < 8; back += 1) {
+    if (Date.now() > deadline) return null;
+
+    const date = new Date(Date.UTC(year, month + 1, 0 - back));
+    const url = `${NSE_ARCHIVE_BASE}${pad2(date.getUTCDate())}${pad2(
+      date.getUTCMonth() + 1,
+    )}${date.getUTCFullYear()}.csv`;
+    const headers = {
+      Accept: 'text/csv,text/plain,*/*',
+      'User-Agent': 'AssetTracker/0.1',
+    };
+
+    /** A socket error or timeout should lose one month, not the whole refresh. */
+    const requestDate = async (timeoutMs: number): Promise<TextResponse | null> => {
+      try {
+        return await httpsGetText(url, headers, timeoutMs);
+      } catch {
+        return null;
+      }
+    };
+
+    const firstRemaining = deadline - Date.now();
+    if (firstRemaining <= 0) return null;
+    const response = await requestDate(Math.min(ARCHIVE_TIMEOUT_MS, firstRemaining));
+    if (response?.status === 200 && response.body.startsWith('Index Name')) {
+      return response.body;
+    }
+    if (response?.status === 404) continue;
+
+    const retryRemaining = deadline - Date.now();
+    if (retryRemaining <= 0) return null;
+    const retry = await requestDate(Math.min(ARCHIVE_TIMEOUT_MS, retryRemaining));
+    if (retry?.status === 200 && retry.body.startsWith('Index Name')) {
+      return retry.body;
+    }
+    return null;
+  }
+
+  return null;
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+
+  async function run() {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await worker(items[index]);
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, () => run()),
+  );
+  return results;
+}
+
+async function fetchNseMonthlyHistory(): Promise<{
+  monthly: MonthlyHistory;
+  monthsFound: number;
+}> {
+  const months = completedMonths(HISTORY_MONTHS);
+  const deadline = Date.now() + HISTORY_TOTAL_TIMEOUT_MS;
+  const snapshots = await mapWithConcurrency(
+    months,
+    HISTORY_CONCURRENCY,
+    async ({ year, month }) => {
+      const body = await fetchNseArchiveMonth(year, month, deadline);
+      return body ? { year, month, body } : null;
+    },
+  );
+
+  const monthly: MonthlyHistory = new Map();
+  let monthsFound = 0;
+
+  for (const snapshot of snapshots) {
+    if (!snapshot) continue;
+    const parsed = parseNseCsv(snapshot.body);
+    if (!parsed) continue;
+    monthsFound += 1;
+
+    for (const [key, row] of parsed.rows) {
+      if (row.pe == null) continue;
+      const list = monthly.get(key) ?? [];
+      list.push({ year: snapshot.year, month: snapshot.month, pe: row.pe });
+      monthly.set(key, list);
+    }
+  }
+
+  for (const list of monthly.values()) {
+    list.sort((a, b) => a.year - b.year || a.month - b.month);
+  }
+
+  console.log(
+    `[india-pe] NSE archive history: ${monthsFound}/${HISTORY_MONTHS} months, ${monthly.size} indices`,
+  );
+  return { monthly, monthsFound };
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(null);
+      },
+    );
+  });
+}
+
+function historyTtl(monthsFound: number): number {
+  return monthsFound >= 48 ? HISTORY_CACHE_MS : PARTIAL_HISTORY_CACHE_MS;
+}
+
+async function readHistoryFromMongo(): Promise<{
+  monthly: MonthlyHistory;
+  monthsFound: number;
+  fresh: boolean;
+} | null> {
+  if (!clientPromise) return null;
+
+  try {
+    const client = await withTimeout(clientPromise, MONGO_CONNECT_TIMEOUT_MS);
+    if (!client) return null;
+
+    const doc = await withTimeout(
+      client
+        .db(MONGO_DB)
+        .collection<StoredHistory>(MONGO_COLLECTION)
+        .findOne({ _id: MONGO_HISTORY_ID }),
+      MONGO_QUERY_TIMEOUT_MS,
+    );
+    if (!doc || !doc.updatedAt) return null;
+
+    const monthsFound =
+      typeof doc.monthsFound === 'number' ? doc.monthsFound : 0;
+    const age = Date.now() - new Date(doc.updatedAt).getTime();
+    const monthly = new Map<string, MonthlyPe[]>(
+      Object.entries(doc.monthly ?? {}),
+    );
+
+    return {
+      monthly,
+      monthsFound,
+      fresh: age <= historyTtl(monthsFound),
+    };
+  } catch (error) {
+    console.warn('[india-pe] history cache read failed:', error);
+    return null;
+  }
+}
+
+function writeHistoryToMongo(monthly: MonthlyHistory, monthsFound: number): void {
+  if (!clientPromise) return;
+
+  void (async () => {
+    try {
+      const client = await clientPromise;
+      await client.db(MONGO_DB).collection<StoredHistory>(MONGO_COLLECTION).updateOne(
+        { _id: MONGO_HISTORY_ID },
+        {
+          $set: {
+            updatedAt: new Date(),
+            monthsFound,
+            monthly: Object.fromEntries(monthly),
+          },
+        },
+        { upsert: true },
+      );
+    } catch (error) {
+      console.warn('[india-pe] history cache write failed:', error);
+    }
+  })();
+}
+
+/**
+ * A partial refresh must not erase a good cached window. Merge by month so
+ * whichever snapshot supplied a given month wins, then keep the last 60.
+ */
+function mergeMonthlyHistory(
+  base: MonthlyHistory,
+  update: MonthlyHistory,
+): MonthlyHistory {
+  const merged: MonthlyHistory = new Map();
+  const keys = new Set([...base.keys(), ...update.keys()]);
+
+  for (const key of keys) {
+    const points = new Map<string, MonthlyPe>();
+    for (const point of base.get(key) ?? []) points.set(monthKey(point), point);
+    for (const point of update.get(key) ?? []) points.set(monthKey(point), point);
+    merged.set(
+      key,
+      [...points.values()]
+        .sort((a, b) => a.year - b.year || a.month - b.month)
+        .slice(-HISTORY_MONTHS),
+    );
+  }
+
+  return merged;
+}
+
+async function loadNseHistoryUncached(): Promise<{
+  monthly: MonthlyHistory;
+  monthsFound: number;
+}> {
+  const now = Date.now();
+  if (historyCache && now < historyCache.expiresAt) {
+    return { monthly: historyCache.monthly, monthsFound: historyCache.monthsFound };
+  }
+
+  const stored = await readHistoryFromMongo();
+  if (stored?.fresh) {
+    historyCache = {
+      monthly: stored.monthly,
+      monthsFound: stored.monthsFound,
+      expiresAt: now + historyTtl(stored.monthsFound),
+    };
+    return { monthly: stored.monthly, monthsFound: stored.monthsFound };
+  }
+
+  let fetched: { monthly: MonthlyHistory; monthsFound: number } | null = null;
+  try {
+    fetched = await fetchNseMonthlyHistory();
+  } catch (error) {
+    console.warn('[india-pe] NSE archive history failed:', error);
+  }
+
+  if (fetched && fetched.monthsFound > 0) {
+    const merged = stored
+      ? mergeMonthlyHistory(stored.monthly, fetched.monthly)
+      : fetched.monthly;
+    const monthsFound = Math.max(fetched.monthsFound, stored?.monthsFound ?? 0);
+    historyCache = {
+      monthly: merged,
+      monthsFound,
+      // Retry sooner when the archive itself returned a partial window.
+      expiresAt: Date.now() + historyTtl(fetched.monthsFound),
+    };
+    if (stored || fetched.monthsFound >= HISTORY_WRITE_MIN_MONTHS) {
+      writeHistoryToMongo(merged, monthsFound);
+    } else {
+      console.warn(
+        `[india-pe] keeping Mongo cache untouched after partial ${fetched.monthsFound}-month refresh`,
+      );
+    }
+    return { monthly: merged, monthsFound };
+  }
+
+  if (stored) {
+    historyCache = {
+      monthly: stored.monthly,
+      monthsFound: stored.monthsFound,
+      expiresAt: now + PARTIAL_HISTORY_CACHE_MS,
+    };
+    return { monthly: stored.monthly, monthsFound: stored.monthsFound };
+  }
+
+  if (historyCache) {
+    return { monthly: historyCache.monthly, monthsFound: historyCache.monthsFound };
+  }
+
+  return { monthly: new Map(), monthsFound: 0 };
+}
+
+/**
+ * Collapse concurrent cold requests into one archive rebuild. Without this, two
+ * users opening Research at the same moment would each scrape NSE.
+ */
+function loadNseHistory(): Promise<{
+  monthly: MonthlyHistory;
+  monthsFound: number;
+}> {
+  const now = Date.now();
+  if (historyCache && now < historyCache.expiresAt) {
+    return Promise.resolve({
+      monthly: historyCache.monthly,
+      monthsFound: historyCache.monthsFound,
+    });
+  }
+  if (historyRefresh) return historyRefresh;
+
+  historyRefresh = loadNseHistoryUncached().finally(() => {
+    historyRefresh = null;
+  });
+  return historyRefresh;
+}
+
 async function fetchDownstox(slug: string): Promise<DownstoxSnapshot | null> {
   try {
     const response = await httpsGetTextWithRetry(
@@ -245,6 +689,8 @@ async function fetchDownstox(slug: string): Promise<DownstoxSnapshot | null> {
         'User-Agent': 'AssetTracker/0.1',
       },
       `Downstox ${slug}`,
+      DOWNSTOX_TIMEOUT_MS,
+      1,
     );
     if (response.status !== 200) {
       throw new Error(`Downstox responded with ${response.status}`);
@@ -261,9 +707,14 @@ async function fetchDownstox(slug: string): Promise<DownstoxSnapshot | null> {
     if (payload.success !== true || !payload.data) return null;
 
     const monthly: DownstoxMonth[] = [];
+    const now = new Date();
+    const currentMonthStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
     for (const row of Array.isArray(payload.data.monthly) ? payload.data.monthly : []) {
       const pe = positiveNumber(row?.pe);
       if (typeof row?.year === 'number' && typeof row?.month === 'number' && pe != null) {
+        // Keep the same completed-month baseline as the NSE archive; the
+        // current month-to-date is already represented by the live P/E.
+        if (Date.UTC(row.year, row.month, 1) >= currentMonthStart) continue;
         monthly.push({ year: row.year, month: row.month, pe });
       }
     }
@@ -282,6 +733,41 @@ async function fetchDownstox(slug: string): Promise<DownstoxSnapshot | null> {
   }
 }
 
+async function fetchDownstoxFallback(
+  slugs: string[],
+): Promise<Map<string, DownstoxSnapshot | null>> {
+  const uniqueSlugs = [...new Set(slugs)];
+  if (uniqueSlugs.length === 0) return new Map();
+
+  const deadline = Date.now() + DOWNSTOX_FALLBACK_TIMEOUT_MS;
+  const entries = await Promise.all(
+    uniqueSlugs.map(async (slug) => {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return [slug, null] as const;
+      return [slug, await withTimeout(fetchDownstox(slug), remaining)] as const;
+    }),
+  );
+  return new Map(entries);
+}
+
+function fallbackSlugsNeeded(
+  nse: NseSnapshot | null,
+  monthly: MonthlyHistory,
+): string[] {
+  const slugs = new Set<string>();
+
+  for (const config of INDEX_CONFIG) {
+    if (!config.downstoxSlug) continue;
+    const key = normalizeIndexName(config.nseName);
+    const needsCurrent = nse?.rows.get(key)?.pe == null;
+    const points = monthly.get(key);
+    const needsHistory = !points || points.length < MIN_HISTORY_MONTHS;
+    if (needsCurrent || needsHistory) slugs.add(config.downstoxSlug);
+  }
+
+  return [...slugs];
+}
+
 function monthKey(value: { year: number; month: number }): string {
   return `${value.year}-${String(value.month + 1).padStart(2, '0')}`;
 }
@@ -294,17 +780,17 @@ function median(values: number[]): number {
 }
 
 function buildHistory(
-  downstox: DownstoxSnapshot | null,
+  monthly: MonthlyPe[] | undefined,
   currentPe: number | null,
 ): IndexHistory | null {
-  if (!downstox) return null;
+  if (!monthly || monthly.length === 0) return null;
 
-  const window = downstox.monthly.slice(-HISTORY_MONTHS);
+  const window = monthly.slice(-HISTORY_MONTHS);
   if (window.length < MIN_HISTORY_MONTHS) return null;
 
   const values = window.map((row) => row.pe).sort((a, b) => a - b);
   const reference =
-    currentPe ?? downstox.currentPe ?? window[window.length - 1]?.pe ?? null;
+    currentPe ?? window[window.length - 1]?.pe ?? null;
   const percentile =
     reference != null
       ? Math.round((values.filter((value) => value < reference).length / values.length) * 1000) / 10
@@ -321,34 +807,51 @@ function buildHistory(
 
 function buildData(
   nse: NseSnapshot | null,
-  downstoxSnapshots: (DownstoxSnapshot | null)[],
+  monthly: MonthlyHistory,
+  fallback: Map<string, DownstoxSnapshot | null>,
 ): IndiaPeData {
   let usedNse = false;
   let usedDownstox = false;
 
-  const indices = INDEX_CONFIG.map((config, index) => {
-    const nseRow = nse?.rows.get(config.name.toLowerCase()) ?? null;
-    const downstox = downstoxSnapshots[index] ?? null;
+  const indices = INDEX_CONFIG.map((config): IndexValuation => {
+    const key = normalizeIndexName(config.nseName);
+    const nseRow = nse?.rows.get(key) ?? null;
+    const downstox = config.downstoxSlug
+      ? fallback.get(config.downstoxSlug) ?? null
+      : null;
 
     const pe = nseRow?.pe ?? downstox?.currentPe ?? null;
+    const pb = nseRow?.pb ?? downstox?.currentPb ?? null;
+    const dividendYield =
+      nseRow?.dividendYield ?? downstox?.currentDividendYield ?? null;
+
+    const nseHistory = buildHistory(monthly.get(key), pe);
+    const downstoxHistory = buildHistory(downstox?.monthly, pe);
+    const history = nseHistory ?? downstoxHistory;
+
     if (nseRow?.pe != null) usedNse = true;
-    else if (downstox?.currentPe != null) usedDownstox = true;
+    if (nseRow?.pe == null && downstox?.currentPe != null) usedDownstox = true;
 
     return {
       key: config.key,
-      name: nseRow?.name ?? config.name,
+      name: config.name,
+      category: config.category,
+      featured: config.featured,
       pe,
-      pb: nseRow?.pb ?? downstox?.currentPb ?? null,
-      dividendYield: nseRow?.dividendYield ?? downstox?.currentDividendYield ?? null,
+      pb,
+      dividendYield,
       earningsYield: pe != null && pe > 0 ? 100 / pe : null,
-      history: buildHistory(downstox, pe),
+      history,
+      historySource: nseHistory ? 'nse' : downstoxHistory ? 'downstox' : null,
     };
   });
 
   const source =
     usedNse && usedDownstox ? 'mixed' : usedNse ? 'nse' : usedDownstox ? 'downstox' : null;
   const asOf =
-    nse?.asOf ?? downstoxSnapshots.find((snapshot) => snapshot?.asOf)?.asOf ?? null;
+    nse?.asOf ??
+    [...fallback.values()].find((snapshot) => snapshot?.asOf)?.asOf ??
+    null;
 
   return { asOf, source, stale: false, indices };
 }
@@ -360,9 +863,9 @@ function cacheHeadersFor(ttlMs: number): Record<string, string> {
   };
 }
 
-/** Retry sooner while a history baseline is missing. */
+/** Retry sooner while a current quote is missing; history has its own 24h cache. */
 function cacheTtlFor(data: IndiaPeData): number {
-  return data.indices.some((index) => index.history == null) ? SHORT_CACHE_MS : CACHE_MS;
+  return data.indices.some((index) => index.pe == null) ? SHORT_CACHE_MS : CACHE_MS;
 }
 
 export async function GET() {
@@ -374,11 +877,19 @@ export async function GET() {
     );
   }
 
-  const [nse, ...downstoxSnapshots] = await Promise.all([
+  const [nse, historyState] = await Promise.all([
     fetchNseSnapshot(),
-    ...INDEX_CONFIG.map((config) => fetchDownstox(config.slug)),
+    loadNseHistory(),
   ]);
-  const data = buildData(nse, downstoxSnapshots);
+
+  const fallbackSlugs = fallbackSlugsNeeded(nse, historyState.monthly);
+  if (fallbackSlugs.length > 0) {
+    console.log(
+      `[india-pe] using Downstox fallback for ${fallbackSlugs.length} index slug(s)`,
+    );
+  }
+  const fallback = await fetchDownstoxFallback(fallbackSlugs);
+  const data = buildData(nse, historyState.monthly, fallback);
 
   if (!data.indices.some((index) => index.pe != null)) {
     if (cache) {
