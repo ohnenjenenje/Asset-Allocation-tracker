@@ -2,23 +2,41 @@ import { setDefaultResultOrder } from 'node:dns';
 import { NextResponse } from 'next/server';
 import { GoogleAuth } from 'google-auth-library';
 import YahooFinance from 'yahoo-finance2';
+import { fetchFallbackQuote, fetchYahooChartQuote } from '@/lib/market/quotes';
 
-// Render resolves Yahoo Finance to IPv6 first but cannot route those
-// connections, which made every quote fall back to the sheet. Prefer IPv4 so
-// Node's fetch reaches Yahoo from the hosted environment.
+// Prefer IPv4 for the remaining market-data hosts that publish AAAA records
+// Render cannot route. Yahoo itself is rate-limited regardless of address
+// family, which is why live quotes no longer depend on it.
 setDefaultResultOrder('ipv4first');
 
 const yahoo = new YahooFinance();
 
-// Use the yahoo-finance2 client for quotes. Yahoo's raw v7/quote endpoint
-// currently returns 401 unless a crumb/cookie is supplied, while the client
-// handles that handshake for us. GC=F / SI=F supply the gold and silver prices.
-//
 // A very short cache coalesces the stock/FX/futures lookups made by concurrent
 // chunks without making a quote meaningfully stale. The quote's own
 // `regularMarketTime` is returned separately as `asOf`.
 const QUOTE_CACHE_TTL_MS = 30_000;
 const quoteCache = new Map<string, { quote: any; fetchedAt: number }>();
+
+// Yahoo returns HTTP 429 from Render. After two failures, stop trying for a
+// while so one blocked host does not add latency to every symbol on the page.
+const YAHOO_COOLDOWN_MS = 5 * 60_000;
+let yahooBlockedUntil = 0;
+let yahooFailures = 0;
+
+const yahooAllowed = () => Date.now() >= yahooBlockedUntil;
+
+const resetYahooFailures = () => {
+  yahooFailures = 0;
+  yahooBlockedUntil = 0;
+};
+
+const markYahooFailure = () => {
+  yahooFailures += 1;
+  if (yahooFailures >= 2 && Date.now() >= yahooBlockedUntil) {
+    yahooBlockedUntil = Date.now() + YAHOO_COOLDOWN_MS;
+    console.warn('Yahoo quotes unavailable; using provider fallbacks for 5 minutes.');
+  }
+};
 
 const safeQuote = async (symbol: string) => {
   const cached = quoteCache.get(symbol);
@@ -26,14 +44,18 @@ const safeQuote = async (symbol: string) => {
     return cached.quote;
   }
 
-  try {
-    const quote = await yahoo.quote(symbol);
-    if (quote) quoteCache.set(symbol, { quote, fetchedAt: Date.now() });
-    return quote;
-  } catch (e) {
-    console.error(`Error in Yahoo quote for ${symbol}:`, e);
-    return null;
+  // Prefer providers that work from Render. Yahoo is only a last resort for
+  // symbols the direct providers cannot resolve.
+  let quote = await fetchFallbackQuote(symbol);
+
+  if (!quote && yahooAllowed()) {
+    quote = await fetchYahooChartQuote(symbol);
+    if (quote) resetYahooFailures();
+    else markYahooFailure();
   }
+
+  if (quote) quoteCache.set(symbol, { quote, fetchedAt: Date.now() });
+  return quote;
 };
 
 /** Yahoo returns `regularMarketTime` as a Date; normalise it to epoch ms. */
@@ -53,18 +75,26 @@ const parseNavDate = (value?: string | null): number | null => {
 };
 
 const safeQuoteSummary = async (symbol: string, options: any) => {
+  if (!yahooAllowed()) return null;
   try {
-    return await yahoo.quoteSummary(symbol, options);
+    const result = await yahoo.quoteSummary(symbol, options);
+    resetYahooFailures();
+    return result;
   } catch (e) {
+    markYahooFailure();
     console.error(`Error in Yahoo summary for ${symbol}:`, e);
     return null;
   }
 };
 
 const safeSearch = async (query: string, options: any) => {
+  if (!yahooAllowed()) return { quotes: [] };
   try {
-    return await yahoo.search(query, options);
+    const result = await yahoo.search(query, options);
+    resetYahooFailures();
+    return result;
   } catch (e) {
+    markYahooFailure();
     console.error(`Error in Yahoo search for ${query}:`, e);
     return { quotes: [] };
   }
@@ -231,8 +261,9 @@ export async function GET(request: Request) {
 
       // Commodity prices are derived from USD/oz futures and the USD/INR rate,
       // so a stored sheet price goes stale as soon as either input moves.
-      // Always recompute them instead of serving the cached sheet value.
-      if (isGoldOrSilver) return true;
+      // Always recompute them for live reads; `live=false` keeps the cached
+      // compatibility path used by clients that explicitly want sheet values.
+      if (isGoldOrSilver) return live;
 
       // Mutual funds are static in the sheet, so we consider them 'broken' to force a regular fetch.
       return isMF || isPriceMissing || isMarketCapMissing || isYahooSymbolMissing || isSectorMissing;
@@ -302,51 +333,53 @@ export async function GET(request: Request) {
           }
 
           try {
-            // Use USD-per-troy-ounce futures: GC=F for gold, SI=F for silver.
-            // Yahoo quotes in USD/oz, so convert to INR per gram below.
+            // Gold API supplies spot USD/oz; Yahoo's GC=F/SI=F futures are the
+            // fallback when spot is unavailable. Both are converted to INR per
+            // gram below.
             const ySym = sym === 'GOLD-INR-GRAM' ? 'GC=F' : 'SI=F';
             const quote = await safeQuote(ySym) as any;
-            const priceUsd = quote?.regularMarketPrice;
+            const priceUsd = Number(quote?.regularMarketPrice);
 
-            if (priceUsd) {
+            if (priceUsd > 0) {
               // 1 Troy Ounce = 31.1034768 grams
               const troyOunceInGrams = 31.1034768;
 
-              const freshFx = Number(commodityFxQuote?.regularMarketPrice) > 0;
-              const usdToInr =
-                (freshFx ? Number(commodityFxQuote?.regularMarketPrice) : null) ||
-                existingData['INR=X']?.regularMarketPrice ||
-                94.22;
+              const liveFx = Number(commodityFxQuote?.regularMarketPrice);
+              const freshFx = liveFx > 0;
+              const sheetFx = Number(existingData['INR=X']?.regularMarketPrice);
+              // Never invent an FX rate: if every provider is unavailable, the
+              // stored metal price is a safer fallback than a drifting constant.
+              const usdToInr = freshFx ? liveFx : sheetFx > 0 ? sheetFx : null;
 
-              // Base conversion: (USD / Troy Ounce) -> (USD / Gram) -> (INR / Gram)
-              let finalInrPrice = (priceUsd / troyOunceInGrams) * usdToInr;
+              if (usdToInr != null) {
+                // Base conversion: (USD / Troy Ounce) -> (USD / Gram) -> (INR / Gram)
+                let finalInrPrice = (priceUsd / troyOunceInGrams) * usdToInr;
 
-              // Import Duty (15%: 10% BCD + 5% AIDC, effective May 2026) + GST (3%)
-              const importDutyRate = 0.15;
-              const gstRate = 0.03;
-              finalInrPrice *= (1 + importDutyRate) * (1 + gstRate);
+                // Import Duty (15%: 10% BCD + 5% AIDC, effective May 2026) + GST (3%)
+                const importDutyRate = 0.15;
+                const gstRate = 0.03;
+                finalInrPrice *= (1 + importDutyRate) * (1 + gstRate);
 
-              const futuresTime = quoteTimeMs(quote);
-              const fxTime = quoteTimeMs(commodityFxQuote);
-              // Yahoo's USD/INR quote often carries an older market timestamp
-              // than the futures contract. The metals price is driven by the
-              // futures quote, so use its timestamp for display; only treat FX
-              // as stale when it is unavailable or genuinely day-old.
-              const fxTooOld =
-                fxTime != null && Date.now() - fxTime > 24 * 60 * 60 * 1000;
-              quoteMeta[sym] = {
-                asOf: futuresTime ?? fxTime ?? null,
-                stale: !freshFx || fxTooOld,
-              };
+                const futuresTime = quoteTimeMs(quote);
+                const fxTime = quoteTimeMs(commodityFxQuote);
+                // Reference FX rates are daily, so allow for weekends and
+                // holidays before calling them stale.
+                const fxTooOld =
+                  fxTime != null && Date.now() - fxTime > 96 * 60 * 60 * 1000;
+                quoteMeta[sym] = {
+                  asOf: futuresTime ?? fxTime ?? null,
+                  stale: !freshFx || fxTooOld,
+                };
 
-              mfPrices[sym] = {
-                price: finalInrPrice,
-                name: sym === 'GOLD-INR-GRAM' ? 'Physical Gold 24K (Per Gram)' : 'Physical Silver (Per Gram)',
-                yahooSymbol: ySym,
-                sector: 'Precious Metals',
-                source: 'Yahoo Finance',
-                asOf: quoteMeta[sym].asOf,
-              };
+                mfPrices[sym] = {
+                  price: finalInrPrice,
+                  name: sym === 'GOLD-INR-GRAM' ? 'Physical Gold 24K (Per Gram)' : 'Physical Silver (Per Gram)',
+                  yahooSymbol: ySym,
+                  sector: 'Precious Metals',
+                  source: quote.source || 'Yahoo Finance',
+                  asOf: quoteMeta[sym].asOf,
+                };
+              }
             }
           } catch(e) {
             console.error(`Failed to fetch ${sym} price`, e);
@@ -556,52 +589,51 @@ export async function GET(request: Request) {
           return;
         }
 
-        // For non-MFs (Stocks), use Yahoo Finance
+        // Bond ISINs are valued from the sheet; there is no public live quote.
+        if (/^[A-Z]{2}[A-Z0-9]{9}[0-9]$/.test(sym)) {
+          quoteMeta[sym] = { asOf: null, stale: true };
+          return;
+        }
+
+        // For non-MFs (stocks, ETFs and crypto), use the live provider chain.
         quoteMeta[sym] = { asOf: null, stale: true };
         try {
           const fetchSym = MANUAL_MAP[sym] || sym;
           const quote = await safeQuote(fetchSym) as any;
-          if (quote) {
-            const hasPrice = Number(quote.regularMarketPrice) > 0;
+          const hasPrice = Number(quote?.regularMarketPrice) > 0;
+
+          if (hasPrice) {
             stockPrices[sym] = {
               symbol: sym,
-              regularMarketPrice: quote.regularMarketPrice || 0,
-              currency: quote.currency || 'INR',
-              shortName: quote.displayName || quote.shortName || sym,
-              marketCap: quote.marketCap,
-              quoteType: quote.quoteType,
-              sector: null,
-              source: 'Yahoo Finance',
+              regularMarketPrice: quote.regularMarketPrice,
+              currency: quote.currency || existingData[sym]?.currency || 'INR',
+              shortName: quote.displayName || quote.shortName || existingData[sym]?.shortName || sym,
+              marketCap: quote.marketCap ?? existingData[sym]?.marketCap ?? null,
+              quoteType: quote.quoteType || existingData[sym]?.quoteType || 'EQUITY',
+              sector: existingData[sym]?.sector || null,
+              source: quote.source || 'Yahoo Finance',
               lastUpdated: Date.now()
             };
-            if (hasPrice) {
-              quoteMeta[sym] = {
-                asOf: quoteTimeMs(quote) ?? Date.now(),
-                stale: false,
-              };
-            }
-            
-            // Try fetching sector separately, it's less critical and often fails
-            try {
-              const summary = await safeQuoteSummary(fetchSym, { modules: ['assetProfile'] }) as any;
-              if (summary && summary.assetProfile && summary.assetProfile.sector) {
-                stockPrices[sym].sector = summary.assetProfile.sector;
+            quoteMeta[sym] = {
+              asOf: quoteTimeMs(quote) ?? Date.now(),
+              stale: false,
+            };
+
+            // Sector metadata is only available from Yahoo. Provider prices are
+            // live without it, so do not delay the quote waiting for Yahoo.
+            if (quote.source === 'Yahoo Finance' && yahooAllowed()) {
+              try {
+                const summary = await safeQuoteSummary(fetchSym, { modules: ['assetProfile'] }) as any;
+                if (summary && summary.assetProfile && summary.assetProfile.sector) {
+                  stockPrices[sym].sector = summary.assetProfile.sector;
+                }
+              } catch (e) {
+                // Ignore sector fetch errors
               }
-            } catch (e) {
-              // Ignore sector fetch errors
             }
           }
         } catch (e: any) {
-          console.error(`Yahoo error for ${sym}, setting fallback:`, e.message);
-          stockPrices[sym] = {
-            symbol: sym,
-            regularMarketPrice: 0,
-            currency: 'INR',
-            shortName: sym,
-            sector: null,
-            source: 'Pending Price (Manual update required)',
-            lastUpdated: Date.now()
-          };
+          console.error(`Quote error for ${sym}:`, e?.message || e);
         }
       }));
 
@@ -670,7 +702,13 @@ export async function GET(request: Request) {
           else if (isUsdAsset) currencyFormula = `USD`;
 
           const actualType = stockPrices[sym]?.quoteType || existingData[sym]?.quoteType || (isMF ? "MUTUALFUND" : "EQUITY");
-          const typeFormula = isCommodity ? "COMMODITY" : (actualType === "ETF" ? "ETF" : (isMF ? "MUTUALFUND" : "EQUITY"));
+          const typeFormula = isCommodity
+            ? "COMMODITY"
+            : actualType === "ETF"
+              ? "ETF"
+              : actualType === "CRYPTOCURRENCY"
+                ? "CRYPTOCURRENCY"
+                : (isMF ? "MUTUALFUND" : "EQUITY");
           if (isCommodity) sector = 'Precious Metals';
           
           const fallbackMarketCap = stockPrices[sym]?.marketCap ? stockPrices[sym].marketCap : '""';
@@ -751,7 +789,13 @@ export async function GET(request: Request) {
           else if (isUsdAsset) currencyFormula = `USD`;
 
           const actualType = stockPrices[sym]?.quoteType || existingData[sym]?.quoteType || (isMF ? "MUTUALFUND" : "EQUITY");
-          const typeFormula = isCommodity ? "COMMODITY" : (actualType === "ETF" ? "ETF" : (isMF ? "MUTUALFUND" : "EQUITY"));
+          const typeFormula = isCommodity
+            ? "COMMODITY"
+            : actualType === "ETF"
+              ? "ETF"
+              : actualType === "CRYPTOCURRENCY"
+                ? "CRYPTOCURRENCY"
+                : (isMF ? "MUTUALFUND" : "EQUITY");
           if (isCommodity) sector = 'Precious Metals';
           
           const fallbackMarketCap = stockPrices[sym]?.marketCap ? stockPrices[sym].marketCap : '""';
@@ -838,13 +882,16 @@ export async function GET(request: Request) {
               existingData[sym].source = mfPrices[sym].source;
             }
           } else if (isMF) {
-            existingData[sym].quoteType = 'MUTUALFUND';
+            existingData[sym].quoteType =
+              mfPrices[sym]?.quoteType ||
+              (existingData[sym].quoteType === 'ETF' ? 'ETF' : 'MUTUALFUND');
             if (mfPrices[sym]) {
               existingData[sym].regularMarketPrice = mfPrices[sym].price;
               existingData[sym].shortName = mfPrices[sym].name;
               existingData[sym].yahooSymbol = mfPrices[sym].yahooSymbol || existingData[sym].yahooSymbol;
             }
           } else if (stockPrices[sym]) {
+            existingData[sym].quoteType = stockPrices[sym].quoteType || existingData[sym].quoteType;
             existingData[sym].sector = stockPrices[sym].sector || existingData[sym].sector;
           }
         }
