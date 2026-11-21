@@ -228,8 +228,12 @@ explanatory text part instead of failing the request. Models such as
 Screenshots from Groq's Qwen models take a separate path. Qwen reads the image
 accurately but corrupts the larger `propose_asset_updates` arguments, so the app
 calls `/api/agent` with `mode: "extract"`. That request sends no tools, asks for
-a plain JSON object and builds the confirmation card locally. Other providers
-and models keep the normal tool loop.
+a plain JSON object and builds the confirmation card locally. It also carries a
+compact list of saved holdings, so a detail screen titled "Silver Vault" can
+resolve to the existing `SILVER-INR-GRAM` / "Physical Silver (Per Gram)"
+holding. Current values, returns and savings balances are ignored; only a
+clearly labelled average buy price can become `entryPrice`. Other providers and
+models keep the normal tool loop.
 
 Groq, OpenRouter and Gemini keys live on the server, never in the app bundle.
 There are two ways to add them:

@@ -108,6 +108,89 @@ describe('buildAssetProposal', () => {
     });
   });
 
+  it('matches a generic detail-screen title to the silver holding', () => {
+    const withSilver = [
+      ...assets,
+      asset({
+        id: 'a4',
+        symbol: 'SILVER-INR-GRAM',
+        name: 'Physical Silver (Per Gram)',
+        type: 'COMMODITY',
+        quantity: 0.0613,
+        entryPrice: 158.4,
+      }),
+    ];
+
+    const result = buildAssetProposal(
+      {
+        summary: 'Silver Vault',
+        updates: [{ name: 'Silver Vault', quantity: 6.2885 }],
+      },
+      withSilver,
+    );
+
+    expect('proposal' in result).toBe(true);
+    if (!('proposal' in result)) return;
+
+    expect(result.proposal.updates).toHaveLength(1);
+    expect(result.proposal.updates[0]).toMatchObject({
+      assetId: 'a4',
+      symbol: 'SILVER-INR-GRAM',
+      changes: [{ field: 'quantity', from: 0.0613, to: 6.2885 }],
+    });
+  });
+
+  it('does not match a different silver product by one shared word', () => {
+    const withSilver = [
+      ...assets,
+      asset({
+        id: 'a4',
+        symbol: 'SILVER-INR-GRAM',
+        name: 'Physical Silver (Per Gram)',
+        type: 'COMMODITY',
+        quantity: 0.0613,
+        entryPrice: 158.4,
+      }),
+    ];
+
+    const result = buildAssetProposal(
+      {
+        summary: 'Silver ETF',
+        updates: [{ name: 'Silver ETF', quantity: 10 }],
+      },
+      withSilver,
+    );
+
+    expect('error' in result).toBe(true);
+  });
+
+  it('does not turn cash or savings labels into a holding', () => {
+    const withSilver = [
+      ...assets,
+      asset({
+        id: 'a4',
+        symbol: 'SILVER-INR-GRAM',
+        name: 'Physical Silver (Per Gram)',
+        type: 'COMMODITY',
+        quantity: 0.0613,
+        entryPrice: 158.4,
+      }),
+    ];
+
+    const result = buildAssetProposal(
+      {
+        summary: 'Silver Vault',
+        updates: [
+          { name: 'Active Savings', quantity: 1001.53 },
+          { name: 'Silver Value', entryPrice: 157.92 },
+        ],
+      },
+      withSilver,
+    );
+
+    expect('error' in result).toBe(true);
+  });
+
   it('returns an error when nothing matches or nothing changes', () => {
     const noMatch = buildAssetProposal(
       { summary: 'x', updates: [{ symbol: 'UNKNOWN', quantity: 1 }] },

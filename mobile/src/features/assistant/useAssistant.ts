@@ -180,6 +180,12 @@ export function useAssistant(
             model,
             text: trimmed,
             supportsVision: options.supportsVision,
+            holdings: context.assets.map((asset) => ({
+              assetId: asset.id,
+              symbol: asset.symbol,
+              name: asset.name,
+              type: asset.type,
+            })),
           });
 
           apiMessages.current.push({

@@ -63,11 +63,20 @@ export async function sendAgentRequest(
 
 /** One holding row read from a screenshot. */
 export type ExtractionUpdate = {
+  assetId?: string;
   symbol?: string;
   name?: string;
   quantity?: number;
   entryPrice?: number;
   manualPrice?: number;
+};
+
+/** Compact saved-holding context sent with a screenshot extraction. */
+export type ExtractionHolding = {
+  assetId?: string;
+  symbol?: string;
+  name?: string;
+  type?: string;
 };
 
 export type ScreenshotExtraction = {
@@ -95,6 +104,7 @@ export async function extractScreenshot(
     model?: string;
     text?: string;
     supportsVision?: boolean;
+    holdings?: ExtractionHolding[];
   } = {},
 ): Promise<ExtractionResponse> {
   const parts: (AgentTextPart | AgentImagePart)[] = [];
@@ -112,6 +122,7 @@ export async function extractScreenshot(
       ...(options.supportsVision !== undefined
         ? { supportsVision: options.supportsVision }
         : {}),
+      ...(options.holdings?.length ? { holdings: options.holdings } : {}),
     },
     token: options.token,
     signal: options.signal,

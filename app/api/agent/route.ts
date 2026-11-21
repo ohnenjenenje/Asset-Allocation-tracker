@@ -185,6 +185,7 @@ function systemPrompt() {
     'Screenshots and edits:',
     '- You can read screenshots of holdings, orders and price screens. Extract only values that are clearly legible. Never guess a number or what a column means.',
     '- If you receive an error saying the selected model does not support image input, tell the user it is text-only and suggest a model marked Image in the chat header.',
+    '- A screenshot may be a single holding detail screen. Treat the screen title as the holding name and Current Holdings or Quantity as the quantity. Ignore cash, savings, totals, returns and current values; a detail screen titled "Silver Vault" showing grams of silver matches SILVER-INR-GRAM / Physical Silver (Per Gram).',
     '- Match each screenshot row to an existing holding by ticker or name. If a row does not match, do not propose it; mention it in your reply.',
     '- To change an existing holding, call propose_asset_updates. It shows a confirmation card; nothing is saved until the user taps Apply. Never say a change is saved before that.',
     '- Prefer quantity and average buy price (entryPrice). Propose manualPrice only when the user explicitly asks to update the current price, or clearly asks for prices to be updated from the screenshot. Manual prices override live quotes, so warn about that.',
@@ -201,30 +202,91 @@ function systemPrompt() {
 
 type AgentMode = 'chat' | 'extract';
 
+type ExtractionHolding = {
+  assetId?: string;
+  symbol?: string;
+  name?: string;
+  type?: string;
+};
+
+/**
+ * The client sends a compact list of saved holdings so the model can map
+ * generic screenshot titles (for example "Silver Vault") to the right asset.
+ * Keep the list small: it is prompt context, not a second portfolio payload.
+ */
+function extractionHoldings(input: unknown): ExtractionHolding[] {
+  if (!Array.isArray(input)) return [];
+
+  const holdings: ExtractionHolding[] = [];
+  for (const raw of input.slice(0, 80)) {
+    if (!raw || typeof raw !== 'object') continue;
+    const item = raw as any;
+    const assetId = typeof item.assetId === 'string' ? item.assetId.trim().slice(0, 80) : '';
+    const symbol = typeof item.symbol === 'string' ? item.symbol.trim().slice(0, 40) : '';
+    const name = typeof item.name === 'string' ? item.name.trim().slice(0, 120) : '';
+    const type = typeof item.type === 'string' ? item.type.trim().slice(0, 40) : '';
+    if (!assetId && !symbol && !name) continue;
+
+    holdings.push({
+      ...(assetId ? { assetId } : {}),
+      ...(symbol ? { symbol } : {}),
+      ...(name ? { name } : {}),
+      ...(type ? { type } : {}),
+    });
+  }
+  return holdings;
+}
+
 /**
  * Screenshot extraction runs without tools. Groq's Qwen reads images well but
  * mangles complex tool-call JSON, so the model is asked for plain JSON and the
  * app turns those rows into a proposal locally.
  */
-function extractionPrompt() {
+function extractionPrompt(holdings: ExtractionHolding[] = []) {
+  const knownHoldings =
+    holdings.length > 0
+      ? [
+          '',
+          'Known holdings (match screenshot rows to these):',
+          ...holdings.map((holding) =>
+            [
+              holding.assetId ? `assetId=${holding.assetId}` : '',
+              holding.symbol ? `symbol=${holding.symbol}` : '',
+              holding.name ? `name=${holding.name}` : '',
+              holding.type ? `type=${holding.type}` : '',
+            ]
+              .filter(Boolean)
+              .join(' | '),
+          ),
+          '',
+        ]
+      : [];
+
   return [
     'You read portfolio screenshots for the Asset Allocation Tracker app.',
     'Return only a JSON object with this shape:',
-    '{"summary":"one short sentence","updates":[{"symbol":"TICKER","name":"Company name","quantity":10,"entryPrice":2400.5}]}',
+    '{"summary":"one short sentence","updates":[{"assetId":"id from the known holdings list, if matched","symbol":"TICKER","name":"Company name","quantity":10,"entryPrice":2400.5}]}',
     '',
     'Rules:',
-    '- Only include rows that are visibly present in the holdings table in the image.',
-    '- Do not add tickers, totals, recent activity or any other row from memory.',
-    '- quantity is the new total quantity held, not a delta.',
-    '- entryPrice is the average buy price per unit.',
-    '- Include every row whose quantity and average price are clearly readable.',
+    '- The screenshot may be a holdings table or a single holding detail screen.',
+    '- For a single holding detail screen, use the screen title as the holding name and the value labelled Current Holdings, Quantity, Units or similar as quantity.',
+    '- Match each row to a known holding above. If one holding is clearly the same product, copy its assetId, symbol and name exactly. For example, a screen titled "Silver Vault" showing grams of silver matches SILVER-INR-GRAM / Physical Silver (Per Gram).',
+    '- If no known holding matches, omit assetId and return the row name or symbol exactly as shown in the screenshot.',
+    '- Only include rows that are visibly present in the image. Do not add tickers, totals, recent activity or any other row from memory.',
+    '- Ignore cash, savings, wallet, total, current value, market value, returns, percentages and recent activity. Do not turn "Active Savings" into a holding.',
+    '- quantity is the new total quantity held in the unit shown (for example 6.2885 gm), not a delta.',
+    '- entryPrice is the average buy price per unit. Set it only when the screenshot explicitly labels average buy price, avg cost, average price, buy price or invested amount. Never use current value, "Silver Value", market value, LTP or a price per unit as entryPrice.',
+    '- Do not set manualPrice unless the user explicitly asked to update the current price. Prefer omitting it.',
+    '- Include every holding whose quantity is clearly readable.',
     '- Omit rows you cannot read. Never guess a number or what a column means.',
+    ...knownHoldings,
     '- If no holding row is readable, return {"summary":"No readable holdings","updates":[]}.',
     '- Do not include prose, Markdown or code fences.',
   ].join('\n');
 }
 
 type ExtractionUpdate = {
+  assetId?: string;
   symbol?: string;
   name?: string;
   quantity?: number;
@@ -283,11 +345,14 @@ function parseExtraction(
   for (const raw of rawUpdates) {
     if (!raw || typeof raw !== 'object') continue;
 
+    const assetId =
+      typeof raw.assetId === 'string' ? raw.assetId.trim().slice(0, 80) : '';
     const symbol = typeof raw.symbol === 'string' ? raw.symbol.trim().slice(0, 40) : '';
     const name = typeof raw.name === 'string' ? raw.name.trim().slice(0, 120) : '';
-    if (!symbol && !name) continue;
+    if (!assetId && !symbol && !name) continue;
 
     const update: ExtractionUpdate = {};
+    if (assetId) update.assetId = assetId;
     if (symbol) update.symbol = symbol;
     if (name) update.name = name;
 
@@ -566,6 +631,8 @@ export async function POST(request: Request) {
   }
 
   const mode: AgentMode = body?.mode === 'extract' ? 'extract' : 'chat';
+  const extractionHoldingsList =
+    mode === 'extract' ? extractionHoldings(body?.holdings) : [];
   let extractionSource: SanitizedMessage | null = null;
   if (mode === 'extract') {
     extractionSource = extractionMessage(messages);
@@ -652,7 +719,10 @@ export async function POST(request: Request) {
       [
         {
           role: 'system',
-          content: mode === 'extract' ? extractionPrompt() : systemPrompt(),
+          content:
+            mode === 'extract'
+              ? extractionPrompt(extractionHoldingsList)
+              : systemPrompt(),
         },
         ...providerMessages,
       ],

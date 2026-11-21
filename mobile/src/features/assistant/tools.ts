@@ -64,6 +64,54 @@ const normalizeKey = (value: string): string =>
     .replace(/[^a-z0-9.]+/g, ' ')
     .trim();
 
+// Product-name filler that should not decide which holding a screenshot row
+// belongs to. Field labels such as "Value" or "Savings" stay in the token set
+// so a row like "Silver Value" cannot match a silver holding by itself.
+const GENERIC_MATCH_TOKENS = new Set([
+  'account',
+  'amount',
+  'asset',
+  'assets',
+  'average',
+  'avg',
+  'balance',
+  'bo',
+  'buy',
+  'company',
+  'corp',
+  'corporation',
+  'eur',
+  'gbp',
+  'gram',
+  'grams',
+  'inc',
+  'inr',
+  'investment',
+  'limited',
+  'ltd',
+  'market',
+  'ns',
+  'per',
+  'physical',
+  'plc',
+  'portfolio',
+  'price',
+  'quantity',
+  'the',
+  'unit',
+  'units',
+  'usd',
+  'vault',
+  'wallet',
+  'weight',
+]);
+
+function distinctiveTokens(value: string): string[] {
+  return normalizeKey(value)
+    .split(' ')
+    .filter((token) => token.length >= 3 && !GENERIC_MATCH_TOKENS.has(token));
+}
+
 function numericArg(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string' && value.trim()) {
@@ -111,6 +159,22 @@ function findAsset(item: any, assets: Asset[]): Asset | null {
       return assetName.includes(query) || normalizeKey(asset.symbol).includes(query);
     });
     if (partial.length === 1) return partial[0];
+  }
+
+  // Screenshot titles are often product names rather than tickers: a
+  // "Silver Vault" detail screen belongs to "Physical Silver (Per Gram)".
+  // Match on all remaining distinctive words, but only when exactly one
+  // holding contains them. Ambiguous matches stay unmatched on purpose.
+  const tokens = new Set(distinctiveTokens(name || symbol));
+  if (tokens.size > 0 && numericArg(item?.quantity) != null) {
+    const tokenMatches = assets.filter((asset) => {
+      const candidateTokens = new Set([
+        ...distinctiveTokens(asset.name),
+        ...distinctiveTokens(asset.symbol),
+      ]);
+      return [...tokens].every((token) => candidateTokens.has(token));
+    });
+    if (tokenMatches.length === 1) return tokenMatches[0];
   }
 
   return null;
