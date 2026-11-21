@@ -129,6 +129,13 @@ export async function GET() {
     return NextResponse.json(cryptoAssets);
   } catch (error: any) {
     console.error('CoinDCX API Error:', error?.message || error);
-    return NextResponse.json({ error: error?.message || 'CoinDCX request failed' });
+    const detail = String(error?.message || 'CoinDCX request failed');
+    const hint = /401|invalid credentials|expired|unauthori[sz]ed/i.test(detail)
+      ? ' Generate new CoinDCX API keys and update COINDCX_API_KEY and COINDCX_SECRET in Render.'
+      : '';
+    return NextResponse.json(
+      { error: `${detail}${hint}` },
+      { status: 502 },
+    );
   }
 }
