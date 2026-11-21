@@ -193,6 +193,16 @@ const BSE_BOND_SCRIP_CODES: Record<string, string> = {
 };
 const bseBondScripCodeCache = new Map<string, string>();
 
+// BSE's mobile quote page is reliable but can be slow on a cold cache. Keep
+// the last good LTP so a transient timeout does not flip an otherwise valid
+// bond quote back to "stale".
+const BSE_BOND_QUOTE_TTL_MS = 5 * 60_000;
+const BSE_BOND_QUOTE_FALLBACK_MS = 60 * 60_000;
+const bseBondQuoteCache = new Map<
+  string,
+  { quote: MarketQuote; fetchedAt: number }
+>();
+
 const decodeHtmlText = (value: string): string =>
   value
     .replace(/&amp;/gi, '&')
@@ -257,36 +267,45 @@ async function resolveBseBondScripCode(isin: string): Promise<string | null> {
  */
 async function fetchBseBondQuote(symbol: string): Promise<MarketQuote | null> {
   const isin = symbol.toUpperCase();
+  const cached = bseBondQuoteCache.get(isin);
+  const cacheAge = cached ? Date.now() - cached.fetchedAt : Infinity;
+  if (cached && cacheAge < BSE_BOND_QUOTE_TTL_MS) return cached.quote;
+
   const scripCode = await resolveBseBondScripCode(isin);
-  if (!scripCode) return null;
+  if (!scripCode) {
+    return cached && cacheAge < BSE_BOND_QUOTE_FALLBACK_MS ? cached.quote : null;
+  }
 
   const html = await getText(
     `https://m.bseindia.com/StockReach.aspx?scripcd=${encodeURIComponent(scripCode)}`,
     { headers: { Referer: 'https://m.bseindia.com/' } },
-    20_000,
+    40_000,
   );
-  if (!html) return null;
 
   const price = toNumber(
-    /id="strongCvalue">([^<]+)</i.exec(html)?.[1],
+    /id="strongCvalue">([^<]+)</i.exec(html || '')?.[1],
   );
-  if (price == null || price <= 0) return null;
+  if (html && price != null && price > 0) {
+    const name = decodeHtmlText(
+      /id="spanCname"[^>]*>([^<]+)</i.exec(html)?.[1] || '',
+    );
+    const timeText = /id="strongDate">([^<]+)</i.exec(html)?.[1] || null;
 
-  const name = decodeHtmlText(
-    /id="spanCname"[^>]*>([^<]+)</i.exec(html)?.[1] || '',
-  );
-  const timeText = /id="strongDate">([^<]+)</i.exec(html)?.[1] || null;
+    const quote: MarketQuote = {
+      symbol,
+      regularMarketPrice: price,
+      currency: 'INR',
+      shortName: name || null,
+      quoteType: 'BOND',
+      marketCap: null,
+      regularMarketTime: parseBseBondTime(timeText),
+      source: 'BSE India',
+    };
+    bseBondQuoteCache.set(isin, { quote, fetchedAt: Date.now() });
+    return quote;
+  }
 
-  return {
-    symbol,
-    regularMarketPrice: price,
-    currency: 'INR',
-    shortName: name || null,
-    quoteType: 'BOND',
-    marketCap: null,
-    regularMarketTime: parseBseBondTime(timeText),
-    source: 'BSE India',
-  };
+  return cached && cacheAge < BSE_BOND_QUOTE_FALLBACK_MS ? cached.quote : null;
 }
 
 /** NSE/BSE equity quote from Groww's public live-price endpoint. */
