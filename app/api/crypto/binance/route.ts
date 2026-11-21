@@ -34,23 +34,15 @@ interface ExchangeAsset {
 
 export async function GET() {
   // Render environment variables are sometimes pasted with a trailing newline,
-  // which makes Node reject the API key header. Trim before handing it to ccxt.
-  const apiKey = process.env.BINANCE_API_KEY?.trim();
-  const secret = process.env.BINANCE_SECRET?.trim();
+  // a wrapped second line or an invisible character, which makes Node reject
+  // the API key header. Binance keys are printable ASCII, so drop anything else.
+  const cleanEnv = (value?: string) => (value ?? '').replace(/[^\x21-\x7E]/g, '');
+  const apiKey = cleanEnv(process.env.BINANCE_API_KEY);
+  const secret = cleanEnv(process.env.BINANCE_SECRET);
 
   if (!apiKey || !secret) {
     return NextResponse.json(
       { error: 'Missing Binance API keys in Render Environment' },
-      { status: 400 },
-    );
-  }
-
-  if (!/^[\x21-\x7E]+$/.test(apiKey)) {
-    return NextResponse.json(
-      {
-        error:
-          'BINANCE_API_KEY contains invalid characters. Re-save it in Render without spaces or line breaks.',
-      },
       { status: 400 },
     );
   }
