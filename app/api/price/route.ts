@@ -589,13 +589,8 @@ export async function GET(request: Request) {
           return;
         }
 
-        // Bond ISINs are valued from the sheet; there is no public live quote.
-        if (/^[A-Z]{2}[A-Z0-9]{9}[0-9]$/.test(sym)) {
-          quoteMeta[sym] = { asOf: null, stale: true };
-          return;
-        }
-
-        // For non-MFs (stocks, ETFs and crypto), use the live provider chain.
+        // For non-MFs (stocks, ETFs, bonds and crypto), use the live provider
+        // chain. Bond ISINs resolve through BSE's mobile quote page.
         quoteMeta[sym] = { asOf: null, stale: true };
         try {
           const fetchSym = MANUAL_MAP[sym] || sym;
@@ -675,7 +670,8 @@ export async function GET(request: Request) {
           const rowNumber = rowIndex + 1;
           const isCommodity = sym === 'GOLD-INR-GRAM' || sym === 'SILVER-INR-GRAM';
           const isMF = sym.startsWith('0P') || /^\d+$/.test(sym) || sym.startsWith('MF_') || /^INF[A-Z0-9]{9}$/i.test(sym) || isCommodity;
-          const isIndian = sym.endsWith('.NS') || sym.endsWith('.BO') || isCommodity;
+          const isBond = /^[A-Z]{2}[A-Z0-9]{9}[0-9]$/i.test(sym);
+          const isIndian = sym.endsWith('.NS') || sym.endsWith('.BO') || isCommodity || isBond;
           const isUsdAsset = sym.endsWith('-USD') || (!sym.includes('.') && !isMF);
           
           let priceFormula = gSym.startsWith('CURRENCY:') ? `=IFNA(GOOGLEFINANCE("${gSym}"), "")` : `=IFNA(GOOGLEFINANCE("${gSym}", "price"), "")`;
@@ -689,6 +685,11 @@ export async function GET(request: Request) {
             nameFormula = mfPrices[sym].name || sym;
             yahooSymbol = mfPrices[sym].yahooSymbol || yahooSymbol;
             source = mfPrices[sym].source || source;
+          } else if (isBond && stockPrices[sym]) {
+            // Google Finance cannot quote an ISIN, so store the BSE LTP.
+            priceFormula = String(stockPrices[sym].regularMarketPrice);
+            nameFormula = stockPrices[sym].shortName || sym;
+            source = stockPrices[sym].source || source;
           } else if (!isMF && stockPrices[sym]) {
             sector = stockPrices[sym].sector || sector;
           }
@@ -708,7 +709,9 @@ export async function GET(request: Request) {
               ? "ETF"
               : actualType === "CRYPTOCURRENCY"
                 ? "CRYPTOCURRENCY"
-                : (isMF ? "MUTUALFUND" : "EQUITY");
+                : actualType === "BOND"
+                  ? "BOND"
+                  : (isMF ? "MUTUALFUND" : "EQUITY");
           if (isCommodity) sector = 'Precious Metals';
           
           const fallbackMarketCap = stockPrices[sym]?.marketCap ? stockPrices[sym].marketCap : '""';
@@ -763,7 +766,8 @@ export async function GET(request: Request) {
           const gSym = getGFinanceSymbol(sym);
           const isCommodity = sym === 'GOLD-INR-GRAM' || sym === 'SILVER-INR-GRAM';
           const isMF = sym.startsWith('0P') || /^\d+$/.test(sym) || sym.startsWith('MF_') || /^INF[A-Z0-9]{9}$/i.test(sym) || isCommodity;
-          const isIndian = sym.endsWith('.NS') || sym.endsWith('.BO') || isCommodity;
+          const isBond = /^[A-Z]{2}[A-Z0-9]{9}[0-9]$/i.test(sym);
+          const isIndian = sym.endsWith('.NS') || sym.endsWith('.BO') || isCommodity || isBond;
           const isUsdAsset = sym.endsWith('-USD') || (!sym.includes('.') && !isMF);
           
           let priceFormula = gSym.startsWith('CURRENCY:') ? `=IFNA(GOOGLEFINANCE("${gSym}"), "")` : `=IFNA(GOOGLEFINANCE("${gSym}", "price"), "")`;
@@ -777,6 +781,10 @@ export async function GET(request: Request) {
             nameFormula = mfPrices[sym].name || sym;
             yahooSymbol = mfPrices[sym].yahooSymbol || "";
             source = mfPrices[sym].source || "";
+          } else if (isBond && stockPrices[sym]) {
+            priceFormula = String(stockPrices[sym].regularMarketPrice);
+            nameFormula = stockPrices[sym].shortName || sym;
+            source = stockPrices[sym].source || "";
           } else if (!isMF && stockPrices[sym]) {
             sector = stockPrices[sym].sector || "";
             source = stockPrices[sym].source || "";
@@ -795,7 +803,9 @@ export async function GET(request: Request) {
               ? "ETF"
               : actualType === "CRYPTOCURRENCY"
                 ? "CRYPTOCURRENCY"
-                : (isMF ? "MUTUALFUND" : "EQUITY");
+                : actualType === "BOND"
+                  ? "BOND"
+                  : (isMF ? "MUTUALFUND" : "EQUITY");
           if (isCommodity) sector = 'Precious Metals';
           
           const fallbackMarketCap = stockPrices[sym]?.marketCap ? stockPrices[sym].marketCap : '""';
@@ -893,6 +903,10 @@ export async function GET(request: Request) {
           } else if (stockPrices[sym]) {
             existingData[sym].quoteType = stockPrices[sym].quoteType || existingData[sym].quoteType;
             existingData[sym].sector = stockPrices[sym].sector || existingData[sym].sector;
+            existingData[sym].shortName =
+              stockPrices[sym].shortName || existingData[sym].shortName;
+            existingData[sym].currency =
+              stockPrices[sym].currency || existingData[sym].currency;
           }
         }
       });

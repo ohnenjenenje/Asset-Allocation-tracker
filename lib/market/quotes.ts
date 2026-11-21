@@ -72,6 +72,29 @@ async function getJson(
   }
 }
 
+async function getText(
+  url: string,
+  init: RequestInit = {},
+  timeoutMs = REQUEST_TIMEOUT_MS,
+): Promise<string | null> {
+  try {
+    const response = await fetch(url, {
+      ...init,
+      cache: 'no-store',
+      headers: {
+        Accept: 'text/html,application/xhtml+xml',
+        'User-Agent': USER_AGENT,
+        ...(init.headers || {}),
+      },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!response.ok) return null;
+    return await response.text();
+  } catch {
+    return null;
+  }
+}
+
 const MONTHS: Record<string, number> = {
   Jan: 0,
   Feb: 1,
@@ -160,6 +183,111 @@ const isMutualFundCode = (symbol: string): boolean =>
 
 const isBondIsin = (symbol: string): boolean =>
   /^[A-Z]{2}[A-Z0-9]{9}[0-9]$/.test(symbol);
+
+// BSE's mobile quote page is keyed by numeric scrip code, not ISIN. These are
+// the codes for the bonds in the portfolio; unknown ISINs are resolved from
+// Fixed Alpha below and then cached for the life of the server process.
+const BSE_BOND_SCRIP_CODES: Record<string, string> = {
+  INE342T07635: '977017',
+  INE101Q07BK8: '940635',
+};
+const bseBondScripCodeCache = new Map<string, string>();
+
+const decodeHtmlText = (value: string): string =>
+  value
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .trim();
+
+/** Parse BSE's "LTD- 20 Nov 26 | 04:00 PM" timestamp as IST. */
+function parseBseBondTime(value: string | null): Date | null {
+  if (!value) return null;
+  const match =
+    /LTD-\s*(\d{1,2})\s+([A-Z][a-z]{2})\s+(\d{2})\s*\|\s*(\d{1,2}):(\d{2})\s*(AM|PM)/i.exec(
+      value,
+    );
+  if (!match) return null;
+
+  const [, dayRaw, monthName, yearRaw, hourRaw, minuteRaw, meridiem] = match;
+  const month =
+    MONTHS[
+      `${monthName[0].toUpperCase()}${monthName.slice(1).toLowerCase()}`
+    ];
+  if (month == null) return null;
+
+  let hour = Number(hourRaw) % 12;
+  if (meridiem.toUpperCase() === 'PM') hour += 12;
+
+  const iso = `20${yearRaw}-${String(month + 1).padStart(2, '0')}-${String(Number(dayRaw)).padStart(2, '0')}T${String(hour).padStart(2, '0')}:${minuteRaw}:00+05:30`;
+  const date = new Date(iso);
+  return Number.isFinite(date.getTime()) ? date : null;
+}
+
+async function resolveBseBondScripCode(isin: string): Promise<string | null> {
+  const known = BSE_BOND_SCRIP_CODES[isin];
+  if (known) return known;
+
+  const cached = bseBondScripCodeCache.get(isin);
+  if (cached) return cached;
+
+  const html = await getText(
+    `https://www.fixedalpha.com/bonds/${encodeURIComponent(isin)}`,
+    {},
+    12_000,
+  );
+  if (!html) return null;
+
+  // Fixed Alpha embeds the exchange identifiers in its React payload, where
+  // quotes are backslash-escaped.
+  const normalized = html.replace(/\\"/g, '"');
+  const code = /"bseScripCode"\s*:\s*"(\d{5,7})"/.exec(normalized)?.[1];
+  if (!code) return null;
+
+  bseBondScripCodeCache.set(isin, code);
+  return code;
+}
+
+/**
+ * Last traded price for a BSE-listed corporate bond. The public desktop API is
+ * blocked by Akamai, but BSE's mobile quote page renders the same LTP as HTML.
+ */
+async function fetchBseBondQuote(symbol: string): Promise<MarketQuote | null> {
+  const isin = symbol.toUpperCase();
+  const scripCode = await resolveBseBondScripCode(isin);
+  if (!scripCode) return null;
+
+  const html = await getText(
+    `https://m.bseindia.com/StockReach.aspx?scripcd=${encodeURIComponent(scripCode)}`,
+    { headers: { Referer: 'https://m.bseindia.com/' } },
+    20_000,
+  );
+  if (!html) return null;
+
+  const price = toNumber(
+    /id="strongCvalue">([^<]+)</i.exec(html)?.[1],
+  );
+  if (price == null || price <= 0) return null;
+
+  const name = decodeHtmlText(
+    /id="spanCname"[^>]*>([^<]+)</i.exec(html)?.[1] || '',
+  );
+  const timeText = /id="strongDate">([^<]+)</i.exec(html)?.[1] || null;
+
+  return {
+    symbol,
+    regularMarketPrice: price,
+    currency: 'INR',
+    shortName: name || null,
+    quoteType: 'BOND',
+    marketCap: null,
+    regularMarketTime: parseBseBondTime(timeText),
+    source: 'BSE India',
+  };
+}
 
 /** NSE/BSE equity quote from Groww's public live-price endpoint. */
 async function fetchGrowwQuote(symbol: string): Promise<MarketQuote | null> {
@@ -509,7 +637,8 @@ export async function fetchFallbackQuote(
   if (upper === 'SI=F') return fetchGoldApiQuote(symbol, 'XAG');
   if (upper === 'INR=X') return fetchUsdInrQuote();
 
-  if (isBondIsin(upper) || isMutualFundCode(upper)) return null;
+  if (isBondIsin(upper)) return fetchBseBondQuote(symbol);
+  if (isMutualFundCode(upper)) return null;
 
   if (upper.endsWith('.NS') || upper.endsWith('.BO')) {
     return (await fetchGrowwQuote(upper)) || (await fetchMoneycontrolQuote(upper));
