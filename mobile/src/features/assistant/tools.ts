@@ -3,13 +3,15 @@ import { apiFetch } from '@/src/lib/api/client';
 import type { PortfolioSummary } from '../portfolio/aggregate';
 import type { PortfolioAnalytics } from '../portfolio/analytics';
 import { fetchFundData, fetchPrices } from '../portfolio/api';
-import type { FundData, PriceData } from '../portfolio/types';
+import type { Asset, FundData, PriceData } from '../portfolio/types';
 
 export interface AssistantContext {
   summary: PortfolioSummary;
   analytics: PortfolioAnalytics;
   prices: Record<string, PriceData>;
   fundHoldings: Record<string, FundData>;
+  /** Saved holdings, used to resolve and apply screenshot updates. */
+  assets: Asset[];
 }
 
 export const TOOL_LABELS: Record<string, string> = {
@@ -18,7 +20,261 @@ export const TOOL_LABELS: Record<string, string> = {
   search_asset: 'Searching the market',
   get_quote: 'Fetching the latest price',
   get_fund_holdings: 'Looking inside the fund',
+  propose_asset_updates: 'Preparing your changes',
 };
+
+export type AssetChangeField = 'quantity' | 'entryPrice' | 'manualPrice';
+
+export type AssetChange = {
+  field: AssetChangeField;
+  /** Current value, or null when the asset has no manual price yet. */
+  from: number | null;
+  to: number;
+};
+
+export type AssetUpdate = {
+  assetId: string;
+  symbol: string;
+  name: string;
+  currency: string;
+  changes: AssetChange[];
+};
+
+export type AssetUpdateProposal = {
+  id: string;
+  summary: string;
+  createdAt: number;
+  updates: AssetUpdate[];
+};
+
+const CHANGE_ORDER: readonly AssetChangeField[] = [
+  'quantity',
+  'entryPrice',
+  'manualPrice',
+];
+
+const MAX_FIELD_VALUE = 1e12;
+
+const roundQuantity = (value: number): number => Math.round(value * 1e8) / 1e8;
+const roundPrice = (value: number): number => Math.round(value * 1e6) / 1e6;
+
+const normalizeKey = (value: string): string =>
+  value
+    .toLowerCase()
+    .replace(/[^a-z0-9.]+/g, ' ')
+    .trim();
+
+function numericArg(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value.replace(/,/g, ''));
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function findAsset(item: any, assets: Asset[]): Asset | null {
+  const id = typeof item?.assetId === 'string' ? item.assetId.trim() : '';
+  if (id) {
+    const match = assets.find((asset) => asset.id === id);
+    if (match) return match;
+  }
+
+  const symbol = typeof item?.symbol === 'string' ? item.symbol.trim().toUpperCase() : '';
+  const name = typeof item?.name === 'string' ? item.name.trim() : '';
+
+  if (symbol) {
+    const exact = assets.filter((asset) => asset.symbol.toUpperCase() === symbol);
+    if (exact.length === 1) return exact[0];
+    if (exact.length > 1) return null;
+
+    // "HDFCBANK" in a screenshot should match "HDFCBANK.NS" in the portfolio.
+    const bare = symbol.replace(/\.(NS|BO|L)$/i, '');
+    const bareMatches = assets.filter(
+      (asset) => asset.symbol.toUpperCase().replace(/\.(NS|BO|L)$/i, '') === bare,
+    );
+    if (bareMatches.length === 1) return bareMatches[0];
+    if (bareMatches.length > 1) return null;
+  }
+
+  if (name) {
+    const normalized = normalizeKey(name);
+    const exactName = assets.filter((asset) => normalizeKey(asset.name) === normalized);
+    if (exactName.length === 1) return exactName[0];
+    if (exactName.length > 1) return null;
+  }
+
+  const query = normalizeKey(name || symbol);
+  if (query.length >= 4) {
+    const partial = assets.filter((asset) => {
+      const assetName = normalizeKey(asset.name);
+      return assetName.includes(query) || normalizeKey(asset.symbol).includes(query);
+    });
+    if (partial.length === 1) return partial[0];
+  }
+
+  return null;
+}
+
+/**
+ * Turn model output into a canonical proposal against the saved portfolio.
+ * Only existing assets and the three editable position fields are accepted.
+ */
+export function buildAssetProposal(
+  raw: any,
+  assets: Asset[],
+): { proposal: AssetUpdateProposal } | { error: string } {
+  const rawUpdates = Array.isArray(raw?.updates) ? raw.updates.slice(0, 50) : [];
+  if (rawUpdates.length === 0) {
+    return { error: 'No changes were provided.' };
+  }
+
+  const summary =
+    typeof raw?.summary === 'string' && raw.summary.trim()
+      ? raw.summary.trim().slice(0, 300)
+      : 'Screenshot changes';
+
+  const merged = new Map<string, AssetUpdate>();
+
+  for (const item of rawUpdates) {
+    if (!item || typeof item !== 'object') continue;
+    const asset = findAsset(item, assets);
+    if (!asset) continue;
+
+    const existing = merged.get(asset.id);
+    const changes = new Map<AssetChangeField, AssetChange>(
+      existing?.changes.map((change) => [change.field, change]) ?? [],
+    );
+
+    const quantity = numericArg(item.quantity);
+    if (
+      quantity != null &&
+      quantity > 0 &&
+      quantity <= MAX_FIELD_VALUE &&
+      Math.abs(quantity - asset.quantity) > 1e-9
+    ) {
+      changes.set('quantity', {
+        field: 'quantity',
+        from: asset.quantity,
+        to: roundQuantity(quantity),
+      });
+    }
+
+    const entryPrice = numericArg(item.entryPrice);
+    if (
+      entryPrice != null &&
+      entryPrice >= 0 &&
+      entryPrice <= MAX_FIELD_VALUE &&
+      Math.abs(entryPrice - asset.entryPrice) > 1e-9
+    ) {
+      changes.set('entryPrice', {
+        field: 'entryPrice',
+        from: asset.entryPrice,
+        to: roundPrice(entryPrice),
+      });
+    }
+
+    const manualPrice = numericArg(item.manualPrice);
+    if (
+      manualPrice != null &&
+      manualPrice > 0 &&
+      manualPrice <= MAX_FIELD_VALUE &&
+      Math.abs(manualPrice - Number(asset.manualPrice ?? 0)) > 1e-9
+    ) {
+      changes.set('manualPrice', {
+        field: 'manualPrice',
+        from:
+          typeof asset.manualPrice === 'number' && Number.isFinite(asset.manualPrice)
+            ? asset.manualPrice
+            : null,
+        to: roundPrice(manualPrice),
+      });
+    }
+
+    const ordered = CHANGE_ORDER.flatMap((field) => {
+      const change = changes.get(field);
+      return change ? [change] : [];
+    });
+
+    if (ordered.length > 0) {
+      merged.set(asset.id, {
+        assetId: asset.id,
+        symbol: asset.symbol,
+        name: asset.name,
+        currency: asset.currency || 'INR',
+        changes: ordered,
+      });
+    }
+  }
+
+  if (merged.size === 0) {
+    return { error: 'None of the screenshot rows matched an existing holding, or no value changed.' };
+  }
+
+  return {
+    proposal: {
+      id: `proposal-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      summary,
+      createdAt: Date.now(),
+      updates: [...merged.values()],
+    },
+  };
+}
+
+/** Fold several tool calls from one turn into a single confirmation card. */
+export function mergeAssetProposals(
+  proposals: AssetUpdateProposal[],
+): AssetUpdateProposal | null {
+  if (proposals.length === 0) return null;
+  if (proposals.length === 1) return proposals[0];
+
+  const merged = new Map<string, AssetUpdate>();
+  for (const proposal of proposals) {
+    for (const update of proposal.updates) {
+      const existing = merged.get(update.assetId);
+      if (!existing) {
+        merged.set(update.assetId, { ...update, changes: [...update.changes] });
+        continue;
+      }
+      const changes = new Map<AssetChangeField, AssetChange>(
+        existing.changes.map((change) => [change.field, change]),
+      );
+      for (const change of update.changes) changes.set(change.field, change);
+      existing.changes = CHANGE_ORDER.flatMap((field) => {
+        const change = changes.get(field);
+        return change ? [change] : [];
+      });
+    }
+  }
+
+  return {
+    id: proposals[proposals.length - 1].id,
+    summary: proposals[0].summary,
+    createdAt: proposals[0].createdAt,
+    updates: [...merged.values()],
+  };
+}
+
+/** Apply a confirmed proposal to a saved asset list without mutating it. */
+export function applyAssetProposal(
+  assets: Asset[],
+  proposal: AssetUpdateProposal,
+): Asset[] {
+  const byAsset = new Map(proposal.updates.map((update) => [update.assetId, update]));
+
+  return assets.map((asset) => {
+    const update = byAsset.get(asset.id);
+    if (!update) return asset;
+
+    const next: Asset = { ...asset };
+    for (const change of update.changes) {
+      if (change.field === 'quantity') next.quantity = change.to;
+      else if (change.field === 'entryPrice') next.entryPrice = change.to;
+      else next.manualPrice = change.to;
+    }
+    return next;
+  });
+}
 
 const round = (value: number, digits = 2): number => {
   const factor = 10 ** digits;
@@ -45,6 +301,7 @@ function portfolioSummary(context: AssistantContext) {
       percent: round(slice.percent),
     })),
     holdings: summary.holdings.slice(0, 60).map((holding) => ({
+      id: holding.asset.id,
       symbol: holding.asset.symbol,
       name: holding.asset.name,
       type: holding.category,
@@ -52,6 +309,10 @@ function portfolioSummary(context: AssistantContext) {
       weightPercent: percentOf(holding.currentValue, summary.currentValue),
       pnlPercent: round(holding.pnlPercent),
       livePrice: holding.hasLivePrice,
+      quantity: holding.asset.quantity,
+      entryPrice: holding.asset.entryPrice,
+      manualPrice: holding.asset.manualPrice ?? null,
+      currency: holding.asset.currency,
     })),
   };
 }
@@ -157,7 +418,10 @@ export async function executeAssistantTool(
   name: string,
   rawArguments: string,
   context: AssistantContext,
-  options: { token?: string | null } = {},
+  options: {
+    token?: string | null;
+    onProposal?: (proposal: AssetUpdateProposal) => void;
+  } = {},
 ): Promise<string> {
   let args: any = {};
   try {
@@ -187,6 +451,25 @@ export async function executeAssistantTool(
         if (!symbol) return JSON.stringify({ error: 'A fund or ETF symbol is required.' });
         const fundName = typeof args.name === 'string' ? args.name : undefined;
         return JSON.stringify(await fundHoldings(symbol, fundName, options.token));
+      }
+      case 'propose_asset_updates': {
+        const built = buildAssetProposal(args, context.assets);
+        if ('error' in built) return JSON.stringify({ error: built.error });
+        options.onProposal?.(built.proposal);
+
+        return JSON.stringify({
+          status: 'pending_user_confirmation',
+          proposalId: built.proposal.id,
+          summary: built.proposal.summary,
+          changes: built.proposal.updates.map((update) => ({
+            symbol: update.symbol,
+            name: update.name,
+            fields: update.changes.map(
+              (change) => `${change.field}: ${change.from ?? 'none'} -> ${change.to}`,
+            ),
+          })),
+          note: 'The app is showing a confirmation card. Nothing is saved until the user taps Apply. Summarize the changes briefly and ask them to confirm.',
+        });
       }
       default:
         return JSON.stringify({ error: `Unknown tool: ${name}` });

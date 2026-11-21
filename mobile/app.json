@@ -41,6 +41,13 @@
       ],
       "expo-font",
       "expo-status-bar",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Asset Tracker to read portfolio screenshots you choose for the assistant.",
+          "cameraPermission": "Allow Asset Tracker to photograph portfolio screens for the assistant."
+        }
+      ],
       "@react-native-google-signin/google-signin"
     ],
     "experiments": {

@@ -7,9 +7,16 @@ export type AgentToolCall = {
   function: { name: string; arguments: string };
 };
 
+export type AgentTextPart = { type: 'text'; text: string };
+export type AgentImagePart = {
+  type: 'image_url';
+  image_url: { url: string };
+};
+export type AgentContent = string | null | Array<AgentTextPart | AgentImagePart>;
+
 export type AgentMessage = {
   role: 'user' | 'assistant' | 'tool';
-  content: string | null;
+  content: AgentContent;
   tool_calls?: AgentToolCall[];
   tool_call_id?: string;
   name?: string;

@@ -162,6 +162,7 @@ export function ModelPicker({
               {model.name}
             </Text>
             {model.free ? <Badge label="Free" tone="positive" /> : null}
+            {model.supportsVision ? <Badge label="Image" tone="accent" /> : null}
           </View>
           {model.name !== model.id ? (
             <Text numberOfLines={1} style={[type.caption, { color: colors.muted }]}>
@@ -307,7 +308,8 @@ export function ModelPicker({
               ListFooterComponent={
                 <Text style={[styles.footer, { color: colors.muted }]}>
                   Models are read live from each provider. Only providers with a
-                  configured key are shown.
+                  configured key are shown. Models marked Image can read
+                  screenshots.
                 </Text>
               }
             />

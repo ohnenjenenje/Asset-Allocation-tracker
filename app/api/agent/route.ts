@@ -27,7 +27,9 @@ export const runtime = 'nodejs';
 
 const DEFAULT_PROVIDER: AiProviderId = 'groq';
 const MAX_MESSAGES = 40;
-const MAX_BODY_BYTES = 120_000;
+// Screenshots are compressed on-device before upload, but leave room for two
+// images plus the conversation history. Next.js buffers the JSON body once.
+const MAX_BODY_BYTES = 8_000_000;
 
 // Free-tier requests are cheap but finite. Keep a small per-user window so a
 // runaway tool loop cannot burn the whole daily quota in one conversation.
@@ -111,13 +113,64 @@ const TOOLS = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'propose_asset_updates',
+      description:
+        'Prepare changes to existing holdings and show a confirmation card in the app. Use this after reading a screenshot, or when the user asks to change quantity, average buy price or manual price. This tool never saves; the user must tap Apply on the card.',
+      parameters: {
+        type: 'object',
+        properties: {
+          summary: {
+            type: 'string',
+            description:
+              'One short sentence describing the screenshot or requested change, for example "Zerodha holdings screenshot from 21 Nov".',
+          },
+          updates: {
+            type: 'array',
+            description: 'One entry per existing holding. Include only fields that should change.',
+            items: {
+              type: 'object',
+              properties: {
+                symbol: {
+                  type: 'string',
+                  description:
+                    'Exact portfolio ticker, or the ticker/name visible in the screenshot.',
+                },
+                name: {
+                  type: 'string',
+                  description: 'Holding name from the screenshot, used when the ticker is unclear.',
+                },
+                quantity: {
+                  type: 'number',
+                  description: 'New total quantity held, not a delta.',
+                },
+                entryPrice: {
+                  type: 'number',
+                  description: 'New average buy price per unit.',
+                },
+                manualPrice: {
+                  type: 'number',
+                  description:
+                    'New manual current price per unit. Only when explicitly requested; this overrides live market quotes.',
+                },
+              },
+              required: ['symbol'],
+            },
+          },
+        },
+        required: ['summary', 'updates'],
+      },
+    },
+  },
 ];
 
 function systemPrompt() {
   const today = new Date().toISOString().slice(0, 10);
   return [
     'You are the portfolio assistant inside the Asset Allocation Tracker mobile app.',
-    `Today is ${today}. All portfolio values are in Indian rupees (INR).`,
+    `Today is ${today}. All portfolio values are in Indian rupees (INR) unless a holding is explicitly in another currency.`,
     '',
     'Rules:',
     '- Use the provided tools for facts. Never invent prices, holdings, weights or returns.',
@@ -127,21 +180,43 @@ function systemPrompt() {
     '- Fund and ETF holdings may come from an index look-through. Mention that caveat when the note says so.',
     '- Format money with Indian digit grouping (for example ₹12,34,567). Keep answers under 180 words unless the user asks for detail.',
     '- Write for a small mobile chat screen: plain text only. Do not use Markdown bold/italics, headings, tables or code blocks. Simple "-" bullets and short paragraphs are fine.',
-    '- You are read-only. You cannot add, edit or delete assets. If asked, say write actions are not available yet and point the user to the Assets tab.',
+    '',
+    'Screenshots and edits:',
+    '- You can read screenshots of holdings, orders and price screens. Extract only values that are clearly legible. Never guess a number or what a column means.',
+    '- Match each screenshot row to an existing holding by ticker or name. If a row does not match, do not propose it; mention it in your reply.',
+    '- To change an existing holding, call propose_asset_updates. It shows a confirmation card; nothing is saved until the user taps Apply. Never say a change is saved before that.',
+    '- Prefer quantity and average buy price (entryPrice). Propose manualPrice only when the user explicitly asks to update the current price, or clearly asks for prices to be updated from the screenshot. Manual prices override live quotes, so warn about that.',
+    '- If a screenshot shows invested amount and quantity, you may derive the average buy price as amount / quantity. If it shows only a current price, do not overwrite entryPrice with it.',
+    '- Do not convert currencies. Use the values shown and state the currency you assumed.',
+    '- After calling propose_asset_updates, tell the user in one short paragraph what will change and ask them to tap Apply. Do not repeat the whole table.',
+    '- You cannot add new assets, delete assets or change classification. Say so and point the user to the Assets tab.',
+    '',
+    'General:',
     '- If a tool fails or returns no data, say so plainly. Never fill gaps with made-up numbers.',
     '- Ask a short clarifying question when the request is ambiguous.',
   ].join('\n');
 }
 
+type SanitizedTextPart = { type: 'text'; text: string };
+type SanitizedImagePart = { type: 'image_url'; image_url: { url: string } };
+type SanitizedContent = string | null | Array<SanitizedTextPart | SanitizedImagePart>;
+
 type SanitizedMessage = {
   role: 'user' | 'assistant' | 'tool';
-  content: string | null;
+  content: SanitizedContent;
   tool_calls?: unknown[];
   tool_call_id?: string;
   name?: string;
   extra_content?: unknown;
   reasoning_details?: unknown;
 };
+
+const MAX_TEXT_CHARS = 8_000;
+// ~2.4 MB decoded. A compressed 1280px screenshot is normally well under this.
+const MAX_IMAGE_CHARS = 3_200_000;
+const MAX_IMAGES_PER_MESSAGE = 2;
+const MAX_IMAGES_PER_REQUEST = 3;
+const IMAGE_DATA_URL = /^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/i;
 
 function sanitizeExtra(value: unknown): unknown {
   if (!value || typeof value !== 'object') return undefined;
@@ -154,9 +229,67 @@ function sanitizeExtra(value: unknown): unknown {
   }
 }
 
+function sanitizeImageUrl(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  if (value.length > MAX_IMAGE_CHARS) return null;
+  return IMAGE_DATA_URL.test(value) ? value : null;
+}
+
+/**
+ * Keeps user text and, for user messages only, compressed image data URLs.
+ * Everything else is flattened to text so a malformed or hostile part cannot
+ * smuggle arbitrary provider fields through the proxy.
+ */
+function sanitizeContent(
+  role: SanitizedMessage['role'],
+  content: unknown,
+  imageBudget: { remaining: number },
+): SanitizedContent {
+  if (typeof content === 'string') return content.slice(0, MAX_TEXT_CHARS);
+  if (!Array.isArray(content)) {
+    if (content == null) return role === 'assistant' ? null : '';
+    return String(content).slice(0, MAX_TEXT_CHARS);
+  }
+
+  const textParts: string[] = [];
+  const parts: Array<SanitizedTextPart | SanitizedImagePart> = [];
+  let images = 0;
+
+  for (const rawPart of content.slice(0, 8)) {
+    if (!rawPart || typeof rawPart !== 'object') continue;
+    const part = rawPart as any;
+
+    if (part.type === 'text' && typeof part.text === 'string') {
+      const text = part.text.slice(0, MAX_TEXT_CHARS);
+      if (text) {
+        textParts.push(text);
+        parts.push({ type: 'text', text });
+      }
+      continue;
+    }
+
+    if (
+      role === 'user' &&
+      part.type === 'image_url' &&
+      images < MAX_IMAGES_PER_MESSAGE &&
+      imageBudget.remaining > 0
+    ) {
+      const url = sanitizeImageUrl(part?.image_url?.url);
+      if (!url) continue;
+      images += 1;
+      imageBudget.remaining -= 1;
+      parts.push({ type: 'image_url', image_url: { url } });
+    }
+  }
+
+  if (images === 0) return textParts.join('\n').slice(0, MAX_TEXT_CHARS);
+  return parts;
+}
+
 function sanitizeMessages(input: unknown): SanitizedMessage[] {
   if (!Array.isArray(input)) return [];
 
+  const imageBudget = { remaining: MAX_IMAGES_PER_REQUEST };
   const messages: SanitizedMessage[] = [];
   for (const raw of input.slice(-MAX_MESSAGES)) {
     const item = raw as any;
@@ -165,14 +298,7 @@ function sanitizeMessages(input: unknown): SanitizedMessage[] {
 
     const message: SanitizedMessage = {
       role,
-      content:
-        typeof item.content === 'string'
-          ? item.content.slice(0, 8000)
-          : item.content == null
-            ? role === 'assistant'
-              ? null
-              : ''
-            : String(item.content).slice(0, 8000),
+      content: sanitizeContent(role, item.content, imageBudget),
     };
 
     if (Array.isArray(item.tool_calls)) {

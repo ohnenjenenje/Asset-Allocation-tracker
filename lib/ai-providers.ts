@@ -33,6 +33,8 @@ export interface AiModel {
   contextWindow?: number;
   free?: boolean;
   supportsTools: boolean;
+  /** True when the model accepts image input (needed for screenshot import). */
+  supportsVision: boolean;
 }
 
 export interface AiProviderModels {
@@ -158,6 +160,36 @@ function supportsTools(entry: any): boolean {
   return parameters.includes('tools') || parameters.includes('tool_choice');
 }
 
+/**
+ * Vision capability.
+ *
+ * OpenRouter publishes `architecture.input_modalities`; the other providers
+ * only expose a model list, so their IDs have to identify multimodal models.
+ * Erring on the side of "no" hides the screenshot button instead of sending an
+ * image to a text-only model and failing at request time.
+ */
+function supportsVision(provider: AiProviderId, entry: any, id: string): boolean {
+  const modalities = Array.isArray(entry?.architecture?.input_modalities)
+    ? (entry.architecture.input_modalities as unknown[])
+    : Array.isArray(entry?.input_modalities)
+      ? (entry.input_modalities as unknown[])
+      : [];
+  if (modalities.length > 0) return modalities.includes('image');
+
+  if (provider === 'google') {
+    // Gemini 1.5 and newer are natively multimodal.
+    return /^gemini-(1\.5|2(?:\.|$)|3(?:\.|$))/i.test(id);
+  }
+
+  if (provider === 'groq') {
+    return /(vision|llava|pixtral|llama-4-(scout|maverick)|gemma-3|qwen[^/]*vl)/i.test(id);
+  }
+
+  return /(vision|gpt-4o|gpt-4\.1|gpt-5|claude-(3|4)|gemini|llama-4|pixtral|llava|qwen[^/]*vl|internvl|mistral-small-3)/i.test(
+    id,
+  );
+}
+
 function normalizeModel(provider: AiProviderId, entry: any): AiModel | null {
   if (!entry || typeof entry.id !== 'string') return null;
 
@@ -183,6 +215,7 @@ function normalizeModel(provider: AiProviderId, entry: any): AiModel | null {
     (typeof promptPrice === 'string' && Number(promptPrice) === 0);
 
   const tools = supportsTools(entry);
+  const vision = supportsVision(provider, entry, id);
 
   return {
     id,
@@ -190,6 +223,7 @@ function normalizeModel(provider: AiProviderId, entry: any): AiModel | null {
     ...(contextWindow ? { contextWindow } : {}),
     ...(free ? { free: true } : {}),
     supportsTools: tools,
+    supportsVision: vision,
   };
 }
 

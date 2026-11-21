@@ -3,8 +3,31 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/src/features/auth/AuthProvider';
 import { ApiError } from '@/src/lib/api/client';
 
-import { sendAgentRequest, type AgentMessage } from './api';
-import { TOOL_LABELS, executeAssistantTool, type AssistantContext } from './tools';
+import {
+  sendAgentRequest,
+  type AgentImagePart,
+  type AgentMessage,
+  type AgentTextPart,
+} from './api';
+import {
+  TOOL_LABELS,
+  executeAssistantTool,
+  mergeAssetProposals,
+  type AssetUpdateProposal,
+  type AssistantContext,
+} from './tools';
+
+/** Compressed screenshot prepared for the vision model. */
+export type AssistantAttachment = {
+  /** Local file URI used for the preview thumbnail. */
+  uri: string;
+  /** `data:image/jpeg;base64,…` payload sent to the provider. */
+  dataUrl: string;
+  width: number;
+  height: number;
+};
+
+export type AssistantProposalState = 'pending' | 'applied' | 'dismissed';
 
 export type AssistantChatMessage = {
   id: string;
@@ -13,9 +36,20 @@ export type AssistantChatMessage = {
   /** Human-readable labels for the lookups used to produce this answer. */
   tools?: string[];
   error?: boolean;
+  /** Local screenshot attached to a user message. */
+  imageUri?: string;
+  /** Width / height of the attached screenshot, for the preview bubble. */
+  imageAspectRatio?: number;
+  /** Confirmation card produced by `propose_asset_updates`. */
+  proposal?: AssetUpdateProposal;
+  proposalState?: AssistantProposalState;
+  proposalError?: string | null;
 };
 
 const MAX_TOOL_ROUNDS = 5;
+
+const SCREENSHOT_PROMPT =
+  'Read this screenshot and update the holdings where the values are clearly visible.';
 
 function friendlyError(error: unknown): string {
   if (error instanceof ApiError) {
@@ -30,6 +64,45 @@ function friendlyError(error: unknown): string {
     return error.message;
   }
   return error instanceof Error ? error.message : 'Something went wrong. Try again.';
+}
+
+function userContent(
+  text: string,
+  attachment?: AssistantAttachment,
+): AgentMessage['content'] {
+  if (!attachment) return text;
+
+  const parts: Array<AgentTextPart | AgentImagePart> = [];
+  if (text) parts.push({ type: 'text', text });
+  parts.push({ type: 'image_url', image_url: { url: attachment.dataUrl } });
+  return parts;
+}
+
+function contentText(content: AgentMessage['content']): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .filter((part): part is AgentTextPart => part.type === 'text')
+    .map((part) => part.text)
+    .join('\n');
+}
+
+/**
+ * Images are only needed for the turn that reads them. Replacing old payloads
+ * with a short marker keeps later requests small and avoids re-uploading the
+ * same screenshot on every follow-up.
+ */
+function collapseScreenshots(messages: AgentMessage[]): void {
+  for (const message of messages) {
+    if (message.role !== 'user' || !Array.isArray(message.content)) continue;
+
+    const text = message.content
+      .filter((part): part is AgentTextPart => part.type === 'text')
+      .map((part) => part.text)
+      .join('\n')
+      .trim();
+    message.content = text ? `${text}\n[earlier screenshot omitted]` : '[earlier screenshot omitted]';
+  }
 }
 
 export function useAssistant(
@@ -54,11 +127,12 @@ export function useAssistant(
   useEffect(() => () => controllerRef.current?.abort(), []);
 
   const send = useCallback(
-    async (text: string) => {
+    async (text: string, attachment?: AssistantAttachment) => {
       const trimmed = text.trim();
+      const prompt = trimmed || (attachment ? SCREENSHOT_PROMPT : '');
       const provider = options.provider;
       const model = options.model;
-      if (!trimmed || !provider || !model || isSending || isDemo || options.disabled) return;
+      if (!prompt || !provider || !model || isSending || isDemo || options.disabled) return;
 
       const controller = new AbortController();
       controllerRef.current = controller;
@@ -66,11 +140,26 @@ export function useAssistant(
       setActivity(null);
       setMessages((previous) => [
         ...previous,
-        { id: nextId(), role: 'user', content: trimmed },
+        {
+          id: nextId(),
+          role: 'user',
+          content: trimmed || 'Screenshot',
+          ...(attachment
+            ? {
+                imageUri: attachment.uri,
+                imageAspectRatio:
+                  attachment.height > 0 ? attachment.width / attachment.height : 0.65,
+              }
+            : {}),
+        },
       ]);
-      apiMessages.current.push({ role: 'user', content: trimmed });
+      apiMessages.current.push({
+        role: 'user',
+        content: userContent(prompt, attachment),
+      });
 
       const usedTools: string[] = [];
+      const proposals: AssetUpdateProposal[] = [];
 
       try {
         const token = await getToken();
@@ -95,12 +184,21 @@ export function useAssistant(
           });
 
           if (toolCalls.length === 0) {
-            const answer =
-              (message.content || '').trim() ||
-              'I could not produce an answer. Try rephrasing the question.';
+            const answer = contentText(message.content).trim();
+            const proposal = mergeAssetProposals(proposals);
             setMessages((previous) => [
               ...previous,
-              { id: nextId(), role: 'assistant', content: answer, tools: usedTools },
+              {
+                id: nextId(),
+                role: 'assistant',
+                content:
+                  answer ||
+                  (proposal
+                    ? 'I prepared these changes. Review them below and tap Apply to save.'
+                    : 'I could not produce an answer. Try rephrasing the question.'),
+                tools: usedTools,
+                ...(proposal ? { proposal, proposalState: 'pending' as const } : {}),
+              },
             ]);
             return;
           }
@@ -114,7 +212,10 @@ export function useAssistant(
               call.function.name,
               call.function.arguments,
               context,
-              { token },
+              {
+                token,
+                onProposal: (proposal) => proposals.push(proposal),
+              },
             );
 
             apiMessages.current.push({
@@ -126,6 +227,7 @@ export function useAssistant(
           }
         }
 
+        const proposal = mergeAssetProposals(proposals);
         setMessages((previous) => [
           ...previous,
           {
@@ -134,27 +236,54 @@ export function useAssistant(
             content:
               'I made several lookups but could not finish the answer. Try asking a simpler question.',
             tools: usedTools,
+            ...(proposal ? { proposal, proposalState: 'pending' as const } : {}),
           },
         ]);
       } catch (error) {
         if (controller.signal.aborted) return;
+        const proposal = mergeAssetProposals(proposals);
+        const reason = friendlyError(error);
         setMessages((previous) => [
           ...previous,
           {
             id: nextId(),
             role: 'assistant',
-            content: friendlyError(error),
+            content: proposal
+              ? `I prepared these changes, but the summary failed: ${reason}`
+              : reason,
             tools: usedTools,
-            error: true,
+            error: !proposal,
+            ...(proposal ? { proposal, proposalState: 'pending' as const } : {}),
           },
         ]);
       } finally {
+        collapseScreenshots(apiMessages.current);
         controllerRef.current = null;
         setActivity(null);
         setIsSending(false);
       }
     },
     [context, getToken, isDemo, isSending, options.disabled, options.model, options.provider],
+  );
+
+  const updateProposal = useCallback(
+    (
+      messageId: string,
+      update: { state?: AssistantProposalState; error?: string | null },
+    ) => {
+      setMessages((previous) =>
+        previous.map((message) =>
+          message.id === messageId
+            ? {
+                ...message,
+                ...(update.state ? { proposalState: update.state } : {}),
+                ...(update.error !== undefined ? { proposalError: update.error } : {}),
+              }
+            : message,
+        ),
+      );
+    },
+    [],
   );
 
   const reset = useCallback(() => {
@@ -166,5 +295,5 @@ export function useAssistant(
     setActivity(null);
   }, []);
 
-  return { messages, isSending, activity, send, reset };
+  return { messages, isSending, activity, send, reset, updateProposal };
 }

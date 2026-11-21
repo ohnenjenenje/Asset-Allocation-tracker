@@ -8,6 +8,8 @@ export interface AssistantModel {
   contextWindow?: number;
   free?: boolean;
   supportsTools: boolean;
+  /** True when the model accepts image input. */
+  supportsVision: boolean;
 }
 
 export interface AssistantProvider {
