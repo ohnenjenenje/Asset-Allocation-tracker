@@ -185,6 +185,7 @@ function systemPrompt() {
     'Screenshots and edits:',
     '- You can read screenshots of holdings, orders and price screens. Extract only values that are clearly legible. Never guess a number or what a column means.',
     '- If you receive an error saying the selected model does not support image input, tell the user it is text-only and suggest a model marked Image in the chat header.',
+    '- First identify the screen type. Only propose changes from a holdings table or a single holding detail screen. For positions, orders, watchlists or dashboards, do not propose changes; explain that the screenshot is not a holdings screen.',
     '- A screenshot may be a single holding detail screen. Treat the screen title as the holding name and Current Holdings or Quantity as the quantity. Ignore cash, savings, totals, returns and current values; a detail screen titled "Silver Vault" showing grams of silver matches SILVER-INR-GRAM / Physical Silver (Per Gram).',
     '- Match each screenshot row to an existing holding by ticker or name. If a row does not match, do not propose it; mention it in your reply.',
     '- To change an existing holding, call propose_asset_updates. It shows a confirmation card; nothing is saved until the user taps Apply. Never say a change is saved before that.',
@@ -265,9 +266,11 @@ function extractionPrompt(holdings: ExtractionHolding[] = []) {
   return [
     'You read portfolio screenshots for the Asset Allocation Tracker app.',
     'Return only a JSON object with this shape:',
-    '{"summary":"one short sentence","updates":[{"assetId":"id from the known holdings list, if matched","symbol":"TICKER","name":"Company name","quantity":10,"entryPrice":2400.5}]}',
+    '{"screen":"holdings","summary":"one short sentence","updates":[{"assetId":"id from the known holdings list, if matched","symbol":"TICKER","name":"Company name","quantity":10,"entryPrice":2400.5}]}',
     '',
     'Rules:',
+    '- First identify the screen type from its title and labels: holdings, detail, positions, orders, watchlist, dashboard or other.',
+    '- Only return updates for a holdings table or a single holding detail screen. For positions, orders, watchlists, dashboards or any other screen, return {"screen":"orders","summary":"This looks like an orders screen, not a holdings screen. Open your Holdings screen and try again.","updates":[]}.',
     '- The screenshot may be a holdings table or a single holding detail screen.',
     '- For a single holding detail screen, use the screen title as the holding name and the value labelled Current Holdings, Quantity, Units or similar as quantity.',
     '- Match each row to a known holding above. If one holding is clearly the same product, copy its assetId, symbol and name exactly. For example, a screen titled "Silver Vault" showing grams of silver matches SILVER-INR-GRAM / Physical Silver (Per Gram).',
@@ -309,7 +312,7 @@ function extractionNumber(value: unknown): number | null {
  */
 function parseExtraction(
   content: unknown,
-): { summary: string; updates: ExtractionUpdate[] } | null {
+): { screen?: string; summary: string; updates: ExtractionUpdate[] } | null {
   let text = '';
   if (typeof content === 'string') {
     text = content;
@@ -374,12 +377,16 @@ function parseExtraction(
     updates.push(update);
   }
 
+  const screen =
+    typeof parsed?.screen === 'string'
+      ? parsed.screen.trim().toLowerCase().slice(0, 40)
+      : '';
   const summary =
     typeof parsed?.summary === 'string' && parsed.summary.trim()
       ? parsed.summary.trim().slice(0, 300)
       : 'Screenshot holdings';
 
-  return { summary, updates };
+  return { ...(screen ? { screen } : {}), summary, updates };
 }
 
 type SanitizedTextPart = { type: 'text'; text: string };

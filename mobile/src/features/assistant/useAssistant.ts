@@ -196,13 +196,20 @@ export function useAssistant(
           });
 
           if (extraction.updates.length === 0) {
+            const summary = extraction.summary.trim();
+            const screen = extraction.screen?.trim().toLowerCase() ?? '';
+            const nonHolding =
+              Boolean(screen) && screen !== 'holdings' && screen !== 'detail';
+            const fallback = nonHolding
+              ? `That looks like a ${screen} screen, not a holdings screen. Open your Holdings screen and try again.`
+              : 'I could not find any readable holding rows in that screenshot. Try a clearer crop.';
+
             setMessages((previous) => [
               ...previous,
               {
                 id: nextId(),
                 role: 'assistant',
-                content:
-                  'I could not find any readable holding rows in that screenshot. Try a clearer crop.',
+                content: summary || fallback,
               },
             ]);
             return;

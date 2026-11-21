@@ -80,6 +80,7 @@ export type ExtractionHolding = {
 };
 
 export type ScreenshotExtraction = {
+  screen?: string;
   summary: string;
   updates: ExtractionUpdate[];
 };
