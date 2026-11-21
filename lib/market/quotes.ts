@@ -124,11 +124,27 @@ function parseUsMarketTime(value: unknown): Date | null {
   if (meridiem === 'PM') hour += 12;
   const minute = Number(minuteRaw);
 
+  // US daylight saving runs from the second Sunday in March to the first
+  // Sunday in November. Compute it from the date instead of assuming the whole
+  // of November is still on summer time.
+  const secondSundayMarch =
+    8 + ((7 - new Date(year, 2, 8).getDay()) % 7);
+  const firstSundayNovember =
+    1 + ((7 - new Date(year, 10, 1).getDay()) % 7);
+  const isUsDst =
+    month > 2 && month < 10
+      ? true
+      : month < 2 || month > 10
+        ? false
+        : month === 2
+          ? day >= secondSundayMarch
+          : day < firstSundayNovember;
+
   let zone = zoneRaw || 'ET';
-  if (zone === 'ET') zone = month >= 2 && month <= 10 ? 'EDT' : 'EST';
-  if (zone === 'CT') zone = month >= 2 && month <= 10 ? 'CDT' : 'CST';
-  if (zone === 'MT') zone = month >= 2 && month <= 10 ? 'MDT' : 'MST';
-  if (zone === 'PT') zone = month >= 2 && month <= 10 ? 'PDT' : 'PST';
+  if (zone === 'ET') zone = isUsDst ? 'EDT' : 'EST';
+  if (zone === 'CT') zone = isUsDst ? 'CDT' : 'CST';
+  if (zone === 'MT') zone = isUsDst ? 'MDT' : 'MST';
+  if (zone === 'PT') zone = isUsDst ? 'PDT' : 'PST';
 
   const offset = TZ_OFFSETS[zone] || '-05:00';
   const iso = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00${offset}`;
