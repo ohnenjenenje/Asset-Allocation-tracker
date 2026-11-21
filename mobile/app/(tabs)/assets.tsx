@@ -47,6 +47,7 @@ export default function HoldingsScreen() {
     staleQuoteCount,
     exchangeIsCached,
     exchangeLastSyncedAt,
+    exchangeIssues,
     isLoading,
     isRefreshing,
     error,
@@ -120,6 +121,7 @@ export default function HoldingsScreen() {
         staleQuoteCount={staleQuoteCount}
         exchangeIsCached={exchangeIsCached}
         exchangeLastSyncedAt={exchangeLastSyncedAt}
+        exchangeIssues={exchangeIssues}
         onRefresh={isDemo ? undefined : refetch}
       />
 

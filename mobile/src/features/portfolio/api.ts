@@ -217,15 +217,24 @@ export async function fetchExchangeBalances(
   options: { signal?: AbortSignal; token?: string | null } = {},
 ): Promise<Asset[]> {
   const label = exchange === 'binance' ? 'Binance' : 'CoinDCX';
-  const response = await apiFetch<RawExchangeAsset[]>(`/api/crypto/${exchange}`, {
-    signal: options.signal,
-    token: options.token,
-    // Binance often needs to load its market catalogue before responding.
-    timeoutMs: 60_000,
-  });
+  const response = await apiFetch<RawExchangeAsset[] | { error?: string }>(
+    `/api/crypto/${exchange}`,
+    {
+      signal: options.signal,
+      token: options.token,
+      // Binance often needs to load its market catalogue before responding.
+      timeoutMs: 60_000,
+    },
+  );
 
   if (!Array.isArray(response)) {
-    throw new ApiError('Malformed exchange response', 502);
+    // CoinDCX answers with HTTP 200 and an `{ error }` envelope for expired
+    // keys, so a malformed payload has to carry the server's explanation.
+    const message =
+      response && typeof response.error === 'string' && response.error.trim()
+        ? response.error.trim()
+        : `${label} returned an unexpected response`;
+    throw new ApiError(message, 502);
   }
 
   return response.map((raw) =>

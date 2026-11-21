@@ -55,6 +55,11 @@ export const portfolioKeys = {
   screener: (filters: ScreenerFilters) => ['screener', filters] as const,
 };
 
+export type ExchangeSyncIssue = {
+  name: 'Binance' | 'CoinDCX';
+  message: string;
+};
+
 /**
  * Wall-clock start of the current first load. Shared across screens so a tab
  * mounted mid-load shows the same remaining-time estimate as the dashboard.
@@ -262,6 +267,27 @@ export function usePortfolioData() {
   const snapshotQuery = usePortfolioSnapshot();
   const exchangeQuery = useExchangeBalances();
   const { isDemo } = useAuth();
+
+  const binanceError = exchangeQuery.binance.error;
+  const coindcxError = exchangeQuery.coindcx.error;
+  const exchangeIssues = useMemo<ExchangeSyncIssue[]>(() => {
+    const issues: ExchangeSyncIssue[] = [];
+    if (binanceError) {
+      issues.push({
+        name: 'Binance',
+        message:
+          binanceError instanceof Error ? binanceError.message : 'Sync failed',
+      });
+    }
+    if (coindcxError) {
+      issues.push({
+        name: 'CoinDCX',
+        message:
+          coindcxError instanceof Error ? coindcxError.message : 'Sync failed',
+      });
+    }
+    return issues;
+  }, [binanceError, coindcxError]);
 
   const savedAssets = useMemo<Asset[]>(
     () => (isDemo ? demoAssets : (snapshotQuery.data?.assets ?? [])),
@@ -494,6 +520,7 @@ export function usePortfolioData() {
     staleQuoteCount: quoteFreshness.staleQuoteCount,
     exchangeIsCached: exchange.isCached,
     exchangeLastSyncedAt: exchange.lastSyncedAt,
+    exchangeIssues,
     isLoading: isDemo ? false : snapshotQuery.isLoading,
     isRefreshing: isDemo
       ? false

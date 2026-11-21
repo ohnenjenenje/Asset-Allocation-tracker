@@ -62,6 +62,7 @@ export default function AllocationHomeScreen() {
     staleQuoteCount,
     exchangeIsCached,
     exchangeLastSyncedAt,
+    exchangeIssues,
     isLoading,
     isRefreshing,
     error,
@@ -172,6 +173,7 @@ export default function AllocationHomeScreen() {
           staleQuoteCount={staleQuoteCount}
           exchangeIsCached={exchangeIsCached}
           exchangeLastSyncedAt={exchangeLastSyncedAt}
+          exchangeIssues={exchangeIssues}
           onRefresh={isDemo ? undefined : refetch}
         />
 

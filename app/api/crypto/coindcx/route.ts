@@ -29,8 +29,8 @@ interface ExchangeAsset {
 }
 
 export async function GET() {
-  const apiKey = process.env.COINDCX_API_KEY;
-  const secret = process.env.COINDCX_SECRET;
+  const apiKey = process.env.COINDCX_API_KEY?.trim();
+  const secret = process.env.COINDCX_SECRET?.trim();
 
   if (!apiKey || !secret) {
     return NextResponse.json(
