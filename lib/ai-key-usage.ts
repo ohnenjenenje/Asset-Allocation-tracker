@@ -30,6 +30,12 @@ export interface AiRateLimitSnapshot {
   retryAfterSeconds: number | null;
 }
 
+/** Extra context about a provider response that headers alone cannot convey. */
+export interface KeyResponseContext {
+  /** A 429 came from the model's upstream provider, not this key's quota. */
+  upstreamRateLimit?: boolean;
+}
+
 export interface AiKeyUsageSummary {
   requests: number;
   successes: number;
@@ -247,7 +253,12 @@ function limitReachedUntil(
   snapshot: AiRateLimitSnapshot | null,
   message: string,
   now: number,
+  context: KeyResponseContext,
 ): Date | null | undefined {
+  // An upstream 429 says the model is busy, not that this key is out of quota.
+  // Keep any previously recorded quota state untouched.
+  if (status === 429 && context.upstreamRateLimit) return undefined;
+
   if (status === 429) {
     const retryMs =
       snapshot?.retryAfterSeconds != null ? snapshot.retryAfterSeconds * 1000 : null;
@@ -294,6 +305,7 @@ export async function recordKeyResponse(
   status: number,
   message: string,
   response?: Response,
+  context: KeyResponseContext = {},
 ): Promise<void> {
   if (!clientPromise) return;
 
@@ -333,7 +345,7 @@ export async function recordKeyResponse(
       if (snapshot.resetTokens != null) set.resetTokens = snapshot.resetTokens;
     }
 
-    const reachedUntil = limitReachedUntil(status, snapshot, message, now.getTime());
+    const reachedUntil = limitReachedUntil(status, snapshot, message, now.getTime(), context);
     if (reachedUntil !== undefined) set.limitReachedUntil = reachedUntil;
 
     const update = {

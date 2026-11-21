@@ -17,6 +17,7 @@ import {
   defaultModelFor,
   isAiProviderId,
   modelIsAvailable,
+  modelSupportsVision,
   providerDefinition,
   providerErrorMessage,
   sanitizeModelId,
@@ -183,6 +184,7 @@ function systemPrompt() {
     '',
     'Screenshots and edits:',
     '- You can read screenshots of holdings, orders and price screens. Extract only values that are clearly legible. Never guess a number or what a column means.',
+    '- If you receive an error saying the selected model does not support image input, tell the user it is text-only and suggest a model marked Image in the chat header.',
     '- Match each screenshot row to an existing holding by ticker or name. If a row does not match, do not propose it; mention it in your reply.',
     '- To change an existing holding, call propose_asset_updates. It shows a confirmation card; nothing is saved until the user taps Apply. Never say a change is saved before that.',
     '- Prefer quantity and average buy price (entryPrice). Propose manualPrice only when the user explicitly asks to update the current price, or clearly asks for prices to be updated from the screenshot. Manual prices override live quotes, so warn about that.',
@@ -195,6 +197,124 @@ function systemPrompt() {
     '- If a tool fails or returns no data, say so plainly. Never fill gaps with made-up numbers.',
     '- Ask a short clarifying question when the request is ambiguous.',
   ].join('\n');
+}
+
+type AgentMode = 'chat' | 'extract';
+
+/**
+ * Screenshot extraction runs without tools. Groq's Qwen reads images well but
+ * mangles complex tool-call JSON, so the model is asked for plain JSON and the
+ * app turns those rows into a proposal locally.
+ */
+function extractionPrompt() {
+  return [
+    'You read portfolio screenshots for the Asset Allocation Tracker app.',
+    'Return only a JSON object with this shape:',
+    '{"summary":"one short sentence","updates":[{"symbol":"TICKER","name":"Company name","quantity":10,"entryPrice":2400.5}]}',
+    '',
+    'Rules:',
+    '- Only include rows that are visibly present in the holdings table in the image.',
+    '- Do not add tickers, totals, recent activity or any other row from memory.',
+    '- quantity is the new total quantity held, not a delta.',
+    '- entryPrice is the average buy price per unit.',
+    '- Include every row whose quantity and average price are clearly readable.',
+    '- Omit rows you cannot read. Never guess a number or what a column means.',
+    '- If no holding row is readable, return {"summary":"No readable holdings","updates":[]}.',
+    '- Do not include prose, Markdown or code fences.',
+  ].join('\n');
+}
+
+type ExtractionUpdate = {
+  symbol?: string;
+  name?: string;
+  quantity?: number;
+  entryPrice?: number;
+  manualPrice?: number;
+};
+
+function extractionNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value.replace(/[,\s₹$]/g, ''));
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+/**
+ * Accepts the JSON object Qwen returns in `message.content`, even if it wraps
+ * the object in a code fence. Only the editable position fields survive.
+ */
+function parseExtraction(
+  content: unknown,
+): { summary: string; updates: ExtractionUpdate[] } | null {
+  let text = '';
+  if (typeof content === 'string') {
+    text = content;
+  } else if (Array.isArray(content)) {
+    text = content
+      .filter((part: any) => part?.type === 'text' && typeof part.text === 'string')
+      .map((part: any) => part.text)
+      .join('\n');
+  }
+
+  text = text.trim();
+  if (!text) return null;
+
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced) text = fenced[1].trim();
+
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start < 0 || end <= start) return null;
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(text.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+
+  if (!Array.isArray(parsed?.updates)) return null;
+
+  const rawUpdates = parsed.updates.slice(0, 50);
+  const updates: ExtractionUpdate[] = [];
+
+  for (const raw of rawUpdates) {
+    if (!raw || typeof raw !== 'object') continue;
+
+    const symbol = typeof raw.symbol === 'string' ? raw.symbol.trim().slice(0, 40) : '';
+    const name = typeof raw.name === 'string' ? raw.name.trim().slice(0, 120) : '';
+    if (!symbol && !name) continue;
+
+    const update: ExtractionUpdate = {};
+    if (symbol) update.symbol = symbol;
+    if (name) update.name = name;
+
+    const quantity = extractionNumber(raw.quantity);
+    if (quantity != null && quantity > 0 && quantity <= 1e12) {
+      update.quantity = quantity;
+    }
+
+    const entryPrice = extractionNumber(raw.entryPrice);
+    if (entryPrice != null && entryPrice >= 0 && entryPrice <= 1e12) {
+      update.entryPrice = entryPrice;
+    }
+
+    const manualPrice = extractionNumber(raw.manualPrice);
+    if (manualPrice != null && manualPrice > 0 && manualPrice <= 1e12) {
+      update.manualPrice = manualPrice;
+    }
+
+    updates.push(update);
+  }
+
+  const summary =
+    typeof parsed?.summary === 'string' && parsed.summary.trim()
+      ? parsed.summary.trim().slice(0, 300)
+      : 'Screenshot holdings';
+
+  return { summary, updates };
 }
 
 type SanitizedTextPart = { type: 'text'; text: string };
@@ -341,6 +461,81 @@ function sanitizeMessages(input: unknown): SanitizedMessage[] {
   return messages;
 }
 
+const IMAGE_UNSUPPORTED_ERROR =
+  'ERROR: Cannot read the attached screenshot (this model does not support image input). Inform the user that this model is text-only and suggest a model marked Image.';
+
+/**
+ * OpenCode-style capability guard: instead of rejecting the request, replace
+ * each image with an explanatory text part. The model then tells the user that
+ * the selected model cannot read images, which is clearer than a provider 400.
+ */
+function replaceUnsupportedImages(messages: SanitizedMessage[]): SanitizedMessage[] {
+  let replaced = false;
+
+  const next = messages.map((message) => {
+    if (message.role !== 'user' || !Array.isArray(message.content)) return message;
+
+    let changed = false;
+    const content = message.content.map((part) => {
+      if (part.type !== 'image_url') return part;
+      changed = true;
+      replaced = true;
+      return { type: 'text' as const, text: IMAGE_UNSUPPORTED_ERROR };
+    });
+
+    return changed ? { ...message, content } : message;
+  });
+
+  return replaced ? next : messages;
+}
+
+/** Finds the newest user message that carries an image. */
+function extractionMessage(messages: SanitizedMessage[]): SanitizedMessage | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== 'user' || !Array.isArray(message.content)) continue;
+    if (message.content.some((part) => part.type === 'image_url')) return message;
+  }
+  return null;
+}
+
+/**
+ * OpenRouter attaches `X-RateLimit-*` headers only when OpenRouter itself is
+ * limiting the key. A 429 without them comes from the upstream model provider,
+ * so the key is still healthy and should not be parked.
+ */
+function isUpstreamRateLimit(
+  provider: AiProviderId,
+  response: Response,
+  payload: any,
+): boolean {
+  if (provider !== 'openrouter' || response.status !== 429) return false;
+
+  const headers = response.headers;
+  if (
+    headers.get('x-ratelimit-limit') ||
+    headers.get('x-ratelimit-remaining') ||
+    headers.get('x-ratelimit-reset')
+  ) {
+    return false;
+  }
+
+  const providerCode = payload?.error?.metadata?.provider_code;
+  return (
+    providerCode != null ||
+    /provider returned error/i.test(providerErrorMessage(payload))
+  );
+}
+
+function formatWait(ms: number): string {
+  const seconds = Math.max(1, Math.ceil(ms / 1000));
+  if (seconds < 60) return `${seconds} second${seconds === 1 ? '' : 's'}`;
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'}`;
+  const hours = Math.ceil(minutes / 60);
+  return `${hours} hour${hours === 1 ? '' : 's'}`;
+}
+
 export async function POST(request: Request) {
   const contentLength = Number(request.headers.get('content-length') || 0);
   if (contentLength > MAX_BODY_BYTES) {
@@ -368,6 +563,18 @@ export async function POST(request: Request) {
   const messages = sanitizeMessages(body?.messages);
   if (messages.length === 0) {
     return NextResponse.json({ error: 'Send at least one message.' }, { status: 400 });
+  }
+
+  const mode: AgentMode = body?.mode === 'extract' ? 'extract' : 'chat';
+  let extractionSource: SanitizedMessage | null = null;
+  if (mode === 'extract') {
+    extractionSource = extractionMessage(messages);
+    if (!extractionSource) {
+      return NextResponse.json(
+        { error: 'Attach a screenshot to extract holdings.' },
+        { status: 400 },
+      );
+    }
   }
 
   const provider: AiProviderId = isAiProviderId(body?.provider)
@@ -406,12 +613,51 @@ export async function POST(request: Request) {
     );
   }
 
+  // Match OpenCode's request pipeline: if the selected model is text-only,
+  // replace attached images with a text error the model can explain. The app
+  // sends its own capability flag, which avoids a model-list round trip; the
+  // live catalogue is still checked when the client thinks the model can see.
+  const clientVision =
+    typeof body?.supportsVision === 'boolean' ? body.supportsVision : null;
+  const liveVision =
+    clientVision === false
+      ? null
+      : discoveryKey
+        ? await modelSupportsVision(provider, model, discoveryKey.key)
+        : null;
+  const visionSupport =
+    clientVision === false ? false : (liveVision ?? clientVision);
+
+  if (mode === 'extract' && visionSupport === false) {
+    return NextResponse.json(
+      {
+        error:
+          'The selected model cannot read images. Pick a model marked Image from the chat header.',
+      },
+      { status: 400 },
+    );
+  }
+
+  const requestMessages =
+    mode === 'extract' && extractionSource ? [extractionSource] : messages;
+  const providerMessages =
+    mode === 'chat' && visionSupport === false
+      ? replaceUnsupportedImages(requestMessages)
+      : requestMessages;
+
   const providerBody = JSON.stringify(
     chatRequestBody(
       provider,
       model,
-      [{ role: 'system', content: systemPrompt() }, ...messages],
-      TOOLS,
+      [
+        {
+          role: 'system',
+          content: mode === 'extract' ? extractionPrompt() : systemPrompt(),
+        },
+        ...providerMessages,
+      ],
+      mode === 'extract' ? [] : TOOLS,
+      { json: mode === 'extract' },
     ),
   );
 
@@ -419,6 +665,7 @@ export async function POST(request: Request) {
   const deadline = Date.now() + 55_000;
   let attempts = 0;
   let sawRateLimit = false;
+  let sawUpstreamRateLimit = false;
   let sawAuthFailure = false;
   let sawTimeout = false;
   let lastStatus = 0;
@@ -451,18 +698,24 @@ export async function POST(request: Request) {
       }
 
       const providerMessage = response.ok ? '' : providerErrorMessage(payload, text);
-      void recordKeyResponse(provider, key.key, response.status, providerMessage, response);
+      const upstreamRateLimit = isUpstreamRateLimit(provider, response, payload);
+      void recordKeyResponse(provider, key.key, response.status, providerMessage, response, {
+        upstreamRateLimit,
+      });
 
       if (!response.ok) {
         console.warn(
           `[AGENT] ${definition.name} key ${key.id} failed (${response.status}):`,
           providerMessage.slice(0, 200),
         );
-        markKeyFailure(uid, key, response.status, providerMessage);
+        markKeyFailure(uid, key, response.status, providerMessage, { upstreamRateLimit });
         lastStatus = response.status;
         lastProviderMessage = providerMessage.slice(0, 300);
 
-        if (response.status === 429) sawRateLimit = true;
+        if (response.status === 429) {
+          if (upstreamRateLimit) sawUpstreamRateLimit = true;
+          else sawRateLimit = true;
+        }
         if (response.status === 401 || response.status === 403) sawAuthFailure = true;
 
         const retryable =
@@ -522,6 +775,35 @@ export async function POST(request: Request) {
         );
       }
 
+      if (mode === 'extract') {
+        const extraction =
+          parseExtraction(message.content) ??
+          parseExtraction(message.reasoning_content) ??
+          parseExtraction(message.reasoning);
+        if (!extraction) {
+          console.warn(
+            '[AGENT] Could not parse screenshot extraction:',
+            String(message.content ?? '').slice(0, 300),
+          );
+          return NextResponse.json(
+            {
+              error:
+                payload?.choices?.[0]?.finish_reason === 'length'
+                  ? 'The screenshot had too much text to read at once. Try a smaller crop.'
+                  : 'The model did not return usable holding rows. Try a clearer screenshot, or pick a different model.',
+            },
+            { status: 502 },
+          );
+        }
+
+        return NextResponse.json({
+          extraction,
+          provider,
+          model: payload?.model || model,
+          usage: payload?.usage ?? null,
+        });
+      }
+
       return NextResponse.json({
         message,
         provider,
@@ -546,9 +828,17 @@ export async function POST(request: Request) {
   }
 
   if (attempts === 0) {
+    const soonest = Math.min(
+      ...pool
+        .map((key) => agentKeyCooldownRemaining(key))
+        .filter((remaining) => remaining > 0),
+    );
+    const waitText = Number.isFinite(soonest)
+      ? ` The next key is ready in about ${formatWait(soonest)}.`
+      : '';
     return NextResponse.json(
       {
-        error: `Every ${definition.name} key is cooling down right now. Wait a minute, or add another key in Settings → AI assistant.`,
+        error: `Every ${definition.name} key is cooling down right now.${waitText} Add another key in Settings → AI assistant to skip the wait.`,
       },
       { status: 429 },
     );
@@ -557,7 +847,7 @@ export async function POST(request: Request) {
   if (sawRateLimit) {
     return NextResponse.json(
       {
-        error: `All ${definition.name} keys are rate-limited right now. Wait a minute, or add another key in Settings → AI assistant.`,
+        error: `All ${definition.name} keys are rate-limited right now. Try again shortly, or add another key in Settings → AI assistant.`,
       },
       { status: 429 },
     );
@@ -577,6 +867,17 @@ export async function POST(request: Request) {
           : `${definition.name} rejected every key it tried. Check the key in Settings → AI assistant, or add another one.`,
       },
       { status: 502 },
+    );
+  }
+
+  if (sawUpstreamRateLimit) {
+    // The key is fine; the free model's upstream provider is busy. Replacing
+    // the key would not help, so point at the model picker instead.
+    return NextResponse.json(
+      {
+        error: `${definition.name} accepted the key, but the model provider is busy right now. Try again in a few seconds, or pick a different model from the chat header.`,
+      },
+      { status: 429 },
     );
   }
 

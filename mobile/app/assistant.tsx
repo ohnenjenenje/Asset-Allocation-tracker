@@ -198,11 +198,11 @@ export default function AssistantScreen() {
     disabled,
     provider: selection?.provider,
     model: selection?.model,
+    supportsVision: selectedModel ? canReadImages : undefined,
   });
 
   const canSend =
     (input.trim().length > 0 || attachment != null) &&
-    (!attachment || canReadImages) &&
     !isSending &&
     !isPreparingImage &&
     !disabled;
@@ -211,17 +211,6 @@ export default function AssistantScreen() {
     setSavedSelection(next);
     saveAssistantSelection(next);
     setIsPickerOpen(false);
-
-    const nextModel = providers
-      .find((provider) => provider.id === next.provider)
-      ?.models.find((model) => model.id === next.model);
-    if (attachment && nextModel && !nextModel.supportsVision) {
-      setAttachment(null);
-      Alert.alert(
-        'Screenshot removed',
-        'That model cannot read images. Pick a model marked Image to import a screenshot.',
-      );
-    }
   };
 
   const modelButtonLabel = modelLabel
@@ -315,18 +304,6 @@ export default function AssistantScreen() {
       ]);
       return;
     }
-    if (!canReadImages) {
-      Alert.alert(
-        'This model cannot read images',
-        'Choose a model with the Image badge, such as Gemini or a vision OpenRouter model.',
-        [
-          { text: 'Choose model', onPress: () => setIsPickerOpen(true) },
-          { text: 'Cancel', style: 'cancel' },
-        ],
-      );
-      return;
-    }
-
     Alert.alert(
       'Add a screenshot',
       'The assistant reads the values and shows a confirmation card before anything is saved.',
@@ -578,7 +555,11 @@ export default function AssistantScreen() {
                   numberOfLines={1}
                   style={[type.caption, { color: colors.muted }]}
                 >
-                  {selectedModel?.name ?? 'A vision model'} reads it; you confirm before saving.
+                  {selectedModel
+                    ? canReadImages
+                      ? `${selectedModel.name} reads it; you confirm before saving.`
+                      : 'This model is text-only, so it will explain that it cannot read the screenshot. Pick a model marked Image to import holdings.'
+                    : 'Checking whether this model can read images…'}
                 </Text>
               </View>
               <IconButton
@@ -608,11 +589,7 @@ export default function AssistantScreen() {
               {isPreparingImage ? (
                 <ActivityIndicator size="small" color={colors.accent} />
               ) : (
-                <Feather
-                  name="image"
-                  size={18}
-                  color={canReadImages ? colors.accent : colors.muted}
-                />
+                <Feather name="image" size={18} color={colors.accent} />
               )}
             </Pressable>
 

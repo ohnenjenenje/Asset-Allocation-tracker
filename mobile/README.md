@@ -212,9 +212,24 @@ fetches each provider's current model catalogue. The last choice is persisted on
 the device. Switching providers or models applies from the next message without
 resetting the conversation.
 
-The assistant is deliberately **read-only**. It cannot add, edit or delete
-assets, and it never forces a price refresh (which would write to the Google
-Sheet). Write tools should be added behind an explicit confirmation sheet.
+The assistant is **read-only by default**. Lookups never modify anything, and
+`propose_asset_updates` only shows a confirmation card — nothing is saved until
+the user taps Apply. Adding, deleting or reclassifying assets still happens in
+the Assets tab.
+
+The model picker marks vision-capable models with an **Image** badge. If you
+attach a screenshot while a text-only model is selected, the app still sends it:
+`/api/agent` replaces the image with a short text error before calling the
+provider, and the assistant tells you to switch to a model marked Image. This
+mirrors OpenCode's request pipeline, which also swaps unsupported media for an
+explanatory text part instead of failing the request. Models such as
+`nvidia/nemotron-3.5-super-vl:free` read screenshots normally.
+
+Screenshots from Groq's Qwen models take a separate path. Qwen reads the image
+accurately but corrupts the larger `propose_asset_updates` arguments, so the app
+calls `/api/agent` with `mode: "extract"`. That request sends no tools, asks for
+a plain JSON object and builds the confirmation card locally. Other providers
+and models keep the normal tool loop.
 
 Groq, OpenRouter and Gemini keys live on the server, never in the app bundle.
 There are two ways to add them:
@@ -239,7 +254,10 @@ FIREBASE_PROJECT_ID=liquid-muse-491818-a9
 `/api/agent` prefers the signed-in user's own keys for the selected provider,
 then the server pool for that provider. It uses the least-recently-used key
 first, rotates through the rest, and puts a key on cooldown when the provider
-returns 429/401/403/5xx before trying the next one. Every chat attempt is also
+returns 429/401/403/5xx before trying the next one. An OpenRouter 429 that comes
+from the model's upstream provider (no `X-RateLimit-*` headers) is not a key
+quota problem, so the key stays active and the chat asks for a different model.
+Every chat attempt is also
 counted per key in the `ai_key_usage` MongoDB collection (a hash of the key is
 used as the id, never the key itself). The key screen shows the request total,
 today's count, failures, and the last quota headers the provider returned, so a

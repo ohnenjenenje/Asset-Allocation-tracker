@@ -414,20 +414,34 @@ export function chatRequestBody(
   model: string,
   messages: unknown[],
   tools: unknown[],
+  options: { json?: boolean } = {},
 ): Record<string, unknown> {
   const body: Record<string, unknown> = {
     model,
     messages,
-    tools,
-    tool_choice: 'auto',
   };
 
+  // Extraction runs without tools so the model cannot bury the rows in a
+  // malformed tool call.
+  if (tools.length > 0) {
+    body.tools = tools;
+    body.tool_choice = 'auto';
+  }
+
+  if (options.json) {
+    body.response_format = { type: 'json_object' };
+    // Extraction should copy what is in the screenshot, not improvise rows.
+    body.temperature = 0;
+  }
+
   // Groq and OpenRouter accept the newer token-limit field; Gemini's OpenAI
-  // compatibility layer documents max_tokens.
+  // compatibility layer documents max_tokens. Extraction can return many rows,
+  // so give it more room than a chat turn.
+  const maxTokens = options.json ? 2000 : 1600;
   if (provider === 'google') {
-    body.max_tokens = 1600;
+    body.max_tokens = maxTokens;
   } else {
-    body.max_completion_tokens = 1600;
+    body.max_completion_tokens = maxTokens;
   }
 
   return body;
@@ -459,5 +473,24 @@ export async function modelIsAvailable(
     return models.some((entry) => entry.id === model);
   } catch {
     return true;
+  }
+}
+
+/**
+ * Whether the provider's live catalogue marks this model as image-capable.
+ * Returns null when the catalogue cannot be loaded or the model is missing, so
+ * callers can leave the provider to decide instead of silently dropping images.
+ */
+export async function modelSupportsVision(
+  provider: AiProviderId,
+  model: string,
+  key: string,
+): Promise<boolean | null> {
+  try {
+    const models = await listModelsForProvider(provider, key);
+    const entry = models.find((candidate) => candidate.id === model);
+    return entry ? entry.supportsVision : null;
+  } catch {
+    return null;
   }
 }

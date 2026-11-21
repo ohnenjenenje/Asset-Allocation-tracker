@@ -4,6 +4,7 @@ import { useAuth } from '@/src/features/auth/AuthProvider';
 import { ApiError } from '@/src/lib/api/client';
 
 import {
+  extractScreenshot,
   sendAgentRequest,
   type AgentImagePart,
   type AgentMessage,
@@ -11,6 +12,7 @@ import {
 } from './api';
 import {
   TOOL_LABELS,
+  buildAssetProposal,
   executeAssistantTool,
   mergeAssetProposals,
   type AssetUpdateProposal,
@@ -72,7 +74,7 @@ function userContent(
 ): AgentMessage['content'] {
   if (!attachment) return text;
 
-  const parts: Array<AgentTextPart | AgentImagePart> = [];
+  const parts: (AgentTextPart | AgentImagePart)[] = [];
   if (text) parts.push({ type: 'text', text });
   parts.push({ type: 'image_url', image_url: { url: attachment.dataUrl } });
   return parts;
@@ -111,6 +113,7 @@ export function useAssistant(
     disabled?: boolean;
     provider?: string;
     model?: string;
+    supportsVision?: boolean;
   } = {},
 ) {
   const { getToken, isDemo } = useAuth();
@@ -164,12 +167,78 @@ export function useAssistant(
       try {
         const token = await getToken();
 
+        // Groq's Qwen reads screenshots accurately but corrupts the complex
+        // propose_asset_updates arguments. Extract the rows as plain JSON
+        // without tools, then build the proposal locally.
+        if (attachment && options.supportsVision && provider === 'groq' && /qwen/i.test(model)) {
+          setActivity('Reading the screenshot');
+
+          const { extraction } = await extractScreenshot(attachment.dataUrl, {
+            token,
+            signal: controller.signal,
+            provider,
+            model,
+            text: trimmed,
+            supportsVision: options.supportsVision,
+          });
+
+          apiMessages.current.push({
+            role: 'assistant',
+            content: `I read the screenshot. Extracted rows: ${JSON.stringify(
+              extraction.updates,
+            )}`,
+          });
+
+          if (extraction.updates.length === 0) {
+            setMessages((previous) => [
+              ...previous,
+              {
+                id: nextId(),
+                role: 'assistant',
+                content:
+                  'I could not find any readable holding rows in that screenshot. Try a clearer crop.',
+              },
+            ]);
+            return;
+          }
+
+          const result = buildAssetProposal(extraction, context.assets);
+          if ('error' in result) {
+            setMessages((previous) => [
+              ...previous,
+              {
+                id: nextId(),
+                role: 'assistant',
+                content: result.error,
+                error: true,
+              },
+            ]);
+            return;
+          }
+
+          const summary = extraction.summary.trim();
+          setMessages((previous) => [
+            ...previous,
+            {
+              id: nextId(),
+              role: 'assistant',
+              content: summary
+                ? `${summary}\n\nReview the changes below and tap Apply to save.`
+                : 'I prepared these changes. Review them below and tap Apply to save.',
+              proposal: result.proposal,
+              proposalState: 'pending' as const,
+            },
+          ]);
+          return;
+        }
+
         for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
           const response = await sendAgentRequest(apiMessages.current, {
             token,
             signal: controller.signal,
             provider,
             model,
+            supportsVision: options.supportsVision,
           });
           const message = response.message;
           const toolCalls = message.tool_calls ?? [];
@@ -263,7 +332,16 @@ export function useAssistant(
         setIsSending(false);
       }
     },
-    [context, getToken, isDemo, isSending, options.disabled, options.model, options.provider],
+    [
+      context,
+      getToken,
+      isDemo,
+      isSending,
+      options.disabled,
+      options.model,
+      options.provider,
+      options.supportsVision,
+    ],
   );
 
   const updateProposal = useCallback(

@@ -88,6 +88,7 @@ interface RuntimeState {
   cooldownUntil: number;
   lastUsedAt: number;
   failures: number;
+  lastFailureAt: number;
 }
 
 const runtime = new Map<string, RuntimeState>();
@@ -97,6 +98,10 @@ const COOLDOWN_RATE_LIMIT_MS = 60 * 1000;
 const COOLDOWN_AUTH_MS = 30 * 60 * 1000;
 const COOLDOWN_SERVER_MS = 30 * 1000;
 const COOLDOWN_TIMEOUT_MS = 20 * 1000;
+// A key that fails once should not stay on an escalated backoff forever. Once
+// it has been quiet for this long, the next failure starts from the base
+// cooldown again.
+const FAILURE_DECAY_MS = 10 * 60 * 1000;
 
 function fingerprint(secret: string): string {
   return createHash('sha256').update(secret).digest('hex').slice(0, 16);
@@ -106,7 +111,7 @@ function runtimeState(key: string): RuntimeState {
   const id = fingerprint(key);
   let state = runtime.get(id);
   if (!state) {
-    state = { cooldownUntil: 0, lastUsedAt: 0, failures: 0 };
+    state = { cooldownUntil: 0, lastUsedAt: 0, failures: 0, lastFailureAt: 0 };
     runtime.set(id, state);
   }
   return state;
@@ -270,8 +275,8 @@ export function markKeyUsed(uid: string, key: AgentKey): void {
 
 function cooldownForStatus(status: number, failures: number): number {
   // Consecutive failures escalate the rest period, so a key that has hit its
-  // daily quota is not retried on every request. The reset on success below
-  // keeps transient failures from sticking.
+  // daily quota is not retried on every request. Success resets the counter,
+  // and FAILURE_DECAY_MS stops a one-off failure from escalating forever.
   const backoff = Math.min(2 ** Math.max(0, failures - 1), 8);
 
   if (status === 429) {
@@ -285,15 +290,40 @@ function cooldownForStatus(status: number, failures: number): number {
   return 0;
 }
 
+export interface KeyFailureOptions {
+  /**
+   * The model's upstream provider returned 429, not this key's own quota. The
+   * key is still healthy, so record the error without parking it or escalating
+   * its failure count.
+   */
+  upstreamRateLimit?: boolean;
+}
+
 export function markKeyFailure(
   uid: string,
   key: AgentKey,
   status: number,
   message: string,
+  options: KeyFailureOptions = {},
 ): void {
   const state = runtimeState(key.key);
   const now = Date.now();
+
+  if (options.upstreamRateLimit) {
+    state.lastUsedAt = now;
+    if (key.source === 'account') {
+      void updateStoredKey(uid, key.id, {
+        $set: { lastUsedAt: new Date(now), lastError: message.slice(0, 300) },
+      }).catch(() => {});
+    }
+    return;
+  }
+
+  if (state.lastFailureAt > 0 && now - state.lastFailureAt > FAILURE_DECAY_MS) {
+    state.failures = 0;
+  }
   state.failures += 1;
+  state.lastFailureAt = now;
 
   const cooldownMs = cooldownForStatus(status, state.failures);
   const cooldownUntil = cooldownMs > 0 ? now + cooldownMs : 0;

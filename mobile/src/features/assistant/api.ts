@@ -12,7 +12,7 @@ export type AgentImagePart = {
   type: 'image_url';
   image_url: { url: string };
 };
-export type AgentContent = string | null | Array<AgentTextPart | AgentImagePart>;
+export type AgentContent = string | null | (AgentTextPart | AgentImagePart)[];
 
 export type AgentMessage = {
   role: 'user' | 'assistant' | 'tool';
@@ -42,6 +42,7 @@ export async function sendAgentRequest(
     signal?: AbortSignal;
     provider?: string;
     model?: string;
+    supportsVision?: boolean;
   } = {},
 ): Promise<AgentResponse> {
   return apiFetch<AgentResponse>('/api/agent', {
@@ -50,6 +51,67 @@ export async function sendAgentRequest(
       messages,
       ...(options.provider ? { provider: options.provider } : {}),
       ...(options.model ? { model: options.model } : {}),
+      ...(options.supportsVision !== undefined
+        ? { supportsVision: options.supportsVision }
+        : {}),
+    },
+    token: options.token,
+    signal: options.signal,
+    timeoutMs: 60_000,
+  });
+}
+
+/** One holding row read from a screenshot. */
+export type ExtractionUpdate = {
+  symbol?: string;
+  name?: string;
+  quantity?: number;
+  entryPrice?: number;
+  manualPrice?: number;
+};
+
+export type ScreenshotExtraction = {
+  summary: string;
+  updates: ExtractionUpdate[];
+};
+
+export type ExtractionResponse = {
+  extraction: ScreenshotExtraction;
+  provider?: string;
+  model?: string;
+  usage?: AgentResponse['usage'];
+};
+
+/**
+ * Reads a screenshot without tools and returns structured holding rows.
+ * Groq's Qwen handles this reliably, while its tool-call JSON is unreliable.
+ */
+export async function extractScreenshot(
+  image: string,
+  options: {
+    token?: string | null;
+    signal?: AbortSignal;
+    provider?: string;
+    model?: string;
+    text?: string;
+    supportsVision?: boolean;
+  } = {},
+): Promise<ExtractionResponse> {
+  const parts: (AgentTextPart | AgentImagePart)[] = [];
+  const text = options.text?.trim().slice(0, 600);
+  if (text) parts.push({ type: 'text', text });
+  parts.push({ type: 'image_url', image_url: { url: image } });
+
+  return apiFetch<ExtractionResponse>('/api/agent', {
+    method: 'POST',
+    body: {
+      mode: 'extract',
+      messages: [{ role: 'user', content: parts }],
+      ...(options.provider ? { provider: options.provider } : {}),
+      ...(options.model ? { model: options.model } : {}),
+      ...(options.supportsVision !== undefined
+        ? { supportsVision: options.supportsVision }
+        : {}),
     },
     token: options.token,
     signal: options.signal,
