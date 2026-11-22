@@ -23,16 +23,32 @@ export const explicitCurrencyFromSymbol = (symbol: string): string | null => {
 };
 
 /**
- * Explicit ticker markers such as `-INR` win over stored metadata. A bad
- * `currency: "USD"` on SILVER-INR-GRAM must not multiply the invested value by
- * the FX rate.
+ * Ticker markers that are authoritative for the instrument's currency.
+ * `-USD` is deliberately excluded: Indian crypto trackers commonly store the
+ * cost basis for BTC-USD / ETH-USD in INR, so a saved INR currency must win.
+ */
+export const authoritativeCurrencyFromSymbol = (
+  symbol: string,
+): 'INR' | 'GBp' | null => {
+  if (!symbol || typeof symbol !== 'string') return null;
+  const upper = symbol.toUpperCase();
+  if (upper.endsWith('.NS') || upper.endsWith('.BO') || upper.includes('-INR')) return 'INR';
+  if (upper.endsWith('.L')) return 'GBp';
+  return null;
+};
+
+/**
+ * Currency for the saved cost basis (`entryPrice`). A ticker such as
+ * SILVER-INR-GRAM overrides stale metadata, but a saved currency is trusted
+ * over the `-USD` quote convention so INR-cost crypto is not converted twice.
  */
 export const resolveAssetCurrency = (asset: {
   symbol?: string | null;
   currency?: string | null;
 }): string =>
-  explicitCurrencyFromSymbol(asset.symbol || '') ||
+  authoritativeCurrencyFromSymbol(asset.symbol || '') ||
   asset.currency ||
+  explicitCurrencyFromSymbol(asset.symbol || '') ||
   guessCurrency(asset.symbol || '');
 
 export const getConvertedPrice = (price: number, currency: string, usdToInr: number) => {

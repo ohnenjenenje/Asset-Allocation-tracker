@@ -3,7 +3,7 @@ import { apiFetch } from '@/src/lib/api/client';
 import type { PortfolioSummary } from '../portfolio/aggregate';
 import type { PortfolioAnalytics } from '../portfolio/analytics';
 import { fetchFundData, fetchPrices } from '../portfolio/api';
-import { explicitCurrencyFromSymbol } from '../portfolio/normalize';
+import { authoritativeCurrencyFromSymbol } from '../portfolio/normalize';
 import type { Asset, FundData, PriceData } from '../portfolio/types';
 
 export interface AssistantContext {
@@ -275,11 +275,11 @@ export function buildAssetProposal(
     });
 
     // The screenshot currency (₹, $, £) wins over saved metadata. Fall back to
-    // an explicit ticker marker such as SILVER-INR-GRAM when the model omits it.
+    // an authoritative ticker marker such as SILVER-INR-GRAM when the model
+    // omits it. A `-USD` quote suffix is not authoritative for cost basis:
+    // Indian crypto holdings often store entry prices in INR.
     const explicitCurrency = normalizeCurrency(item.currency);
-    const symbolCurrency = explicitCurrencyFromSymbol(asset.symbol) as
-      | SupportedCurrency
-      | null;
+    const symbolCurrency = authoritativeCurrencyFromSymbol(asset.symbol);
     const targetCurrency = explicitCurrency || symbolCurrency;
     const nextCurrencyChange =
       targetCurrency && targetCurrency !== asset.currency

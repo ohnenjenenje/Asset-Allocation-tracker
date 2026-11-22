@@ -39,16 +39,35 @@ export function explicitCurrencyFromSymbol(symbol: string): string | null {
 }
 
 /**
- * A ticker such as SILVER-INR-GRAM is authoritative. Provider/saved metadata
- * can be wrong, so never let a stale USD field override an explicit INR ticker.
+ * Ticker markers that are authoritative for the instrument's currency.
+ * `-USD` is deliberately excluded: Indian crypto trackers commonly store the
+ * cost basis for BTC-USD / ETH-USD in INR, so a saved INR currency must win.
+ */
+export function authoritativeCurrencyFromSymbol(
+  symbol: string,
+): 'INR' | 'GBp' | null {
+  if (!symbol) return null;
+  const upper = symbol.toUpperCase();
+  if (upper.endsWith('.NS') || upper.endsWith('.BO') || upper.includes('-INR')) {
+    return 'INR';
+  }
+  if (upper.endsWith('.L')) return 'GBp';
+  return null;
+}
+
+/**
+ * Currency for the saved cost basis (`entryPrice`). A ticker such as
+ * SILVER-INR-GRAM overrides stale metadata, but a saved currency is trusted
+ * over the `-USD` quote convention so INR-cost crypto is not converted twice.
  */
 export function resolveAssetCurrency(asset: {
   symbol: string;
   currency?: string | null;
 }): string {
   return (
-    explicitCurrencyFromSymbol(asset.symbol) ||
+    authoritativeCurrencyFromSymbol(asset.symbol) ||
     asset.currency ||
+    explicitCurrencyFromSymbol(asset.symbol) ||
     guessCurrency(asset.symbol)
   );
 }

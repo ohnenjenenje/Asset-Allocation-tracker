@@ -222,6 +222,39 @@ describe('buildAssetProposal', () => {
     });
   });
 
+  it('does not force USD onto a -USD crypto ticker with an INR cost basis', () => {
+    const withEth = [
+      ...assets,
+      asset({
+        id: 'a5',
+        symbol: 'ETH-USD',
+        name: 'Ethereum',
+        type: 'CRYPTOCURRENCY',
+        quantity: 0.001,
+        entryPrice: 192_285,
+        currency: 'INR',
+      }),
+    ];
+
+    const result = buildAssetProposal(
+      {
+        summary: 'Ethereum holding',
+        updates: [{ symbol: 'ETH-USD', quantity: 0.002 }],
+      },
+      withEth,
+    );
+
+    expect('proposal' in result).toBe(true);
+    if (!('proposal' in result)) return;
+
+    const update = result.proposal.updates[0];
+    expect(update.currency).toBe('INR');
+    expect(update.currencyChange).toBeUndefined();
+    expect(update.changes).toEqual([
+      { field: 'quantity', from: 0.001, to: 0.002 },
+    ]);
+  });
+
   it('does not match a different silver product by one shared word', () => {
     const withSilver = [
       ...assets,
