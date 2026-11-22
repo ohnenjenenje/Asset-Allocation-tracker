@@ -156,6 +156,12 @@ const TOOLS = [
                   description:
                     'New manual current price per unit. Only when explicitly requested; this overrides live market quotes.',
                 },
+                currency: {
+                  type: 'string',
+                  enum: ['INR', 'USD', 'GBp'],
+                  description:
+                    'Currency shown in the screenshot. Include only when it differs from the saved holding, for example INR for ₹ values.',
+                },
               },
               required: ['symbol'],
             },
@@ -193,6 +199,7 @@ function systemPrompt() {
     '- For a holdings table, use Qty or Quantity and Avg Price, Avg Cost or Average Price. Ignore LTP, current price, value and P&L columns.',
     '- If a screenshot shows invested amount and quantity, you may derive the average buy price as amount / quantity. On a detail screen, Active Savings, Invested or Amount Invested counts as the invested amount; Silver Value, Current Value and LTP do not. If it shows only a current price, do not overwrite entryPrice with it.',
     '- Do not convert currencies. Use the values shown and state the currency you assumed.',
+    '- Detect the currency from the screenshot: ₹, Rs or INR is INR; $, US$ or USD is USD; £ or GBp is GBp. If it differs from the saved holding, include currency in the proposal.',
     '- After calling propose_asset_updates, tell the user in one short paragraph what will change and ask them to tap Apply. Do not repeat the whole table.',
     '- You cannot add new assets, delete assets or change classification. Say so and point the user to the Assets tab.',
     '',
@@ -267,7 +274,7 @@ function extractionPrompt(holdings: ExtractionHolding[] = []) {
   return [
     'You read portfolio screenshots for the Asset Allocation Tracker app.',
     'Return only a JSON object with this shape:',
-    '{"screen":"holdings","summary":"one short sentence","updates":[{"assetId":"id from the known holdings list, if matched","symbol":"TICKER","name":"Company name","quantity":10,"entryPrice":2400.5}]}',
+    '{"screen":"holdings","summary":"one short sentence","updates":[{"assetId":"id from the known holdings list, if matched","symbol":"TICKER","name":"Company name","quantity":10,"entryPrice":2400.5,"currency":"INR"}]}',
     '',
     'Rules:',
     '- First identify the screen type from its title and labels: holdings, detail, positions, orders, watchlist, dashboard or other.',
@@ -283,6 +290,7 @@ function extractionPrompt(holdings: ExtractionHolding[] = []) {
     '- On a detail screen, a label such as Active Savings, Invested, Invested Amount, Total Investment or Amount Invested is the money put in. If quantity is also readable, derive entryPrice = invested amount / quantity. If quantity is not readable, omit entryPrice rather than using the invested amount as a price.',
     '- entryPrice is the average buy price per unit. Never use current value, "Silver Value", market value, LTP or a current price as entryPrice.',
     '- Do not set manualPrice unless the user explicitly asked to update the current price. Prefer omitting it.',
+    '- Detect the currency shown next to the values: ₹, Rs or INR is INR; $, US$ or USD is USD; £ or GBp is GBp. Return it as "currency". Do not convert any value.',
     '- Include every holding whose quantity is clearly readable.',
     '- Omit rows you cannot read. Never guess a number or what a column means.',
     ...knownHoldings,
@@ -298,6 +306,7 @@ type ExtractionUpdate = {
   quantity?: number;
   entryPrice?: number;
   manualPrice?: number;
+  currency?: 'INR' | 'USD' | 'GBp';
 };
 
 function extractionNumber(value: unknown): number | null {
@@ -306,6 +315,16 @@ function extractionNumber(value: unknown): number | null {
     const parsed = Number(value.replace(/[,\s₹$]/g, ''));
     if (Number.isFinite(parsed)) return parsed;
   }
+  return null;
+}
+
+/** Normalize the currency symbol or code the vision model saw. */
+function extractionCurrency(value: unknown): 'INR' | 'USD' | 'GBp' | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase();
+  if (['inr', '₹', 'rs', 'rs.', 'rupee', 'rupees'].includes(normalized)) return 'INR';
+  if (['usd', '$', 'us$', 'dollar', 'dollars'].includes(normalized)) return 'USD';
+  if (['gbp', 'gbx', '£', 'pound', 'pounds'].includes(normalized)) return 'GBp';
   return null;
 }
 
@@ -376,6 +395,9 @@ function parseExtraction(
     if (manualPrice != null && manualPrice > 0 && manualPrice <= 1e12) {
       update.manualPrice = manualPrice;
     }
+
+    const currency = extractionCurrency(raw.currency);
+    if (currency) update.currency = currency;
 
     updates.push(update);
   }

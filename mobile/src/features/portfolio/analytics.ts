@@ -4,7 +4,6 @@ import { flattenAssets, priceFor } from './aggregate';
 import {
   getCapCategory,
   getCommoditySubCategory,
-  guessCurrency,
   isCommodityFund,
   isDebtFund,
   isDomesticEquity,
@@ -13,6 +12,7 @@ import {
   isLikelyEtf,
   normalizeCategory,
   normalizeGroup,
+  resolveAssetCurrency,
   toINR,
 } from './normalize';
 import type {
@@ -227,7 +227,7 @@ export function hasFundLookThrough(data?: FundData | null): boolean {
 }
 
 function currentCurrency(asset: Asset, prices: Record<string, PriceData>): string {
-  const assetCurrency = asset.currency || guessCurrency(asset.symbol);
+  const assetCurrency = resolveAssetCurrency(asset);
   if (asset.manualPrice !== undefined && asset.manualPrice !== null) return assetCurrency;
 
   const quote = prices[asset.symbol];

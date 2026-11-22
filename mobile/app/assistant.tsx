@@ -833,6 +833,20 @@ function ProposalCard({
             <Text style={[type.caption, { color: colors.muted }]}>
               {update.symbol}
             </Text>
+            {update.currencyChange ? (
+              <View style={styles.changeRow}>
+                <Text style={[type.caption, { color: colors.muted }]}>Currency</Text>
+                <Text
+                  style={[
+                    type.caption,
+                    styles.changeValue,
+                    { color: colors.text },
+                  ]}
+                >
+                  {update.currencyChange.from ?? 'Not set'} → {update.currencyChange.to}
+                </Text>
+              </View>
+            ) : null}
             {update.changes.map((change) => (
               <View key={change.field} style={styles.changeRow}>
                 <Text style={[type.caption, { color: colors.muted }]}>

@@ -24,6 +24,35 @@ export function guessCurrency(symbol: string): string {
   return 'INR';
 }
 
+/**
+ * Currency encoded in the ticker itself. Unlike `guessCurrency`, this returns
+ * null when the symbol has no explicit marker, so a US stock without a suffix
+ * is not silently treated as INR.
+ */
+export function explicitCurrencyFromSymbol(symbol: string): string | null {
+  if (!symbol) return null;
+  const upper = symbol.toUpperCase();
+  if (upper.endsWith('.NS') || upper.endsWith('.BO') || upper.includes('-INR')) return 'INR';
+  if (upper.endsWith('.L')) return 'GBp';
+  if (upper.includes('-USD')) return 'USD';
+  return null;
+}
+
+/**
+ * A ticker such as SILVER-INR-GRAM is authoritative. Provider/saved metadata
+ * can be wrong, so never let a stale USD field override an explicit INR ticker.
+ */
+export function resolveAssetCurrency(asset: {
+  symbol: string;
+  currency?: string | null;
+}): string {
+  return (
+    explicitCurrencyFromSymbol(asset.symbol) ||
+    asset.currency ||
+    guessCurrency(asset.symbol)
+  );
+}
+
 export function normalizeCategory(category?: string): string {
   if (!category) return 'Other';
   if (category.includes('>')) return category;

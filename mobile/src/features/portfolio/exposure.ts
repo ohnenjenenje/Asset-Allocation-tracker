@@ -1,7 +1,7 @@
 import { toPaise } from '@/src/lib/format/money';
 
 import { flattenAssets, priceFor } from './aggregate';
-import { guessCurrency, normalizeCategory, toINR } from './normalize';
+import { normalizeCategory, resolveAssetCurrency, toINR } from './normalize';
 import type { Asset, LiquidityTier, PriceData } from './types';
 
 /** Exposure lenses that sit beside the asset-class tree, never inside it. */
@@ -26,7 +26,7 @@ export interface HoldingExposure {
 const LIQUID_TIERS = new Set<LiquidityTier>(['Daily', 'Weekly']);
 
 export function currencyFor(asset: Asset, prices: Record<string, PriceData>): string {
-  const fallback = asset.currency || guessCurrency(asset.symbol);
+  const fallback = resolveAssetCurrency(asset);
   if (asset.manualPrice != null) return fallback;
   const quote = prices[asset.symbol];
   let currency = quote?.currency || fallback;

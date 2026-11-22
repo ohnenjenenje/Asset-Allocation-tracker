@@ -149,6 +149,79 @@ describe('buildAssetProposal', () => {
     });
   });
 
+  it('corrects a rupee holding saved with a dollar currency', () => {
+    const withSilver = [
+      ...assets,
+      asset({
+        id: 'a4',
+        symbol: 'SILVER-INR-GRAM',
+        name: 'Physical Silver (Per Gram)',
+        type: 'COMMODITY',
+        quantity: 6.2885,
+        entryPrice: 158.4,
+        currency: 'USD',
+      }),
+    ];
+
+    const result = buildAssetProposal(
+      {
+        summary: 'Silver Vault holding with ₹1,001.53 invested.',
+        updates: [
+          {
+            name: 'Silver Vault',
+            quantity: 6.2885,
+            entryPrice: 159.26,
+            currency: 'INR',
+          },
+        ],
+      },
+      withSilver,
+    );
+
+    expect('proposal' in result).toBe(true);
+    if (!('proposal' in result)) return;
+
+    const update = result.proposal.updates[0];
+    expect(update.currency).toBe('INR');
+    expect(update.currencyChange).toEqual({ from: 'USD', to: 'INR' });
+
+    const next = applyAssetProposal(withSilver, result.proposal);
+    expect(next[3]).toMatchObject({ currency: 'INR', entryPrice: 159.26 });
+    expect(withSilver[3].currency).toBe('USD');
+  });
+
+  it('infers the currency from an explicit -INR symbol when the model omits it', () => {
+    const withSilver = [
+      ...assets,
+      asset({
+        id: 'a4',
+        symbol: 'SILVER-INR-GRAM',
+        name: 'Physical Silver (Per Gram)',
+        type: 'COMMODITY',
+        quantity: 6.2885,
+        entryPrice: 158.4,
+        currency: 'USD',
+      }),
+    ];
+
+    const result = buildAssetProposal(
+      {
+        summary: 'Silver Vault',
+        updates: [{ name: 'Silver Vault', quantity: 6.2885 }],
+      },
+      withSilver,
+    );
+
+    expect('proposal' in result).toBe(true);
+    if (!('proposal' in result)) return;
+
+    expect(result.proposal.updates[0].changes).toEqual([]);
+    expect(result.proposal.updates[0].currencyChange).toEqual({
+      from: 'USD',
+      to: 'INR',
+    });
+  });
+
   it('does not match a different silver product by one shared word', () => {
     const withSilver = [
       ...assets,

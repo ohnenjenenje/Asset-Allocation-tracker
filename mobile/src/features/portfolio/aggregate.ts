@@ -1,6 +1,6 @@
 import { toPaise } from '@/src/lib/format/money';
 
-import { CATEGORY_COLORS, guessCurrency, normalizeCategory, toINR } from './normalize';
+import { CATEGORY_COLORS, normalizeCategory, resolveAssetCurrency, toINR } from './normalize';
 import type { Asset, PriceData } from './types';
 
 export interface AllocationSlice {
@@ -75,7 +75,7 @@ export function summarize(
   usdToInr = DEFAULT_USD_TO_INR,
 ): PortfolioSummary {
   const holdings: Holding[] = flattenAssets(assets).map((asset) => {
-    const assetCurrency = asset.currency || guessCurrency(asset.symbol);
+    const assetCurrency = resolveAssetCurrency(asset);
     const quote = prices[asset.symbol];
     const priceCurrency =
       asset.manualPrice !== undefined

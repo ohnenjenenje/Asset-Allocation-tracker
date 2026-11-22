@@ -110,6 +110,20 @@ describe('holding exposure', () => {
     );
   });
 
+  it('prefers an explicit INR ticker over bad saved currency metadata', () => {
+    const silver: Asset = {
+      id: 'silver',
+      symbol: 'SILVER-INR-GRAM',
+      name: 'Physical Silver (Per Gram)',
+      quantity: 6.2885,
+      entryPrice: 159.26,
+      currency: 'USD',
+      type: 'COMMODITY',
+    };
+
+    expect(currencyFor(silver, {})).toBe('INR');
+  });
+
   it('computes the share of daily and weekly liquid assets', () => {
     // Everything except the monthly fund is daily or weekly liquid.
     const total = 320_000_000 + 200_000 + 5_000_000 + 1_000_000 + 600_000;

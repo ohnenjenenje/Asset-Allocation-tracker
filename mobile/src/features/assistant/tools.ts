@@ -3,6 +3,7 @@ import { apiFetch } from '@/src/lib/api/client';
 import type { PortfolioSummary } from '../portfolio/aggregate';
 import type { PortfolioAnalytics } from '../portfolio/analytics';
 import { fetchFundData, fetchPrices } from '../portfolio/api';
+import { explicitCurrencyFromSymbol } from '../portfolio/normalize';
 import type { Asset, FundData, PriceData } from '../portfolio/types';
 
 export interface AssistantContext {
@@ -38,6 +39,8 @@ export type AssetUpdate = {
   name: string;
   currency: string;
   changes: AssetChange[];
+  /** Present only when the screenshot proves the saved currency is wrong. */
+  currencyChange?: { from: string | null; to: string };
 };
 
 export type AssetUpdateProposal = {
@@ -118,6 +121,17 @@ function numericArg(value: unknown): number | null {
     const parsed = Number(value.replace(/,/g, ''));
     return Number.isFinite(parsed) ? parsed : null;
   }
+  return null;
+}
+
+type SupportedCurrency = 'INR' | 'USD' | 'GBp';
+
+function normalizeCurrency(value: unknown): SupportedCurrency | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase();
+  if (['inr', '₹', 'rs', 'rs.', 'rupee', 'rupees'].includes(normalized)) return 'INR';
+  if (['usd', '$', 'us$', 'dollar', 'dollars'].includes(normalized)) return 'USD';
+  if (['gbp', 'gbx', '£', 'pound', 'pounds'].includes(normalized)) return 'GBp';
   return null;
 }
 
@@ -260,13 +274,26 @@ export function buildAssetProposal(
       return change ? [change] : [];
     });
 
-    if (ordered.length > 0) {
+    // The screenshot currency (₹, $, £) wins over saved metadata. Fall back to
+    // an explicit ticker marker such as SILVER-INR-GRAM when the model omits it.
+    const explicitCurrency = normalizeCurrency(item.currency);
+    const symbolCurrency = explicitCurrencyFromSymbol(asset.symbol) as
+      | SupportedCurrency
+      | null;
+    const targetCurrency = explicitCurrency || symbolCurrency;
+    const nextCurrencyChange =
+      targetCurrency && targetCurrency !== asset.currency
+        ? { from: asset.currency || null, to: targetCurrency }
+        : existing?.currencyChange;
+
+    if (ordered.length > 0 || nextCurrencyChange) {
       merged.set(asset.id, {
         assetId: asset.id,
         symbol: asset.symbol,
         name: asset.name,
-        currency: asset.currency || 'INR',
+        currency: nextCurrencyChange?.to || asset.currency || 'INR',
         changes: ordered,
+        ...(nextCurrencyChange ? { currencyChange: nextCurrencyChange } : {}),
       });
     }
   }
@@ -308,6 +335,10 @@ export function mergeAssetProposals(
         const change = changes.get(field);
         return change ? [change] : [];
       });
+      if (update.currencyChange) {
+        existing.currencyChange = update.currencyChange;
+        existing.currency = update.currencyChange.to;
+      }
     }
   }
 
@@ -331,6 +362,7 @@ export function applyAssetProposal(
     if (!update) return asset;
 
     const next: Asset = { ...asset };
+    if (update.currencyChange) next.currency = update.currencyChange.to;
     for (const change of update.changes) {
       if (change.field === 'quantity') next.quantity = change.to;
       else if (change.field === 'entryPrice') next.entryPrice = change.to;

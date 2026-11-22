@@ -4,6 +4,7 @@ import {
   normalizeCategory,
   getCommoditySubCategory,
   guessCurrency,
+  resolveAssetCurrency,
   getConvertedPrice,
   getCapCategory,
   normalizeGroup,
@@ -37,14 +38,14 @@ const resolveAssetValue = (
 
   let currentCurrency: string;
   if (asset.manualPrice !== undefined) {
-    currentCurrency = asset.currency || guessCurrency(asset.symbol);
+    currentCurrency = resolveAssetCurrency(asset);
   } else if (hasPrice) {
     currentCurrency = priceData!.currency || guessCurrency(asset.symbol);
     if (typeof asset.symbol === 'string' && asset.symbol.includes('-USD') && currentCurrency === 'INR') {
       currentCurrency = 'USD';
     }
   } else {
-    currentCurrency = asset.currency || guessCurrency(asset.symbol);
+    currentCurrency = resolveAssetCurrency(asset);
   }
 
   const currentPrice = getConvertedPrice(currentPriceRaw, currentCurrency, usdToInr);
@@ -238,12 +239,12 @@ export function usePortfolioCalculations({
       
       let currentCurrency;
       if (asset.manualPrice !== undefined) {
-        currentCurrency = asset.currency || guessCurrency(asset.symbol);
+        currentCurrency = resolveAssetCurrency(asset);
       } else if (hasPrice) {
         currentCurrency = priceData.currency || guessCurrency(asset.symbol);
         if (typeof asset.symbol === 'string' && asset.symbol.includes('-USD') && currentCurrency === 'INR') currentCurrency = 'USD';
       } else {
-        currentCurrency = asset.currency || guessCurrency(asset.symbol);
+        currentCurrency = resolveAssetCurrency(asset);
       }
       
       const currentPrice = getConvertedPrice(currentPriceRaw, currentCurrency, usdToInr);
@@ -266,17 +267,17 @@ export function usePortfolioCalculations({
     
     let currentCurrency;
     if (asset.manualPrice !== undefined) {
-      currentCurrency = asset.currency || guessCurrency(asset.symbol);
+      currentCurrency = resolveAssetCurrency(asset);
     } else if (hasPrice) {
       currentCurrency = priceData.currency || guessCurrency(asset.symbol);
       if (typeof asset.symbol === 'string' && asset.symbol.includes('-USD') && currentCurrency === 'INR') currentCurrency = 'USD';
     } else {
-      currentCurrency = asset.currency || guessCurrency(asset.symbol);
+      currentCurrency = resolveAssetCurrency(asset);
     }
     
     const currentPrice = getConvertedPrice(currentPriceRaw, currentCurrency, usdToInr);
     
-    let assetCurrency = asset.currency || guessCurrency(asset.symbol);
+    let assetCurrency = resolveAssetCurrency(asset);
     const entryPriceConverted = getConvertedPrice(asset.entryPrice, assetCurrency, usdToInr);
     
     const currentValue = currentPrice * asset.quantity;
@@ -310,12 +311,12 @@ export function usePortfolioCalculations({
     
     let currentCurrency;
     if (asset.manualPrice !== undefined) {
-      currentCurrency = asset.currency || guessCurrency(asset.symbol);
+      currentCurrency = resolveAssetCurrency(asset);
     } else if (hasPrice) {
       currentCurrency = priceData.currency || guessCurrency(asset.symbol);
       if (typeof asset.symbol === 'string' && asset.symbol.includes('-USD') && currentCurrency === 'INR') currentCurrency = 'USD';
     } else {
-      currentCurrency = asset.currency || guessCurrency(asset.symbol);
+      currentCurrency = resolveAssetCurrency(asset);
     }
     
     const currentPrice = getConvertedPrice(currentPriceRaw, currentCurrency, usdToInr);
@@ -965,12 +966,12 @@ export function usePortfolioCalculations({
     
     let currentCurrency;
     if (asset.manualPrice !== undefined) {
-      currentCurrency = asset.currency || guessCurrency(asset.symbol);
+      currentCurrency = resolveAssetCurrency(asset);
     } else if (hasPrice) {
       currentCurrency = priceData.currency || guessCurrency(asset.symbol);
       if (typeof asset.symbol === 'string' && asset.symbol.includes('-USD') && currentCurrency === 'INR') currentCurrency = 'USD';
     } else {
-      currentCurrency = asset.currency || guessCurrency(asset.symbol);
+      currentCurrency = resolveAssetCurrency(asset);
     }
     
     const currentPrice = getConvertedPrice(currentPriceRaw, currentCurrency, usdToInr);

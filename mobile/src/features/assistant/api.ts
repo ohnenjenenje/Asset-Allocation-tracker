@@ -69,6 +69,7 @@ export type ExtractionUpdate = {
   quantity?: number;
   entryPrice?: number;
   manualPrice?: number;
+  currency?: 'INR' | 'USD' | 'GBp';
 };
 
 /** Compact saved-holding context sent with a screenshot extraction. */

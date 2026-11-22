@@ -12,6 +12,29 @@ export const guessCurrency = (symbol: string) => {
   return 'INR';
 };
 
+/** Currency encoded in the ticker, or null when the symbol has no marker. */
+export const explicitCurrencyFromSymbol = (symbol: string): string | null => {
+  if (!symbol || typeof symbol !== 'string') return null;
+  const upper = symbol.toUpperCase();
+  if (upper.endsWith('.NS') || upper.endsWith('.BO') || upper.includes('-INR')) return 'INR';
+  if (upper.endsWith('.L')) return 'GBp';
+  if (upper.includes('-USD')) return 'USD';
+  return null;
+};
+
+/**
+ * Explicit ticker markers such as `-INR` win over stored metadata. A bad
+ * `currency: "USD"` on SILVER-INR-GRAM must not multiply the invested value by
+ * the FX rate.
+ */
+export const resolveAssetCurrency = (asset: {
+  symbol?: string | null;
+  currency?: string | null;
+}): string =>
+  explicitCurrencyFromSymbol(asset.symbol || '') ||
+  asset.currency ||
+  guessCurrency(asset.symbol || '');
+
 export const getConvertedPrice = (price: number, currency: string, usdToInr: number) => {
   if (currency === 'USD') return price * usdToInr;
   if (currency === 'GBp') return (price / 100) * 105; // Approx GBP to INR
