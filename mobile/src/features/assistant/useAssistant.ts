@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useAuth } from '@/src/features/auth/AuthProvider';
@@ -52,6 +53,125 @@ const MAX_TOOL_ROUNDS = 5;
 
 const SCREENSHOT_PROMPT =
   'Read this screenshot and update the holdings where the values are clearly visible.';
+
+const CHAT_STORAGE_VERSION = 1;
+const CHAT_STORAGE_PREFIX = 'asset-tracker/assistant-chat';
+const MAX_STORED_MESSAGES = 100;
+const MAX_STORED_API_MESSAGES = 80;
+
+type StoredAssistantConversation = {
+  version: typeof CHAT_STORAGE_VERSION;
+  messages: AssistantChatMessage[];
+  apiMessages: AgentMessage[];
+  idCounter: number;
+  updatedAt: number;
+};
+
+function chatStorageKey(uid: string): string {
+  return `${CHAT_STORAGE_PREFIX}/v${CHAT_STORAGE_VERSION}/${uid}`;
+}
+
+function isStoredMessage(value: unknown): value is AssistantChatMessage {
+  if (!value || typeof value !== 'object') return false;
+  const item = value as Record<string, unknown>;
+  if (
+    typeof item.id !== 'string' ||
+    (item.role !== 'user' && item.role !== 'assistant') ||
+    typeof item.content !== 'string'
+  ) {
+    return false;
+  }
+
+  if (item.proposal !== undefined) {
+    const proposal = item.proposal as Record<string, unknown> | null;
+    if (!proposal || typeof proposal !== 'object' || !Array.isArray(proposal.updates)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isStoredApiMessage(value: unknown): value is AgentMessage {
+  if (!value || typeof value !== 'object') return false;
+  const item = value as Record<string, unknown>;
+  return (
+    (item.role === 'user' || item.role === 'assistant' || item.role === 'tool') &&
+    'content' in item
+  );
+}
+
+function maxStoredMessageId(messages: AssistantChatMessage[]): number {
+  let max = 0;
+  for (const message of messages) {
+    const match = /^m(\d+)$/.exec(message.id);
+    if (match) max = Math.max(max, Number(match[1]));
+  }
+  return max;
+}
+
+function trimApiMessages(messages: AgentMessage[]): AgentMessage[] {
+  if (messages.length <= MAX_STORED_API_MESSAGES) return messages;
+
+  let start = messages.length - MAX_STORED_API_MESSAGES;
+  while (start < messages.length && messages[start].role === 'tool') start += 1;
+  return messages.slice(start);
+}
+
+/**
+ * AsyncStorage should never receive base64 screenshots. The visible chat keeps
+ * its local preview URI; the provider history keeps a short text marker.
+ */
+function sanitizeApiMessagesForStorage(messages: AgentMessage[]): AgentMessage[] {
+  return messages.map((message) => {
+    if (!Array.isArray(message.content)) return message;
+    return {
+      ...message,
+      content: message.content.map((part) =>
+        part.type === 'image_url'
+          ? { type: 'text' as const, text: '[screenshot omitted]' }
+          : part,
+      ),
+    };
+  });
+}
+
+async function loadStoredConversation(
+  uid: string,
+): Promise<StoredAssistantConversation | null> {
+  try {
+    const raw = await AsyncStorage.getItem(chatStorageKey(uid));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (parsed?.version !== CHAT_STORAGE_VERSION) return null;
+    if (!Array.isArray(parsed.messages) || !Array.isArray(parsed.apiMessages)) return null;
+
+    const messages = parsed.messages.filter(isStoredMessage).slice(-MAX_STORED_MESSAGES);
+    const apiMessages = parsed.apiMessages
+      .filter(isStoredApiMessage)
+      .slice(-MAX_STORED_API_MESSAGES);
+    const storedCounter = Number.isFinite(parsed.idCounter) ? Number(parsed.idCounter) : 0;
+    const idCounter = Math.max(storedCounter, maxStoredMessageId(messages));
+
+    return {
+      version: CHAT_STORAGE_VERSION,
+      messages,
+      apiMessages,
+      idCounter,
+      updatedAt: Number(parsed.updatedAt) || 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function saveStoredConversation(
+  uid: string,
+  conversation: StoredAssistantConversation,
+): void {
+  AsyncStorage.setItem(chatStorageKey(uid), JSON.stringify(conversation)).catch(() => {
+    // A lost chat is not worth interrupting the conversation.
+  });
+}
 
 function friendlyError(error: unknown): string {
   if (error instanceof ApiError) {
@@ -116,18 +236,57 @@ export function useAssistant(
     supportsVision?: boolean;
   } = {},
 ) {
-  const { getToken, isDemo } = useAuth();
+  const { getToken, isDemo, uid } = useAuth();
   const [messages, setMessages] = useState<AssistantChatMessage[]>([]);
   const [isSending, setIsSending] = useState(false);
   const [activity, setActivity] = useState<string | null>(null);
+  // The screen is keyed by uid, so an existing uid always starts unhydrated.
+  const [hydrated, setHydrated] = useState(() => !uid || isDemo);
 
   const apiMessages = useRef<AgentMessage[]>([]);
   const controllerRef = useRef<AbortController | null>(null);
   const idRef = useRef(0);
+  const loadedUidRef = useRef<string | null>(null);
 
   const nextId = () => `m${(idRef.current += 1)}`;
 
   useEffect(() => () => controllerRef.current?.abort(), []);
+
+  // The assistant is a modal route, so leaving the screen unmounts the hook.
+  // Restore the visible chat and the provider history for the signed-in user.
+  // The screen remounts with a uid key, so state never leaks between accounts.
+  useEffect(() => {
+    if (!uid || isDemo) return;
+
+    let cancelled = false;
+
+    void loadStoredConversation(uid).then((stored) => {
+      if (cancelled) return;
+      if (stored) {
+        setMessages(stored.messages);
+        apiMessages.current = stored.apiMessages;
+        idRef.current = stored.idCounter;
+      }
+      loadedUidRef.current = uid;
+      setHydrated(true);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isDemo, uid]);
+
+  useEffect(() => {
+    if (!hydrated || !uid || isDemo || loadedUidRef.current !== uid) return;
+
+    saveStoredConversation(uid, {
+      version: CHAT_STORAGE_VERSION,
+      messages: messages.slice(-MAX_STORED_MESSAGES),
+      apiMessages: trimApiMessages(sanitizeApiMessagesForStorage(apiMessages.current)),
+      idCounter: idRef.current,
+      updatedAt: Date.now(),
+    });
+  }, [hydrated, isDemo, messages, uid]);
 
   const send = useCallback(
     async (text: string, attachment?: AssistantAttachment) => {
@@ -136,6 +295,7 @@ export function useAssistant(
       const provider = options.provider;
       const model = options.model;
       if (!prompt || !provider || !model || isSending || isDemo || options.disabled) return;
+      if (!hydrated) return;
 
       const controller = new AbortController();
       controllerRef.current = controller;
@@ -195,21 +355,35 @@ export function useAssistant(
             )}`,
           });
 
-          if (extraction.updates.length === 0) {
-            const summary = extraction.summary.trim();
-            const screen = extraction.screen?.trim().toLowerCase() ?? '';
-            const nonHolding =
-              Boolean(screen) && screen !== 'holdings' && screen !== 'detail';
-            const fallback = nonHolding
-              ? `That looks like a ${screen} screen, not a holdings screen. Open your Holdings screen and try again.`
-              : 'I could not find any readable holding rows in that screenshot. Try a clearer crop.';
+          const screen = extraction.screen?.trim().toLowerCase() ?? '';
+          const isHoldingScreen =
+            !screen || screen === 'holdings' || screen === 'detail';
 
+          // Enforce the screen-type rule locally as well as in the prompt. A
+          // model that mislabels an orders/watchlist screen must not be able to
+          // turn its rows into portfolio changes.
+          if (!isHoldingScreen) {
             setMessages((previous) => [
               ...previous,
               {
                 id: nextId(),
                 role: 'assistant',
-                content: summary || fallback,
+                content: `That looks like a ${screen} screen, not a holdings screen. Open your Holdings screen and try again.`,
+              },
+            ]);
+            return;
+          }
+
+          if (extraction.updates.length === 0) {
+            const summary = extraction.summary.trim();
+            setMessages((previous) => [
+              ...previous,
+              {
+                id: nextId(),
+                role: 'assistant',
+                content:
+                  summary ||
+                  'I could not find any readable holding rows in that screenshot. Try a clearer crop.',
               },
             ]);
             return;
@@ -348,6 +522,7 @@ export function useAssistant(
     [
       context,
       getToken,
+      hydrated,
       isDemo,
       isSending,
       options.disabled,
@@ -386,5 +561,5 @@ export function useAssistant(
     setActivity(null);
   }, []);
 
-  return { messages, isSending, activity, send, reset, updateProposal };
+  return { messages, isSending, activity, isReady: hydrated, send, reset, updateProposal };
 }

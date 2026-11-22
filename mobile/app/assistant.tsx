@@ -120,6 +120,11 @@ async function compressScreenshot(
 }
 
 export default function AssistantScreen() {
+  const { uid } = useAuth();
+  return <AssistantScreenContent key={uid ?? 'signed-out'} />;
+}
+
+function AssistantScreenContent() {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -145,7 +150,10 @@ export default function AssistantScreen() {
   const listRef = useRef<FlatList<AssistantChatMessage>>(null);
 
   const modelsQuery = useAssistantModels();
-  const providers = modelsQuery.data?.providers ?? [];
+  const providers = useMemo(
+    () => modelsQuery.data?.providers ?? [],
+    [modelsQuery.data],
+  );
   const selection = useMemo(
     () => resolveSelection(savedSelection, modelsQuery.data),
     [savedSelection, modelsQuery.data],
@@ -194,17 +202,19 @@ export default function AssistantScreen() {
   );
 
   const disabled = isDemo || isLoading || !selection;
-  const { messages, isSending, activity, send, reset, updateProposal } = useAssistant(context, {
-    disabled,
-    provider: selection?.provider,
-    model: selection?.model,
-    supportsVision: selectedModel ? canReadImages : undefined,
-  });
+  const { messages, isSending, activity, isReady, send, reset, updateProposal } =
+    useAssistant(context, {
+      disabled,
+      provider: selection?.provider,
+      model: selection?.model,
+      supportsVision: selectedModel ? canReadImages : undefined,
+    });
 
   const canSend =
     (input.trim().length > 0 || attachment != null) &&
     !isSending &&
     !isPreparingImage &&
+    isReady &&
     !disabled;
 
   const chooseModel = (next: AssistantSelection) => {

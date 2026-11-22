@@ -123,8 +123,14 @@ describe('buildAssetProposal', () => {
 
     const result = buildAssetProposal(
       {
-        summary: 'Silver Vault',
-        updates: [{ name: 'Silver Vault', quantity: 6.2885 }],
+        summary: 'Silver Vault holding with 6.2885 gm at an average price of ₹159.26.',
+        updates: [
+          {
+            name: 'Silver Vault',
+            quantity: 6.2885,
+            entryPrice: 159.26,
+          },
+        ],
       },
       withSilver,
     );
@@ -136,7 +142,10 @@ describe('buildAssetProposal', () => {
     expect(result.proposal.updates[0]).toMatchObject({
       assetId: 'a4',
       symbol: 'SILVER-INR-GRAM',
-      changes: [{ field: 'quantity', from: 0.0613, to: 6.2885 }],
+      changes: [
+        { field: 'quantity', from: 0.0613, to: 6.2885 },
+        { field: 'entryPrice', from: 158.4, to: 159.26 },
+      ],
     });
   });
 
@@ -226,6 +235,34 @@ describe('buildAssetProposal', () => {
       { field: 'manualPrice', from: null, to: 1650 },
     ]);
   });
+
+  it('builds one proposal with every matched holding', () => {
+    const result = buildAssetProposal(
+      {
+        summary: 'Holdings screenshot',
+        updates: [
+          { symbol: 'HDFCBANK', quantity: 12, entryPrice: 1500 },
+          { name: 'Nifty 50 Index Fund', quantity: 130, entryPrice: 43 },
+          { symbol: 'NOT-A-HOLDING', quantity: 3 },
+          { symbol: 'HDFCBANK.NS', entryPrice: 1510 },
+        ],
+      },
+      assets,
+    );
+
+    expect('proposal' in result).toBe(true);
+    if (!('proposal' in result)) return;
+
+    expect(result.proposal.updates.map((update) => update.assetId)).toEqual(['a1', 'a2']);
+    expect(result.proposal.updates[0].changes).toEqual([
+      { field: 'quantity', from: 10, to: 12 },
+      { field: 'entryPrice', from: 100, to: 1510 },
+    ]);
+    expect(result.proposal.updates[1].changes).toEqual([
+      { field: 'quantity', from: 125.5, to: 130 },
+      { field: 'entryPrice', from: 42.125, to: 43 },
+    ]);
+  });
 });
 
 describe('applyAssetProposal', () => {
@@ -255,6 +292,33 @@ describe('applyAssetProposal', () => {
     expect(next[1]).toBe(assets[1]);
     expect(assets[0].quantity).toBe(10);
     expect(assets[0].manualPrice).toBeUndefined();
+  });
+
+  it('applies every holding in a multi-asset proposal', () => {
+    const multi: AssetUpdateProposal = {
+      ...proposal,
+      updates: [
+        proposal.updates[0],
+        {
+          assetId: 'a2',
+          symbol: 'MF_140084',
+          name: 'Nifty 50 Index Fund',
+          currency: 'INR',
+          changes: [
+            { field: 'quantity', from: 125.5, to: 130 },
+            { field: 'entryPrice', from: 42.125, to: 43 },
+          ],
+        },
+      ],
+    };
+
+    const next = applyAssetProposal(assets, multi);
+
+    expect(next[0]).toMatchObject({ quantity: 12, manualPrice: 1650 });
+    expect(next[1]).toMatchObject({ quantity: 130, entryPrice: 43 });
+    expect(next[2]).toBe(assets[2]);
+    expect(assets[1].quantity).toBe(125.5);
+    expect(assets[1].entryPrice).toBe(42.125);
   });
 });
 
