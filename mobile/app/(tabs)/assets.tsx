@@ -26,13 +26,15 @@ import { EmptyState, ErrorState } from '@/src/components/ui/States';
 import { useAuth } from '@/src/features/auth/AuthProvider';
 import type { Holding } from '@/src/features/portfolio/aggregate';
 import { usePortfolioData } from '@/src/features/portfolio/queries';
-import { formatCompactINR } from '@/src/lib/format/money';
+import { formatCompactINR, formatPercent } from '@/src/lib/format/money';
 import { numeric, radius, space, type } from '@/src/lib/theme/tokens';
 import { useTheme } from '@/src/lib/theme/ThemeProvider';
 
 interface Section {
   title: string;
   total: number;
+  invested: number;
+  pnlPercent: number;
   data: Holding[];
 }
 
@@ -86,11 +88,17 @@ export default function HoldingsScreen() {
       grouped.set(holding.category, list);
     }
 
-    return [...grouped.entries()].map(([title, data]) => ({
-      title,
-      total: data.reduce((sum, item) => sum + item.currentValue, 0),
-      data,
-    }));
+    return [...grouped.entries()].map(([title, data]) => {
+      const total = data.reduce((sum, item) => sum + item.currentValue, 0);
+      const invested = data.reduce((sum, item) => sum + item.investedValue, 0);
+      return {
+        title,
+        total,
+        invested,
+        pnlPercent: invested > 0 ? ((total - invested) / invested) * 100 : 0,
+        data,
+      };
+    });
   }, [summary.holdings, query, category]);
 
   const listHeader = (
@@ -218,9 +226,22 @@ export default function HoldingsScreen() {
         ListHeaderComponent={listHeader}
         renderSectionHeader={({ section }) => (
           <View style={[styles.sectionHeader, { backgroundColor: colors.bg }]}>
-            <Text style={[type.label, { color: colors.muted }]}>{section.title}</Text>
-            <Text style={[styles.sectionTotal, numeric, { color: colors.muted }]}>
-              {formatCompactINR(section.total)}
+            <View style={styles.sectionRow}>
+              <Text style={[type.label, { color: colors.muted }]}>{section.title}</Text>
+              <Text style={[styles.sectionTotal, numeric, { color: colors.muted }]}>
+                {formatCompactINR(section.total)}
+              </Text>
+            </View>
+            <Text style={[styles.sectionMeta, { color: colors.muted }]}>
+              Invested {formatCompactINR(section.invested)} · P&L{' '}
+              <Text
+                style={{
+                  color:
+                    section.pnlPercent >= 0 ? colors.positive : colors.negative,
+                }}
+              >
+                {formatPercent(section.pnlPercent, { signed: true })}
+              </Text>
             </Text>
           </View>
         )}
@@ -271,13 +292,17 @@ const styles = StyleSheet.create({
   searchInput: { flex: 1, fontSize: 14, paddingVertical: space.sm },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
   sectionHeader: {
+    paddingTop: space.lg,
+    paddingBottom: space.sm,
+    gap: 2,
+  },
+  sectionRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingTop: space.lg,
-    paddingBottom: space.sm,
   },
   sectionTotal: { fontSize: 11 },
+  sectionMeta: { fontSize: 11 },
   rowCard: { marginBottom: space.sm },
   skeletonStack: { gap: space.sm },
 });
