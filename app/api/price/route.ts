@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { GoogleAuth } from 'google-auth-library';
 import YahooFinance from 'yahoo-finance2';
 import { fetchFallbackQuote, fetchYahooChartQuote } from '@/lib/market/quotes';
+import { getNseCapCategories } from '@/lib/market/nseCapCategories';
 
 // Prefer IPv4 for the remaining market-data hosts that publish AAAA records
 // Render cannot route. Yahoo itself is rate-limited regardless of address
@@ -153,6 +154,15 @@ export async function GET(request: Request) {
     const refresh = searchParams.get('refresh') === 'true';
     const sync = searchParams.get('sync') === 'true' || refresh;
     const live = searchParams.get('live') !== 'false' || refresh;
+
+    // NSE index membership is the authoritative source for Indian cap buckets.
+    // Start the (cached) load alongside the quote work instead of blocking the
+    // whole request before the sheet read.
+    const needsCapCategories = symbols.some((sym) => sym.endsWith('.NS') || sym.endsWith('.BO'));
+    const capCategoriesPromise = needsCapCategories
+      ? getNseCapCategories()
+      : Promise.resolve(new Map<string, 'Large Cap' | 'Mid Cap' | 'Small Cap'>());
+
     
     // Manual mapping for known problematic Yahoo symbols to AMFI codes
     const MANUAL_MAP: Record<string, string> = {
@@ -913,13 +923,19 @@ export async function GET(request: Request) {
     }
 
     // 4. Return requested symbols with the quote timestamp and fallback flag.
+    const capCategories = await capCategoriesPromise;
     const results = symbols
       .map((sym) => {
         const data = existingData[sym];
         if (!data) return null;
         const meta = quoteMeta[sym];
+        const baseSymbol = sym.replace(/\.(NS|BO)$/i, '').toUpperCase();
+        const capCategory = (sym.endsWith('.NS') || sym.endsWith('.BO'))
+          ? capCategories.get(baseSymbol) || null
+          : null;
         return {
           ...data,
+          capCategory,
           asOf: meta ? meta.asOf : (typeof data.asOf === 'number' ? data.asOf : null),
           // Without quote metadata the value came from the sheet (or a stored
           // fallback), so `live=false` must still flag it as cached.

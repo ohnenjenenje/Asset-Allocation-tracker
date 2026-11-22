@@ -99,6 +99,7 @@ export function usePrices(assets: Asset[], fundHoldings: Record<string, any>) {
                   currency: item.currency,
                   shortName: item.shortName || item.longName || item.symbol,
                   marketCap: item.marketCap,
+                  capCategory: item.capCategory ?? null,
                   quoteType: item.quoteType,
                   sector: item.sector,
                   source: item.source,

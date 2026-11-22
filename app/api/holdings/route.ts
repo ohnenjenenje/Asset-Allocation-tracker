@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import YahooFinance from 'yahoo-finance2';
 import { GoogleAuth } from 'google-auth-library';
+import { normalizeSectorWeightings } from '@/lib/portfolio-utils';
 
 const yahoo = new YahooFinance();
 
@@ -615,10 +616,9 @@ export async function GET(request: Request) {
               holdingName: h.holdingName,
               holdingPercent: h.holdingPercent
             }));
-            const sectorWeightings = (result.topHoldings?.sectorWeightings || []).map((s: any) => ({
-              sector: s.sector,
-              percentage: s.percentage * 100
-            }));
+            const sectorWeightings = normalizeSectorWeightings(
+              result.topHoldings?.sectorWeightings,
+            );
             const hasYahooPortfolio =
               holdings.length > 0 ||
               sectorWeightings.length > 0 ||

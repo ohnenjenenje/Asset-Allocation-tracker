@@ -23,6 +23,8 @@ export type PriceData = {
   currency: string;
   shortName: string;
   marketCap?: number;
+  /** Authoritative Indian cap bucket when the quote source publishes one. */
+  capCategory?: 'Large Cap' | 'Mid Cap' | 'Small Cap' | null;
   quoteType?: string;
   sector?: string;
   source?: string;

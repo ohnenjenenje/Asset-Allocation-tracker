@@ -1,6 +1,18 @@
 import React, { useMemo } from 'react';
 import { Asset, PriceData } from '@/lib/types';
-import { normalizeCategory, getCommoditySubCategory, guessCurrency, getConvertedPrice, getCapCategory, normalizeGroup, formatCompact } from '@/lib/portfolio-utils';
+import {
+  normalizeCategory,
+  getCommoditySubCategory,
+  guessCurrency,
+  getConvertedPrice,
+  getCapCategory,
+  normalizeGroup,
+  formatCompact,
+  isMarketCapCategory,
+  marketCapCategoryFromValue,
+  normalizeSectorWeightings,
+  type MarketCapCategory,
+} from '@/lib/portfolio-utils';
 
 interface UsePortfolioCalculationsParams {
   mergedAssets: Asset[];
@@ -9,6 +21,204 @@ interface UsePortfolioCalculationsParams {
   fundHoldings: Record<string, any>;
   idealAllocation: Record<string, number>;
 }
+
+/** Shared price/currency resolution for every allocation calculation. */
+const resolveAssetValue = (
+  asset: Asset,
+  priceData: PriceData | undefined,
+  usdToInr: number,
+) => {
+  const hasPrice = priceData?.regularMarketPrice != null;
+  const currentPriceRaw = asset.manualPrice !== undefined
+    ? asset.manualPrice
+    : hasPrice
+      ? priceData!.regularMarketPrice
+      : asset.entryPrice;
+
+  let currentCurrency: string;
+  if (asset.manualPrice !== undefined) {
+    currentCurrency = asset.currency || guessCurrency(asset.symbol);
+  } else if (hasPrice) {
+    currentCurrency = priceData!.currency || guessCurrency(asset.symbol);
+    if (typeof asset.symbol === 'string' && asset.symbol.includes('-USD') && currentCurrency === 'INR') {
+      currentCurrency = 'USD';
+    }
+  } else {
+    currentCurrency = asset.currency || guessCurrency(asset.symbol);
+  }
+
+  const currentPrice = getConvertedPrice(currentPriceRaw, currentCurrency, usdToInr);
+  return { currentCurrency, totalValue: currentPrice * asset.quantity };
+};
+
+/** Clamp provider allocation quirks (negative cash, >100% stock) before use. */
+const normalizeFundAllocation = (allocation: any) => {
+  if (!allocation) return null;
+
+  const stock = Math.max(0, Number(allocation.stockPosition) || 0);
+  const bond = Math.max(0, Number(allocation.bondPosition) || 0);
+  const cash = Math.max(0, Number(allocation.cashPosition) || 0);
+  const other =
+    Math.max(0, Number(allocation.otherPosition) || 0) +
+    Math.max(0, Number(allocation.preferredPosition) || 0) +
+    Math.max(0, Number(allocation.convertiblePosition) || 0);
+  const total = stock + bond + cash + other;
+
+  if (total <= 0) return null;
+  return { stock, bond, cash, other, total };
+};
+
+/** Equity portion of an asset, after removing a fund's debt/cash sleeve. */
+const getEquityValue = (
+  asset: Asset,
+  totalValue: number,
+  fundData: any,
+  topCategory: string,
+) => {
+  const isFund = topCategory === 'Mutual Funds' || topCategory === 'ETFs';
+
+  if (isFund && fundData?.assetAllocation) {
+    const allocation = normalizeFundAllocation(fundData.assetAllocation);
+    if (allocation) {
+      return totalValue * (allocation.stock / allocation.total);
+    }
+  }
+
+  if (topCategory === 'Equities') return totalValue;
+
+  if (isFund) {
+    const description = `${asset.name || ''} ${fundData?.categoryName || ''}`.toLowerCase();
+    if (/(debt|bond|liquid|fixed income|gilt|money market)/.test(description)) return 0;
+    if (/(gold|silver|commodity|commodities)/.test(description)) return 0;
+    return totalValue;
+  }
+
+  return 0;
+};
+
+/** Prefer an exchange-published cap bucket over a possibly bad market-cap value. */
+const resolveDirectCap = (
+  priceData: PriceData | undefined,
+  currency: string | undefined,
+  usdToInr: number,
+  name: string,
+): MarketCapCategory | null => {
+  if (priceData?.capCategory && isMarketCapCategory(priceData.capCategory)) {
+    return priceData.capCategory;
+  }
+
+  const fromValue = marketCapCategoryFromValue(priceData?.marketCap, currency, usdToInr);
+  if (fromValue) return fromValue;
+
+  const fromName = getCapCategory(name);
+  return isMarketCapCategory(fromName) ? fromName : null;
+};
+
+/** Whether a fund invests outside the Indian equity market. */
+const isGlobalFund = (asset: Asset, fundData: any): boolean => {
+  const description = `${asset.name || ''} ${fundData?.categoryName || ''}`.toLowerCase();
+  return /(global|international|off[- ]?shore|greater china|china|hong kong|world|us equity|nasdaq|s&p)/.test(description);
+};
+
+/** Best-effort sector label for a fund whose provider returned no sector data. */
+const inferFundSector = (asset: Asset, fundData: any): string | null => {
+  const description = `${asset.name || ''} ${fundData?.categoryName || ''}`.toLowerCase();
+  if (/(debt|bond|liquid|fixed income|gilt|money market)/.test(description)) return null;
+  if (isGlobalFund(asset, fundData)) return 'Global Equity';
+  if (/(equity|index|flexi|multi|large|mid|small|elss|value|momentum|alpha|nifty|sensex|bees|etf)/.test(description)) {
+    return 'Diversified Equity';
+  }
+  return null;
+};
+
+type CapBucket = MarketCapCategory | 'Global Equity' | 'Diversified Equity';
+
+/**
+ * Best-effort cap bucket for a fund. Funds whose mandate spans several cap
+ * buckets (flexi, multi, large+mid) or that invest outside India must not be
+ * forced into a single Indian cap bucket. They get a descriptive bucket
+ * instead of the misleading "Other / Uncategorized".
+ */
+const resolveFundCap = (asset: Asset, fundData: any): CapBucket | null => {
+  const category = getCapCategory(asset.name || asset.symbol, fundData?.categoryName);
+  if (isMarketCapCategory(category)) return category;
+  if (isGlobalFund(asset, fundData)) return 'Global Equity';
+
+  const description = `${asset.name || ''} ${fundData?.categoryName || ''}`.toLowerCase();
+  if (/(flexi|multi|large\s*&?\s*mid|large\s*midcap|mid\s*&?\s*large|diversified|balanced advantage|dynamic asset)/.test(description)) {
+    return 'Diversified Equity';
+  }
+  return null;
+};
+
+/**
+ * Convert provider market-cap weights into normalized buckets.
+ *
+ * Provider payloads include an "others" slice (unclassified holdings or cash).
+ * Turning that into an "Other / Uncategorized" chart slice makes the portfolio
+ * look far less classified than it is. Instead:
+ *   - a fund with a known single cap folds "others" into that cap;
+ *   - a flexi/global fund keeps "others" as its descriptive bucket;
+ *   - when nothing is known, spread "others" proportionally over the reported
+ *     caps so the chart still reconciles to the equity value.
+ */
+const resolveMarketCapWeights = (
+  weights: Record<string, any> | null | undefined,
+  fallbackCap: CapBucket | null,
+): Array<{ cap: CapBucket; weight: number }> => {
+  if (!weights) return [];
+
+  const large = Number(weights.largeCap) || 0;
+  const mid = Number(weights.midCap) || 0;
+  const small = Number(weights.smallCap) || 0;
+  const others = Number(weights.others) || 0;
+  const knownTotal = large + mid + small;
+
+  if (knownTotal > 0) {
+    const allBuckets: Array<{ cap: CapBucket; raw: number }> = [
+      { cap: 'Large Cap', raw: large },
+      { cap: 'Mid Cap', raw: mid },
+      { cap: 'Small Cap', raw: small },
+    ];
+    const buckets = allBuckets.filter((bucket) => bucket.raw > 0);
+
+    if (others <= 0) {
+      return buckets.map((bucket) => ({ cap: bucket.cap, weight: bucket.raw / knownTotal }));
+    }
+
+    if (fallbackCap && isMarketCapCategory(fallbackCap)) {
+      // A single-cap fund's unclassified slice belongs to its own cap bucket.
+      const existing = buckets.find((bucket) => bucket.cap === fallbackCap);
+      if (existing) {
+        existing.raw += others;
+      } else {
+        buckets.push({ cap: fallbackCap, raw: others });
+      }
+      const total = knownTotal + others;
+      return buckets.map((bucket) => ({ cap: bucket.cap, weight: bucket.raw / total }));
+    }
+
+    if (fallbackCap === 'Global Equity') {
+      // Indian cap weights are not meaningful for a global fund; keep the
+      // unclassified slice in the descriptive global bucket.
+      return [
+        ...buckets.map((bucket) => ({ cap: bucket.cap, weight: bucket.raw / (knownTotal + others) })),
+        { cap: fallbackCap, weight: others / (knownTotal + others) },
+      ];
+    }
+
+    // Flexi/multi-cap or unknown mandate: spread the unclassified slice over
+    // the reported caps so the chart stays within real cap buckets.
+    return buckets.map((bucket) => ({ cap: bucket.cap, weight: bucket.raw / knownTotal }));
+  }
+
+  if (others > 0) {
+    return [{ cap: fallbackCap || 'Diversified Equity', weight: 1 }];
+  }
+
+  return [];
+};
+
 
 export function usePortfolioCalculations({
   mergedAssets,
@@ -115,14 +325,12 @@ export function usePortfolioCalculations({
     const topCategory = normalizeCategory(topCategoryRaw);
     
     if ((topCategory === 'Mutual Funds' || topCategory === 'ETFs') && fundHoldings[asset.symbol]?.assetAllocation) {
-      const alloc = fundHoldings[asset.symbol].assetAllocation;
-      const totalAlloc = (alloc.stockPosition || 0) + (alloc.bondPosition || 0) + (alloc.cashPosition || 0) + (alloc.otherPosition || 0) + (alloc.preferredPosition || 0) + (alloc.convertiblePosition || 0);
-      
-      if (totalAlloc > 0) {
+      const allocation = normalizeFundAllocation(fundHoldings[asset.symbol].assetAllocation);
+
+      if (allocation) {
         const addValue = (cat: string, pct: number) => {
           if (pct <= 0) return;
-          const normalizedPct = pct / totalAlloc;
-          const val = value * normalizedPct;
+          const val = value * (pct / allocation.total);
           const existing = acc.find(item => item.name.trim() === cat.trim());
           if (existing) {
             existing.value += val;
@@ -133,37 +341,33 @@ export function usePortfolioCalculations({
           }
         };
         
-        const assetNameLower = String(asset.name || '').toLowerCase();
-        const isGlobalFund = assetNameLower.includes('off-shore') || assetNameLower.includes('china') || assetNameLower.includes('global') || assetNameLower.includes('international') || assetNameLower.includes('nasdaq') || assetNameLower.includes('s&p') || assetNameLower.includes('us equity');
-        
-        if (isGlobalFund) {
-          addValue('Equities > Global Equity', alloc.stockPosition || 0);
-        } else {
-          const mcapWeightage = fundHoldings[asset.symbol]?.marketCapWeightage;
-          const large = Number(mcapWeightage?.largeCap) || 0;
-          const mid = Number(mcapWeightage?.midCap) || 0;
-          const small = Number(mcapWeightage?.smallCap) || 0;
-          const others = Number(mcapWeightage?.others) || 0;
-          const totalWeight = large + mid + small + others;
+        const stockPos = allocation.stock;
+        const fundCap = resolveFundCap(asset, fundHoldings[asset.symbol]);
+        const capWeights = resolveMarketCapWeights(
+          fundHoldings[asset.symbol]?.marketCapWeightage,
+          fundCap,
+        );
 
-          if (totalWeight > 0) {
-            const stockPos = alloc.stockPosition || 0;
-            addValue('Equities > Domestic Equity > Large Cap', stockPos * (large / totalWeight));
-            addValue('Equities > Domestic Equity > Mid Cap', stockPos * (mid / totalWeight));
-            addValue('Equities > Domestic Equity > Small Cap', stockPos * (small / totalWeight));
-            if (others > 0) addValue('Equities > Domestic Equity', stockPos * (others / totalWeight));
-          } else {
-            const cap = getCapCategory(asset.name, fundHoldings[asset.symbol]?.categoryName);
-            if (cap === 'Large Cap' || cap === 'Mid Cap' || cap === 'Small Cap') {
-              addValue('Equities > Domestic Equity > ' + cap, alloc.stockPosition || 0);
+        if (isGlobalFund(asset, fundHoldings[asset.symbol])) {
+          addValue('Equities > Global Equity', stockPos);
+        } else if (capWeights.length > 0) {
+          capWeights.forEach(({ cap, weight }) => {
+            if (cap === 'Global Equity') {
+              addValue('Equities > Global Equity', stockPos * weight);
+            } else if (cap === 'Diversified Equity') {
+              addValue('Equities > Domestic Equity', stockPos * weight);
             } else {
-              addValue('Equities > Domestic Equity', alloc.stockPosition || 0);
+              addValue(`Equities > Domestic Equity > ${cap}`, stockPos * weight);
             }
-          }
+          });
+        } else if (fundCap) {
+          addValue(`Equities > Domestic Equity > ${fundCap}`, stockPos);
+        } else {
+          addValue('Equities > Domestic Equity', stockPos);
         }
-        addValue('Fixed Income', alloc.bondPosition || 0);
-        addValue('Cash', alloc.cashPosition || 0);
-        addValue('Other', (alloc.otherPosition || 0) + (alloc.preferredPosition || 0) + (alloc.convertiblePosition || 0));
+        addValue('Fixed Income', allocation.bond);
+        addValue('Cash', allocation.cash);
+        addValue('Other', allocation.other);
         return acc;
       }
     }
@@ -177,18 +381,10 @@ export function usePortfolioCalculations({
     let finalCategory = topCategory;
     if (finalCategory === 'Equities') {
       if (isDomestic(asset)) {
-        // Use real-time market cap data (same thresholds as Market Cap chart)
-        let cap: string | null = null;
-        if (priceData?.marketCap) {
-          const capInUsd = currentCurrency === 'INR' ? priceData.marketCap / usdToInr : priceData.marketCap;
-          if (capInUsd >= 10_000_000_000) cap = 'Large Cap';
-          else if (capInUsd >= 2_000_000_000) cap = 'Mid Cap';
-          else cap = 'Small Cap';
-        } else {
-          // Fallback to name-matching if no market cap data
-          cap = getCapCategory(asset.name || asset.symbol);
-        }
-        if (cap === 'Large Cap' || cap === 'Mid Cap' || cap === 'Small Cap') {
+        // Prefer the exchange's index-membership bucket over a raw market cap;
+        // provider market-cap values occasionally use the wrong currency.
+        const cap = resolveDirectCap(priceData, currentCurrency, usdToInr, asset.name || asset.symbol);
+        if (isMarketCapCategory(cap)) {
           finalCategory = 'Equities > Domestic Equity > ' + cap;
         } else {
           finalCategory = 'Equities > Domestic Equity';
@@ -202,18 +398,14 @@ export function usePortfolioCalculations({
       const catName = (fundHoldings[asset.symbol]?.categoryName || '').toLowerCase();
       if (catName.includes('debt') || catName.includes('bond') || catName.includes('liquid') || catName.includes('fixed')) {
         finalCategory = 'Fixed Income';
+      } else if (isGlobalFund(asset, fundHoldings[asset.symbol])) {
+        finalCategory = 'Equities > Global Equity';
       } else {
-        const assetName = String(asset.name || '').toLowerCase();
-        const isGlobalFund = assetName.includes('off-shore') || assetName.includes('china') || assetName.includes('global') || assetName.includes('international');
-        if (isGlobalFund) {
-          finalCategory = 'Equities > Global Equity';
+        const cap = resolveFundCap(asset, fundHoldings[asset.symbol]);
+        if (isMarketCapCategory(cap)) {
+          finalCategory = 'Equities > Domestic Equity > ' + cap;
         } else {
-          const cap = getCapCategory(asset.name, fundHoldings[asset.symbol]?.categoryName);
-          if (cap === 'Large Cap' || cap === 'Mid Cap' || cap === 'Small Cap') {
-            finalCategory = 'Equities > Domestic Equity > ' + cap;
-          } else {
-            finalCategory = 'Equities > Domestic Equity';
-          }
+          finalCategory = 'Equities > Domestic Equity';
         }
       }
     } else if (finalCategory === 'Commodities') {
@@ -356,24 +548,15 @@ export function usePortfolioCalculations({
 
   assets.forEach(asset => {
     const priceData = prices[asset.symbol];
-    const hasPrice = priceData?.regularMarketPrice != null;
-    const currentPriceRaw = asset.manualPrice !== undefined ? asset.manualPrice : (hasPrice ? priceData.regularMarketPrice : asset.entryPrice);
-    
-    let currentCurrency;
-    if (asset.manualPrice !== undefined) {
-      currentCurrency = asset.currency || guessCurrency(asset.symbol);
-    } else if (hasPrice) {
-      currentCurrency = priceData.currency || guessCurrency(asset.symbol);
-      if (typeof asset.symbol === 'string' && asset.symbol.includes('-USD') && currentCurrency === 'INR') currentCurrency = 'USD';
-    } else {
-      currentCurrency = asset.currency || guessCurrency(asset.symbol);
-    }
-    
-    const currentPrice = getConvertedPrice(currentPriceRaw, currentCurrency, usdToInr);
-    const totalValue = currentPrice * asset.quantity;
+    const { currentCurrency, totalValue } = resolveAssetValue(asset, priceData, usdToInr);
 
     const fundData = fundHoldings[asset.symbol];
     const holdings = Array.isArray(fundData) ? fundData : (fundData?.holdings || []);
+    const topCategoryRaw = asset.categoryPath && asset.categoryPath.length > 0 ? asset.categoryPath[0] : asset.type;
+    const topCategory = normalizeCategory(topCategoryRaw);
+    // Use the equity sleeve for funds so cash/debt is not attributed to the
+    // underlying stocks. Debt funds with no equity still keep their holdings.
+    const exposureBase = getEquityValue(asset, totalValue, fundData, topCategory) || totalValue;
     
     if (holdings && holdings.length > 0) {
       let accountedPercent = 0;
@@ -384,7 +567,7 @@ export function usePortfolioCalculations({
         const percentRaw = h.holdingPercent || 0;
         const percent = isPercentageScale ? percentRaw / 100 : percentRaw;
         accountedPercent += percent;
-        const value = totalValue * percent;
+        const value = exposureBase * percent;
         
         if (underlyingExposure[h.symbol]) {
           underlyingExposure[h.symbol].value += value;
@@ -407,7 +590,7 @@ export function usePortfolioCalculations({
         underlyingExposure[remKey] = {
           symbol: remKey,
           name: `Other (${asset.name})`,
-          value: totalValue * remainingPercent,
+          value: exposureBase * remainingPercent,
           type: 'OTHER',
           marketCapCategory: getCapCategory(asset.name, fundData?.categoryName) || undefined
         };
@@ -463,161 +646,166 @@ export function usePortfolioCalculations({
 
   assets.forEach(asset => {
     const priceData = prices[asset.symbol];
-    const hasPrice = priceData?.regularMarketPrice != null;
-    const currentPriceRaw = asset.manualPrice !== undefined ? asset.manualPrice : (hasPrice ? priceData.regularMarketPrice : asset.entryPrice);
-    
-    let currentCurrency;
-    if (asset.manualPrice !== undefined) {
-      currentCurrency = asset.currency || guessCurrency(asset.symbol);
-    } else if (hasPrice) {
-      currentCurrency = priceData.currency || guessCurrency(asset.symbol);
-      if (typeof asset.symbol === 'string' && asset.symbol.includes('-USD') && currentCurrency === 'INR') currentCurrency = 'USD';
-    } else {
-      currentCurrency = asset.currency || guessCurrency(asset.symbol);
-    }
-    
-    const currentPrice = getConvertedPrice(currentPriceRaw, currentCurrency, usdToInr);
-    const totalValue = currentPrice * asset.quantity;
+    const { currentCurrency, totalValue } = resolveAssetValue(asset, priceData, usdToInr);
 
-    // 1. Determine the Equity portion of this asset (matching Asset Allocation logic)
-    let equityValue = 0;
     const topCategoryRaw = asset.categoryPath && asset.categoryPath.length > 0 ? asset.categoryPath[0] : asset.type;
     const topCategory = normalizeCategory(topCategoryRaw);
     const fundData = fundHoldings[asset.symbol];
-    
-    if ((topCategory === 'Mutual Funds' || topCategory === 'ETFs') && fundData?.assetAllocation) {
-      const alloc = fundData.assetAllocation;
-      const totalAlloc = (alloc.stockPosition || 0) + (alloc.bondPosition || 0) + (alloc.cashPosition || 0) + (alloc.otherPosition || 0) + (alloc.preferredPosition || 0) + (alloc.convertiblePosition || 0);
-      if (totalAlloc > 0) {
-        equityValue = totalValue * ((alloc.stockPosition || 0) / totalAlloc);
-      }
-    } else {
-      let finalCategory = topCategory;
-      if (finalCategory === 'Mutual Funds') {
-        const catName = (fundData?.categoryName || '').toLowerCase();
-        if (catName.includes('debt') || catName.includes('bond') || catName.includes('liquid') || catName.includes('fixed')) {
-          finalCategory = 'Fixed Income';
-        } else {
-          finalCategory = 'Equities';
-        }
-      }
-      if (finalCategory === 'Equities') {
-        equityValue = totalValue;
-      }
-    }
+    const equityValue = getEquityValue(asset, totalValue, fundData, topCategory);
 
     if (equityValue <= 0) return;
 
-    // 2. Distribute the Equity value across Market Caps
+    const isFund = topCategory === 'Mutual Funds' || topCategory === 'ETFs';
+    const type = (asset.type || '').toUpperCase();
+    const isDirect = !isFund && (type === 'EQUITY' || type === 'STOCK');
     const holdings = Array.isArray(fundData) ? fundData : (fundData?.holdings || []);
     const mcapWeightage = fundData?.marketCapWeightage;
-    
-    if (mcapWeightage && (Number(mcapWeightage.largeCap) > 0 || Number(mcapWeightage.midCap) > 0 || Number(mcapWeightage.smallCap) > 0)) {
-      // Use the API-provided market cap allocation directly
-      const large = Number(mcapWeightage.largeCap) || 0;
-      const mid = Number(mcapWeightage.midCap) || 0;
-      const small = Number(mcapWeightage.smallCap) || 0;
-      const others = Number(mcapWeightage.others) || 0;
-      const totalWeight = large + mid + small + others;
-      
-      const nonEquity = totalValue - equityValue;
-      
-      const allocateCap = (capName: string, weight: number) => {
-        if (weight <= 0) return;
-        const capValue = equityValue * (weight / totalWeight);
-        
-        const otherAllocations: {name: string, value: number}[] = [];
-        if (large > 0 && capName !== 'Large Cap') otherAllocations.push({ name: 'Large Cap', value: equityValue * (large / totalWeight) });
-        if (mid > 0 && capName !== 'Mid Cap') otherAllocations.push({ name: 'Mid Cap', value: equityValue * (mid / totalWeight) });
-        if (small > 0 && capName !== 'Small Cap') otherAllocations.push({ name: 'Small Cap', value: equityValue * (small / totalWeight) });
-        if (others > 0 && capName !== 'Other / Uncategorized') otherAllocations.push({ name: 'Other / Uncategorized', value: equityValue * (others / totalWeight) });
+    const hasMcapWeights = Boolean(
+      mcapWeightage &&
+      (Number(mcapWeightage.largeCap) > 0 ||
+        Number(mcapWeightage.midCap) > 0 ||
+        Number(mcapWeightage.smallCap) > 0),
+    );
+    const nonEquity = Math.max(0, totalValue - equityValue);
+
+    const fundCap = isFund ? (resolveFundCap(asset, fundData) || 'Diversified Equity') : null;
+    const capWeights = hasMcapWeights
+      ? resolveMarketCapWeights(mcapWeightage, fundCap)
+      : [];
+
+    if (capWeights.length > 0) {
+      capWeights.forEach(({ cap, weight }) => {
+        const capValue = equityValue * weight;
+        if (capValue <= 0) return;
+
+        const otherAllocations: { name: string; value: number }[] = capWeights
+          .filter((other) => other.cap !== cap)
+          .map((other) => ({ name: other.cap, value: equityValue * other.weight }))
+          .filter((other) => other.value > 0);
         if (nonEquity > 0) otherAllocations.push({ name: 'Non-Equity / Debt', value: nonEquity });
-        
-        addToMarketCap(capName, capValue, false, asset.name, asset.symbol, undefined, otherAllocations);
-      };
-      
-      allocateCap('Large Cap', large);
-      allocateCap('Mid Cap', mid);
-      allocateCap('Small Cap', small);
-      allocateCap('Other / Uncategorized', others);
-      
-    } else if (holdings && holdings.length > 0) {
-      let mappedHoldingsValue = 0;
-      let totalHoldingPercent = holdings.reduce((sum: number, h: any) => sum + (h.holdingPercent || 0), 0);
-      let isPercentageScale = totalHoldingPercent > 1.5;
 
-      const fundCapExposure: Record<string, { total: number, holdings: {name: string, value: number}[] }> = {};
+        addToMarketCap(cap, capValue, false, asset.name, asset.symbol, undefined, otherAllocations);
+      });
+      return;
+    }
 
-      holdings.forEach((h: any) => {
-        const percentRaw = h.holdingPercent || 0;
+    // Prefer the fund's own category when it names a single cap bucket. This
+    // keeps a NASDAQ-100 or S&P-500 ETF out of "Other" even when its cached
+    // holdings only cover the top ten names.
+    const categoryCap = isFund && isMarketCapCategory(fundCap) ? fundCap : null;
+
+    if (categoryCap) {
+      const totalHoldingPercent = holdings.reduce(
+        (sum: number, holding: any) => sum + (holding.holdingPercent || 0),
+        0,
+      );
+      const isPercentageScale = totalHoldingPercent > 1.5;
+      const subHoldings = holdings.length > 0
+        ? holdings.map((holding: any) => ({
+            name: holding.holdingName || holding.symbol,
+            value: equityValue * (isPercentageScale
+              ? (holding.holdingPercent || 0) / 100
+              : (holding.holdingPercent || 0)),
+          }))
+        : undefined;
+
+      const otherAllocations: { name: string; value: number }[] = [];
+      if (nonEquity > 0) otherAllocations.push({ name: 'Non-Equity / Debt', value: nonEquity });
+      addToMarketCap(categoryCap, equityValue, false, asset.name, asset.symbol, subHoldings, otherAllocations);
+      return;
+    }
+
+    if (holdings.length > 0) {
+      const totalHoldingPercent = holdings.reduce(
+        (sum: number, holding: any) => sum + (holding.holdingPercent || 0),
+        0,
+      );
+      const isPercentageScale = totalHoldingPercent > 1.5;
+      const fundCapExposure: Record<string, { total: number; holdings: { name: string; value: number }[] }> = {};
+
+      holdings.forEach((holding: any) => {
+        const percentRaw = holding.holdingPercent || 0;
         const percent = isPercentageScale ? percentRaw / 100 : percentRaw;
-        const holdingValue = totalValue * percent;
-        
-        // Only map equity holdings
-        const hPriceData = prices[h.symbol];
-        let cap = 'Other / Uncategorized';
-        if (hPriceData?.marketCap) {
-          const hCurrency = hPriceData.currency || 'INR';
-          const capInUsd = hCurrency === 'INR' ? hPriceData.marketCap / usdToInr : hPriceData.marketCap;
-          if (capInUsd >= 10_000_000_000) cap = 'Large Cap';
-          else if (capInUsd >= 2_000_000_000) cap = 'Mid Cap';
-          else cap = 'Small Cap';
-        } else {
-          const cat = getCapCategory(h.holdingName);
-          if (cat) cap = cat;
-        }
+        const holdingValue = equityValue * percent;
+
+        const holdingPriceData = prices[holding.symbol];
+        const holdingCap = holdingPriceData?.capCategory && isMarketCapCategory(holdingPriceData.capCategory)
+          ? holdingPriceData.capCategory
+          : marketCapCategoryFromValue(
+              holdingPriceData?.marketCap,
+              holdingPriceData?.currency,
+              usdToInr,
+            );
+        const nameCap = getCapCategory(holding.holdingName);
+        const cap = holdingCap || (isMarketCapCategory(nameCap) ? nameCap : null);
+
+        // Leave unknown holdings for the fund-level fallback below.
+        if (!cap) return;
 
         if (!fundCapExposure[cap]) fundCapExposure[cap] = { total: 0, holdings: [] };
         fundCapExposure[cap].total += holdingValue;
-        fundCapExposure[cap].holdings.push({ name: h.holdingName || h.symbol, value: holdingValue });
-        
-        mappedHoldingsValue += holdingValue;
+        fundCapExposure[cap].holdings.push({
+          name: holding.holdingName || holding.symbol,
+          value: holdingValue,
+        });
       });
 
-      const nonEquity = totalValue - equityValue;
+      const rawMappedValue = Object.values(fundCapExposure).reduce((sum, data) => sum + data.total, 0);
+
+      // A provider's top-10 list often covers only part of the fund. When no
+      // individual holding is classifiable, use the fund's mandate instead of
+      // an "Other / Uncategorized" slice.
+      if (rawMappedValue <= 0) {
+        const fallback = fundCap || 'Diversified Equity';
+        const subHoldings = holdings.map((holding: any) => ({
+          name: holding.holdingName || holding.symbol,
+          value: equityValue * (isPercentageScale
+            ? (holding.holdingPercent || 0) / 100
+            : (holding.holdingPercent || 0)),
+        }));
+        const otherAllocations: { name: string; value: number }[] = [];
+        if (nonEquity > 0) otherAllocations.push({ name: 'Non-Equity / Debt', value: nonEquity });
+
+        addToMarketCap(fallback, equityValue, false, asset.name, asset.symbol, subHoldings, otherAllocations);
+        return;
+      }
+
+      const scale = rawMappedValue > equityValue ? equityValue / rawMappedValue : 1;
+      const mappedValue = rawMappedValue * scale;
+      const unmappedEquity = Math.max(0, equityValue - mappedValue);
 
       Object.entries(fundCapExposure).forEach(([cap, data]) => {
-        const otherAllocations: {name: string, value: number}[] = [];
-        Object.entries(fundCapExposure).forEach(([otherCap, otherData]) => {
-          if (otherCap !== cap && otherData.total > 0) {
-            otherAllocations.push({ name: otherCap, value: otherData.total });
-          }
-        });
-        const unmappedEquity = Math.max(0, equityValue - mappedHoldingsValue);
-        if (unmappedEquity > 0) otherAllocations.push({ name: 'Unmapped Equity', value: unmappedEquity });
+        const share = unmappedEquity * (data.total / rawMappedValue);
+        const otherAllocations = Object.entries(fundCapExposure)
+          .filter(([otherCap]) => otherCap !== cap)
+          .map(([otherCap, otherData]) => ({
+            name: otherCap,
+            value: otherData.total * scale + unmappedEquity * (otherData.total / rawMappedValue),
+          }))
+          .filter((other) => other.value > 0);
         if (nonEquity > 0) otherAllocations.push({ name: 'Non-Equity / Debt', value: nonEquity });
 
-        addToMarketCap(cap, data.total, false, asset.name, asset.symbol, data.holdings, otherAllocations);
+        addToMarketCap(
+          cap,
+          data.total * scale + share,
+          false,
+          asset.name,
+          asset.symbol,
+          data.holdings.map((holding) => ({ ...holding, value: holding.value * scale })),
+          otherAllocations,
+        );
       });
-
-      // Any remaining equity value that wasn't mapped via holdings goes to Uncategorized
-      const unmappedEquity = Math.max(0, equityValue - mappedHoldingsValue);
-      if (unmappedEquity > 0) {
-        const otherAllocations: {name: string, value: number}[] = [];
-        Object.entries(fundCapExposure).forEach(([otherCap, otherData]) => {
-          if (otherData.total > 0) otherAllocations.push({ name: otherCap, value: otherData.total });
-        });
-        if (nonEquity > 0) otherAllocations.push({ name: 'Non-Equity / Debt', value: nonEquity });
-
-        addToMarketCap('Other / Uncategorized', unmappedEquity, false, `Unmapped Equity (${asset.name})`, `${asset.symbol}-unmapped`, undefined, otherAllocations);
-      }
-    } else {
-      // Direct stock or fund with no holdings data
-      let cap = 'Other / Uncategorized';
-      const type = (asset.type || '').toUpperCase();
-      const isDirect = type === 'EQUITY' || type === 'STOCK';
-      
-      if (priceData?.marketCap) {
-        const capInUsd = currentCurrency === 'INR' ? priceData.marketCap / usdToInr : priceData.marketCap;
-        if (capInUsd >= 10_000_000_000) cap = 'Large Cap';
-        else if (capInUsd >= 2_000_000_000) cap = 'Mid Cap';
-        else cap = 'Small Cap';
-      } else {
-        const cat = getCapCategory(asset.name, fundData?.categoryName);
-        if (cat) cap = cat;
-      }
-      addToMarketCap(cap, equityValue, isDirect, asset.name, asset.symbol);
+      return;
     }
+
+    // Direct stock or fund with no holdings data.
+    let cap: string = 'Other / Uncategorized';
+    if (isDirect) {
+      cap = resolveDirectCap(priceData, currentCurrency, usdToInr, asset.name) || 'Other / Uncategorized';
+    } else if (isFund) {
+      cap = fundCap || 'Diversified Equity';
+    }
+    addToMarketCap(cap, equityValue, isDirect, asset.name, asset.symbol);
   });
 
   const marketCapData = Object.entries(marketCapAllocation)
@@ -662,158 +850,99 @@ export function usePortfolioCalculations({
 
   assets.forEach(asset => {
     const priceData = prices[asset.symbol];
-    const hasPrice = priceData?.regularMarketPrice != null;
-    const currentPriceRaw = asset.manualPrice !== undefined ? asset.manualPrice : (hasPrice ? priceData.regularMarketPrice : asset.entryPrice);
-    
-    let currentCurrency;
-    if (asset.manualPrice !== undefined) {
-      currentCurrency = asset.currency || guessCurrency(asset.symbol);
-    } else if (hasPrice) {
-      currentCurrency = priceData.currency || guessCurrency(asset.symbol);
-      if (typeof asset.symbol === 'string' && asset.symbol.includes('-USD') && currentCurrency === 'INR') currentCurrency = 'USD';
-    } else {
-      currentCurrency = asset.currency || guessCurrency(asset.symbol);
-    }
-    
-    const currentPrice = getConvertedPrice(currentPriceRaw, currentCurrency, usdToInr);
-    const totalValue = currentPrice * asset.quantity;
+    const { currentCurrency, totalValue } = resolveAssetValue(asset, priceData, usdToInr);
 
-    // 1. Determine the Equity portion of this asset
-    let equityValue = 0;
     const topCategoryRaw = asset.categoryPath && asset.categoryPath.length > 0 ? asset.categoryPath[0] : asset.type;
     const topCategory = normalizeCategory(topCategoryRaw);
     const fundData = fundHoldings[asset.symbol];
-    
-    if ((topCategory === 'Mutual Funds' || topCategory === 'ETFs') && fundData?.assetAllocation) {
-      const alloc = fundData.assetAllocation;
-      const totalAlloc = (alloc.stockPosition || 0) + (alloc.bondPosition || 0) + (alloc.cashPosition || 0) + (alloc.otherPosition || 0) + (alloc.preferredPosition || 0) + (alloc.convertiblePosition || 0);
-      if (totalAlloc > 0) {
-        equityValue = totalValue * ((alloc.stockPosition || 0) / totalAlloc);
-      }
-    } else {
-      let finalCategory = topCategory;
-      if (finalCategory === 'Mutual Funds') {
-        const catName = (fundData?.categoryName || '').toLowerCase();
-        if (catName.includes('debt') || catName.includes('bond') || catName.includes('liquid') || catName.includes('fixed')) {
-          finalCategory = 'Fixed Income';
-        } else {
-          finalCategory = 'Equities';
-        }
-      }
-      if (finalCategory === 'Equities') {
-        equityValue = totalValue;
-      }
-    }
+    const equityValue = getEquityValue(asset, totalValue, fundData, topCategory);
 
     if (equityValue <= 0) return; // Only allocate equity to sectors
 
-    const sectors = fundData?.sectorWeightings || [];
-    
-    // Determine cap category for this asset
-    let cap = 'Other / Uncategorized';
+    const isFund = topCategory === 'Mutual Funds' || topCategory === 'ETFs';
     const type = (asset.type || '').toUpperCase();
-    if (type === 'EQUITY' || type === 'STOCK') {
-       if (priceData?.marketCap) {
-         const capInUsd = priceData.currency === 'INR' ? priceData.marketCap / usdToInr : priceData.marketCap;
-         if (capInUsd >= 10_000_000_000) cap = 'Large Cap';
-         else if (capInUsd >= 2_000_000_000) cap = 'Mid Cap';
-         else cap = 'Small Cap';
-       } else {
-         cap = getCapCategory(asset.name) || 'Other / Uncategorized';
-       }
-    } else if (type === 'MUTUALFUND' || type === 'ETF') {
-       cap = getCapCategory(asset.name, fundData?.categoryName) || 'Other / Uncategorized';
-    }
+    const isDirect = !isFund && (type === 'EQUITY' || type === 'STOCK');
+    const nonEquity = Math.max(0, totalValue - equityValue);
+    const sectors = isFund ? normalizeSectorWeightings(fundData?.sectorWeightings) : [];
+    const sectorTotal = sectors.reduce((sum, sector) => sum + sector.percentage, 0);
 
-    let defaultCap = 'Other / Uncategorized';
-    if (type === 'EQUITY' || type === 'STOCK') {
-       if (priceData?.marketCap) {
-         const capInUsd = currentCurrency === 'INR' ? priceData.marketCap / usdToInr : priceData.marketCap;
-         if (capInUsd >= 10_000_000_000) defaultCap = 'Large Cap';
-         else if (capInUsd >= 2_000_000_000) defaultCap = 'Mid Cap';
-         else defaultCap = 'Small Cap';
-       } else {
-         defaultCap = getCapCategory(asset.name) || 'Other / Uncategorized';
-       }
-    } else {
-       defaultCap = getCapCategory(asset.name, fundData?.categoryName) || 'Other / Uncategorized';
-    }
+    const fundCap = isFund ? (resolveFundCap(asset, fundData) || 'Diversified Equity') : null;
+    const defaultCap = isDirect
+      ? (resolveDirectCap(priceData, currentCurrency, usdToInr, asset.name) || 'Other / Uncategorized')
+      : (fundCap || 'Other / Uncategorized');
+    const capWeights = isFund
+      ? resolveMarketCapWeights(fundData?.marketCapWeightage, fundCap)
+      : [];
 
-    const distributeSectorToCap = (sName: string, sValue: number) => {
-      const mcap = fundData?.marketCapWeightage;
-      const isLikelyETF = type === 'ETF' || String(asset.name || '').toLowerCase().includes('etf') || String(asset.name || '').toLowerCase().includes('bees') || String(asset.symbol || '').toLowerCase().includes('bees') || String(asset.symbol || '').toLowerCase().includes('alpha');
-      const isDirectLoc = (type === 'EQUITY' || type === 'STOCK') && !isLikelyETF;
-
-      if (!isDirectLoc && mcap && (Number(mcap.largeCap) > 0 || Number(mcap.midCap) > 0 || Number(mcap.smallCap) > 0)) {
-        const large = Number(mcap.largeCap) || 0;
-        const mid = Number(mcap.midCap) || 0;
-        const small = Number(mcap.smallCap) || 0;
-        const others = Number(mcap.others) || 0;
-        const totalWeight = large + mid + small + others;
-        
-        const add = (c: string, weight: number) => {
+    const distributeSectorToCap = (sectorName: string, sectorValue: number) => {
+      if (capWeights.length > 0) {
+        capWeights.forEach(({ cap, weight }) => {
           if (weight <= 0) return;
-          if (!sectorByMarketCap[c]) sectorByMarketCap[c] = {};
-          sectorByMarketCap[c][sName] = (sectorByMarketCap[c][sName] || 0) + sValue * (weight / totalWeight);
-        };
-        add('Large Cap', large);
-        add('Mid Cap', mid);
-        add('Small Cap', small);
-        add('Other / Uncategorized', others);
+          if (!sectorByMarketCap[cap]) sectorByMarketCap[cap] = {};
+          sectorByMarketCap[cap][sectorName] =
+            (sectorByMarketCap[cap][sectorName] || 0) + sectorValue * weight;
+        });
       } else {
         if (!sectorByMarketCap[defaultCap]) sectorByMarketCap[defaultCap] = {};
-        sectorByMarketCap[defaultCap][sName] = (sectorByMarketCap[defaultCap][sName] || 0) + sValue;
+        sectorByMarketCap[defaultCap][sectorName] =
+          (sectorByMarketCap[defaultCap][sectorName] || 0) + sectorValue;
       }
     };
 
-    if (sectors.length > 0 && !asset.manualSector) {
-      let mappedSectorValue = 0;
-      sectors.forEach((s: any) => {
-        mappedSectorValue += equityValue * ((s.percentage || 0) / 100);
-      });
-      
-      const unmappedSector = Math.max(0, equityValue - mappedSectorValue);
-      const nonEquity = totalValue - equityValue;
+    if (sectors.length > 0 && sectorTotal > 0 && !asset.manualSector) {
+      // Normalize to 100% of the equity sleeve. Upvaly's weights often sum to
+      // the stock allocation (e.g. 94.9%) rather than 100%, while Yahoo's sum
+      // to ~100%. Scaling to the sleeve prevents a phantom "Other" slice.
+      const fullCoverage = sectorTotal >= 50;
+      const scale = fullCoverage ? equityValue / sectorTotal : equityValue / 100;
+      const coveredValue = sectors.reduce(
+        (sum, sector) => sum + sector.percentage * scale,
+        0,
+      );
 
-      sectors.forEach((s: any) => {
-        const sectorName = s.sector || 'Other';
-        const percent = (s.percentage || 0) / 100;
-        const val = equityValue * percent;
+      sectors.forEach((sector) => {
+        const value = sector.percentage * scale;
+        if (value <= 0) return;
 
-        const otherAllocations: {name: string, value: number}[] = [];
-        sectors.forEach((otherS: any) => {
-          const otherSectorName = otherS.sector || 'Other';
-          if (otherSectorName !== sectorName) {
-            const otherVal = equityValue * ((otherS.percentage || 0) / 100);
-            if (otherVal > 0) otherAllocations.push({ name: otherSectorName, value: otherVal });
-          }
-        });
-        if (unmappedSector > 0) otherAllocations.push({ name: 'Unmapped Equity', value: unmappedSector });
+        const otherAllocations = sectors
+          .filter((other) => other.sector !== sector.sector)
+          .map((other) => ({ name: other.sector, value: other.percentage * scale }))
+          .filter((other) => other.value > 0);
         if (nonEquity > 0) otherAllocations.push({ name: 'Non-Equity / Debt', value: nonEquity });
 
-        addToSector(sectorName, val, false, asset.name, asset.symbol, otherAllocations);
-        distributeSectorToCap(sectorName, val);
+        addToSector(sector.sector, value, false, asset.name, asset.symbol, otherAllocations);
+        distributeSectorToCap(sector.sector, value);
       });
 
-      if (unmappedSector > 0) {
-        const sectorName = 'Other / Uncategorized';
-        const otherAllocations: {name: string, value: number}[] = [];
-        sectors.forEach((otherS: any) => {
-          const otherVal = equityValue * ((otherS.percentage || 0) / 100);
-          if (otherVal > 0) otherAllocations.push({ name: otherS.sector || 'Other', value: otherVal });
-        });
+      const remainder = Math.max(0, equityValue - coveredValue);
+      if (remainder > equityValue * 0.001) {
+        const fallbackSector = inferFundSector(asset, fundData) || 'Diversified Equity';
+        const otherAllocations = sectors.map((sector) => ({
+          name: sector.sector,
+          value: sector.percentage * scale,
+        }));
         if (nonEquity > 0) otherAllocations.push({ name: 'Non-Equity / Debt', value: nonEquity });
 
-        addToSector(sectorName, unmappedSector, false, `Unmapped Equity (${asset.name})`, `${asset.symbol}-unmapped`, otherAllocations);
-        distributeSectorToCap(sectorName, unmappedSector);
+        addToSector(
+          fallbackSector,
+          remainder,
+          false,
+          `${asset.name} (unclassified equity)`,
+          `${asset.symbol}-unclassified`,
+          otherAllocations,
+        );
+        distributeSectorToCap(fallbackSector, remainder);
       }
-    } else {
-      const sectorName = asset.manualSector || prices[asset.symbol]?.sector || 'Other / Uncategorized';
-      const isLikelyETF = type === 'ETF' || String(asset.name || '').toLowerCase().includes('etf') || String(asset.name || '').toLowerCase().includes('bees') || String(asset.symbol || '').toLowerCase().includes('bees') || String(asset.symbol || '').toLowerCase().includes('alpha');
-      const isDirectLoc = (type === 'EQUITY' || type === 'STOCK') && !isLikelyETF;
-      addToSector(sectorName, equityValue, isDirectLoc, asset.name, asset.symbol);
-      distributeSectorToCap(sectorName, equityValue);
+      return;
     }
+
+    const sectorName = asset.manualSector
+      || (isFund ? inferFundSector(asset, fundData) : null)
+      || priceData?.sector
+      || 'Other / Uncategorized';
+
+    addToSector(sectorName, equityValue, isDirect, asset.name, asset.symbol);
+    distributeSectorToCap(sectorName, equityValue);
   });
 
   const sectorData = Object.entries(sectorAllocation)

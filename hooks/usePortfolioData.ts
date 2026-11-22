@@ -6,6 +6,69 @@ import { Asset, PriceData } from '@/lib/types';
 
 type SearchSource = 'indianapi' | 'yahoo' | 'tickertape';
 
+/** Bump when the holdings payload shape changes so cached data is refreshed once. */
+const HOLDINGS_SCHEMA_VERSION = 2;
+
+const hasValidSectorWeights = (sectors: any): boolean =>
+  Array.isArray(sectors) &&
+  sectors.some((sector: any) => sector?.sector && Number(sector.percentage) > 0);
+
+const hasPositiveWeights = (weights: any): boolean =>
+  Boolean(weights) &&
+  ['largeCap', 'midCap', 'smallCap', 'others'].some((key) => Number(weights[key]) > 0);
+
+const hasPositiveAllocation = (allocation: any): boolean =>
+  Boolean(allocation) && Object.values(allocation).some((value) => Number(value) > 0);
+
+/**
+ * Providers are inconsistent: one response may contain the full holdings list
+ * and market-cap weights while the next contains only the top ten names. Never
+ * replace richer cached data with a poorer response; refresh only the fields
+ * that are valid and keep the rest.
+ */
+const mergeFundHoldings = (existing: any, fresh: any) => {
+  const existingHoldings = Array.isArray(existing?.holdings) ? existing.holdings : [];
+  const freshHoldings = Array.isArray(fresh?.holdings) ? fresh.holdings : [];
+  const holdings = freshHoldings.length >= existingHoldings.length
+    ? freshHoldings
+    : existingHoldings;
+
+  const sectorWeightings = hasValidSectorWeights(fresh?.sectorWeightings)
+    ? fresh.sectorWeightings
+    : hasValidSectorWeights(existing?.sectorWeightings)
+      ? existing.sectorWeightings
+      : [];
+
+  const assetAllocation = hasPositiveAllocation(fresh?.assetAllocation)
+    ? fresh.assetAllocation
+    : existing?.assetAllocation && 'stockPosition' in existing.assetAllocation
+      ? existing.assetAllocation
+      : null;
+
+  const marketCapWeightage = hasPositiveWeights(fresh?.marketCapWeightage)
+    ? fresh.marketCapWeightage
+    : hasPositiveWeights(existing?.marketCapWeightage)
+      ? existing.marketCapWeightage
+      : null;
+
+  const hasSectors = hasValidSectorWeights(sectorWeightings);
+
+  return {
+    ...existing,
+    ...fresh,
+    holdings,
+    sectorWeightings,
+    assetAllocation,
+    marketCapWeightage,
+    categoryName: fresh?.categoryName || existing?.categoryName || null,
+    schemaVersion: HOLDINGS_SCHEMA_VERSION,
+    lastUpdated: Date.now(),
+    // A fund that genuinely has no sector split should not be re-fetched on
+    // every mount. A successful refresh clears the marker.
+    sectorRefreshAttempted: !hasSectors,
+  };
+};
+
 /** "newapi" pointed at a dead service; fold it (and unknown values) into Auto. */
 const normalizeSearchSource = (value: unknown): SearchSource =>
   value === 'indianapi' || value === 'yahoo' ? value : 'tickertape';
@@ -452,12 +515,28 @@ export function usePortfolioData(
       const existing = fundHoldings[asset.symbol];
       const hasStaleFields = existing?.assetAllocation && !('stockPosition' in existing.assetAllocation);
       const missingMarketCap = existing && !('marketCapWeightage' in existing);
+      const hasValidSectors = hasValidSectorWeights(existing?.sectorWeightings);
       
       const type = String(asset.type || '').toUpperCase();
       const nameLower = String(asset.name || '').toLowerCase();
       const symLower = String(asset.symbol || '').toLowerCase();
       const isLikelyETF = type === 'ETF' || nameLower.includes('etf') || nameLower.includes('bees') || symLower.includes('bees') || symLower === 'alpha.ns' || symLower === 'alpha.bo';
       const isFund = type === 'MUTUALFUND' || isLikelyETF;
+
+      // Only refresh sector data when it is missing/invalid and a previous
+      // attempt has not already confirmed that the provider has none. The old
+      // blanket schema bump replaced rich cached holdings with top-10-only
+      // responses from the fallback provider.
+      const looksEquityFund =
+        Number(existing?.assetAllocation?.stockPosition) > 0 ||
+        /(equity|index|flexi|multi|large|mid|small|elss|value|momentum|alpha|nifty|sensex|bees|etf)/.test(
+          `${asset.name || ''} ${existing?.categoryName || ''}`.toLowerCase(),
+        );
+      const needsSectorRefresh =
+        Boolean(existing) &&
+        looksEquityFund &&
+        !hasValidSectors &&
+        !existing?.sectorRefreshAttempted;
 
       // Compositions change slowly, but never refreshing them leaves stale
       // sector/holding data indefinitely. Seed data from before timestamps
@@ -469,7 +548,7 @@ export function usePortfolioData(
           : Boolean(existing);
 
       const needsFetch = isFund && 
-        (!existing || hasStaleFields || missingMarketCap || isFundDataStale) && 
+        (!existing || hasStaleFields || missingMarketCap || needsSectorRefresh || isFundDataStale) && 
         !loadingHoldings.current[asset.symbol];
         
       if (needsFetch) {
@@ -490,10 +569,19 @@ export function usePortfolioData(
             return JSON.parse(text);
           })
           .then(data => {
-            if (data && data.holdings && data.holdings.length > 0) {
-              const freshData = { ...data, lastUpdated: Date.now() };
+            const hasAllocation = data?.assetAllocation &&
+              Object.values(data.assetAllocation).some((value: any) => Number(value) > 0);
+            const hasSectors = Array.isArray(data?.sectorWeightings) && data.sectorWeightings.length > 0;
+            const hasHoldings = Array.isArray(data?.holdings) && data.holdings.length > 0;
+
+            // Sector and allocation data are useful on their own. Requiring a
+            // holdings list used to discard valid look-through data for funds
+            // whose provider returned only a sector split. A response with no
+            // useful fields is still merged so the retry marker is persisted.
+            if (data && !data.error && (hasHoldings || hasSectors || hasAllocation || existing)) {
               setFundHoldings(prev => {
-                const newHoldings = { ...prev, [asset.symbol]: freshData };
+                const merged = mergeFundHoldings(prev[asset.symbol] || existing, data);
+                const newHoldings = { ...prev, [asset.symbol]: merged };
                 syncToDb({ fundHoldings: newHoldings });
                 return newHoldings;
               });
