@@ -133,7 +133,18 @@ export const marketCapCategoryFromValue = (
   usdToInr = 83,
 ): MarketCapCategory | null => {
   if (marketCap == null || !Number.isFinite(marketCap) || marketCap <= 0) return null;
-  const capInUsd = currency === 'INR' ? marketCap / usdToInr : marketCap;
+
+  const rate = usdToInr > 0 ? usdToInr : 83;
+  let capInUsd = marketCap;
+  if (currency === 'INR') {
+    capInUsd = marketCap / rate;
+  } else if (currency === 'GBp' || currency === 'GBX') {
+    // London quotes use pence; convert to pounds before the USD comparison.
+    capInUsd = (marketCap / 100) * 1.25;
+  } else if (currency === 'GBP') {
+    capInUsd = marketCap * 1.25;
+  }
+
   if (capInUsd >= 10_000_000_000) return 'Large Cap';
   if (capInUsd >= 2_000_000_000) return 'Mid Cap';
   return 'Small Cap';

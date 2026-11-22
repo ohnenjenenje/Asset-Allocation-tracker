@@ -10,6 +10,7 @@ import {
   isFundAsset,
   isGlobalFund,
   isLikelyEtf,
+  isMarketCapCategory,
   normalizeCategory,
   normalizeGroup,
   resolveAssetCurrency,
@@ -20,6 +21,7 @@ import type {
   FundAssetAllocation,
   FundData,
   FundSectorWeighting,
+  MarketCapCategory,
   PriceData,
 } from './types';
 
@@ -244,15 +246,29 @@ function valueOf(asset: Asset, prices: Record<string, PriceData>, usdToInr: numb
 
 /**
  * Institutional cap bands: >= $10B large, >= $2B mid, below that small.
- * `marketCap` is quoted in the listing currency, so convert INR to USD first.
+ * `marketCap` is quoted in the listing currency, so normalize it to USD first.
+ * Returns null for missing/invalid values instead of inventing a bucket.
  */
 function marketCapBand(
-  marketCap: number,
+  marketCap: number | null | undefined,
   currency: string,
   usdToInr: number,
-): 'Large Cap' | 'Mid Cap' | 'Small Cap' {
+): MarketCapCategory | null {
+  if (marketCap == null || !Number.isFinite(marketCap) || marketCap <= 0) return null;
+
   const rate = usdToInr > 0 ? usdToInr : 84;
-  const capInUsd = currency === 'INR' ? marketCap / rate : marketCap;
+  let capInUsd: number;
+  if (currency === 'INR') {
+    capInUsd = marketCap / rate;
+  } else if (currency === 'GBp' || currency === 'GBX') {
+    // London quotes use pence; convert to pounds before the USD comparison.
+    capInUsd = (marketCap / 100) * 1.25;
+  } else if (currency === 'GBP') {
+    capInUsd = marketCap * 1.25;
+  } else {
+    capInUsd = marketCap;
+  }
+
   if (capInUsd >= 10_000_000_000) return 'Large Cap';
   if (capInUsd >= 2_000_000_000) return 'Mid Cap';
   return 'Small Cap';
@@ -262,10 +278,16 @@ function capFromQuote(
   asset: Asset,
   prices: Record<string, PriceData>,
   usdToInr: number,
-): string | null {
-  const marketCap = prices[asset.symbol]?.marketCap;
-  if (marketCap == null || !Number.isFinite(marketCap)) return null;
-  return marketCapBand(marketCap, currentCurrency(asset, prices), usdToInr);
+): MarketCapCategory | null {
+  const quote = prices[asset.symbol];
+  // NSE index membership beats the provider's market-cap field. HDFC Bank,
+  // for example, has been returned with a market cap 100x too small.
+  if (isMarketCapCategory(quote?.capCategory)) return quote.capCategory;
+  return marketCapBand(
+    quote?.marketCap,
+    quote?.currency || currentCurrency(asset, prices),
+    usdToInr,
+  );
 }
 
 /** A manual cap override always wins; otherwise quote data then name inference. */
@@ -641,6 +663,42 @@ export function analyzePortfolio(input: {
       continue;
     }
 
+    const fundCap = isFundAsset(asset)
+      ? getCapCategory(asset.name, data?.categoryName)
+      : null;
+    const categoryCap = isMarketCapCategory(fundCap) ? fundCap : null;
+
+    // A fund whose mandate names one cap bucket is classified as a whole. This
+    // keeps NASDAQ-100 / S&P 500 ETFs and Nifty 50 index funds out of "Other"
+    // even when their cached holdings are only a top-10 sample.
+    if (categoryCap) {
+      const percentScale = holdingPercentIsPercentScale(holdings);
+      const subHoldings = holdings
+        .map((holding) => {
+          const rawPercent = num(holding.holdingPercent);
+          const percent = percentScale ? rawPercent / 100 : rawPercent;
+          return {
+            name: holding.holdingName || holding.symbol,
+            value: totalValue * percent,
+          };
+        })
+        .filter((holding) => holding.value > 0);
+      const otherAllocations: { name: string; value: number }[] = [];
+      if (nonEquity > 0) {
+        otherAllocations.push({ name: 'Non-Equity / Debt', value: nonEquity });
+      }
+      addToMarketCap(
+        categoryCap,
+        equityValue,
+        false,
+        asset.name,
+        asset.symbol,
+        subHoldings.length > 0 ? subHoldings : undefined,
+        otherAllocations.length > 0 ? otherAllocations : undefined,
+      );
+      continue;
+    }
+
     if (holdings.length > 0) {
       const percentScale = holdingPercentIsPercentScale(holdings);
       const groups: Record<string, { total: number; holdings: { name: string; value: number }[] }> =
@@ -652,65 +710,93 @@ export function analyzePortfolio(input: {
         const percent = percentScale ? rawPercent / 100 : rawPercent;
         if (percent <= 0) continue;
 
-        const holdingValue = totalValue * percent;
         const quote = prices[holding.symbol];
-        const cap =
-          quote?.marketCap != null
-            ? marketCapBand(quote.marketCap, quote.currency || 'INR', usdToInr)
-            : (getCapCategory(holding.holdingName) ?? 'Other / Uncategorized');
+        const holdingCap = isMarketCapCategory(quote?.capCategory)
+          ? quote.capCategory
+          : marketCapBand(quote?.marketCap, quote?.currency || 'INR', usdToInr);
+        const nameCap = getCapCategory(holding.holdingName);
+        const cap = holdingCap ?? (isMarketCapCategory(nameCap) ? nameCap : null);
 
+        // Leave unknown holdings for the fund-level fallback below.
+        if (!cap) continue;
+
+        const holdingValue = equityValue * percent;
         const group = groups[cap] ?? (groups[cap] = { total: 0, holdings: [] });
         group.total += holdingValue;
-        group.holdings.push({ name: holding.holdingName || holding.symbol, value: holdingValue });
+        group.holdings.push({
+          name: holding.holdingName || holding.symbol,
+          value: totalValue * percent,
+        });
         mappedValue += holdingValue;
       }
 
-      const unmappedEquity = Math.max(0, equityValue - mappedValue);
-      for (const [cap, group] of Object.entries(groups)) {
-        const otherAllocations = Object.entries(groups)
-          .filter(([otherCap]) => otherCap !== cap)
-          .map(([otherCap, otherGroup]) => ({ name: otherCap, value: otherGroup.total }));
-        if (unmappedEquity > 0) {
-          otherAllocations.push({ name: 'Unmapped Equity', value: unmappedEquity });
-        }
-        if (nonEquity > 0) {
-          otherAllocations.push({ name: 'Non-Equity / Debt', value: nonEquity });
-        }
-        addToMarketCap(
-          cap,
-          group.total,
-          false,
-          asset.name,
-          asset.symbol,
-          group.holdings,
-          otherAllocations,
-        );
-      }
-
-      if (unmappedEquity > 0) {
-        const otherAllocations = Object.entries(groups).map(([cap, group]) => ({
-          name: cap,
-          value: group.total,
-        }));
+      // No individual holding is classifiable. Do not invent a cap bucket from
+      // a sample of names; keep the exposure explicit instead.
+      if (mappedValue <= 0) {
+        const subHoldings = holdings
+          .map((holding) => {
+            const rawPercent = num(holding.holdingPercent);
+            const percent = percentScale ? rawPercent / 100 : rawPercent;
+            return {
+              name: holding.holdingName || holding.symbol,
+              value: totalValue * percent,
+            };
+          })
+          .filter((holding) => holding.value > 0);
+        const otherAllocations: { name: string; value: number }[] = [];
         if (nonEquity > 0) {
           otherAllocations.push({ name: 'Non-Equity / Debt', value: nonEquity });
         }
         addToMarketCap(
           'Other / Uncategorized',
-          unmappedEquity,
+          equityValue,
           false,
-          `Unmapped Equity (${asset.name})`,
-          `${asset.symbol}-unmapped`,
-          undefined,
+          asset.name,
+          asset.symbol,
+          subHoldings.length > 0 ? subHoldings : undefined,
+          otherAllocations.length > 0 ? otherAllocations : undefined,
+        );
+        continue;
+      }
+
+      const scale = mappedValue > equityValue ? equityValue / mappedValue : 1;
+      const mappedEquity = mappedValue * scale;
+      const unmappedEquity = Math.max(0, equityValue - mappedEquity);
+
+      for (const [cap, group] of Object.entries(groups)) {
+        const groupTotal = group.total * scale;
+        const share = unmappedEquity * (group.total / mappedValue);
+        const otherAllocations = Object.entries(groups)
+          .filter(([otherCap]) => otherCap !== cap)
+          .map(([otherCap, otherGroup]) => ({
+            name: otherCap,
+            value:
+              otherGroup.total * scale + unmappedEquity * (otherGroup.total / mappedValue),
+          }))
+          .filter((other) => other.value > 0);
+        if (nonEquity > 0) {
+          otherAllocations.push({ name: 'Non-Equity / Debt', value: nonEquity });
+        }
+        addToMarketCap(
+          cap,
+          groupTotal + share,
+          false,
+          asset.name,
+          asset.symbol,
+          group.holdings.map((holding) => ({ ...holding, value: holding.value * scale })),
           otherAllocations,
         );
       }
       continue;
     }
 
-    const cap =
-      capForAsset(asset, prices, usdToInr, data?.categoryName) ??
-      'Other / Uncategorized';
+    // Direct stock, or a fund with neither weights nor holdings. A fund whose
+    // mandate is a single cap bucket was already handled above; do not leak a
+    // style label such as "Flexi Cap" into the cap-bucket chart.
+    const cap = isFundAsset(asset)
+      ? 'Other / Uncategorized'
+      : (capForAsset(asset, prices, usdToInr, data?.categoryName) ??
+        'Other / Uncategorized');
     addToMarketCap(cap, equityValue, isDirectEquity(asset), asset.name, asset.symbol);
   }
 
@@ -770,9 +856,10 @@ export function analyzePortfolio(input: {
     const sectors = data?.sectorWeightings ?? [];
     const weights = capWeights(data);
     const direct = isDirectEquity(asset);
-    const defaultCap =
-      capForAsset(asset, prices, usdToInr, data?.categoryName) ??
-      'Other / Uncategorized';
+    const assetCap = capForAsset(asset, prices, usdToInr, data?.categoryName);
+    const defaultCap = isMarketCapCategory(assetCap)
+      ? assetCap
+      : 'Other / Uncategorized';
 
     const distributeToCaps = (sectorName: string, value: number) => {
       const addToCap = (cap: string, amount: number) => {
@@ -990,12 +1077,20 @@ export function analyzePortfolio(input: {
         const percent = percentScale ? rawPercent / 100 : rawPercent;
         if (percent <= 0) continue;
         accounted += percent;
+
+        const quote = prices[holding.symbol];
+        const holdingCap = isMarketCapCategory(quote?.capCategory)
+          ? quote.capCategory
+          : marketCapBand(quote?.marketCap, quote?.currency || 'INR', usdToInr);
+        const nameCap = getCapCategory(holding.holdingName);
+        const cap = holdingCap ?? (isMarketCapCategory(nameCap) ? nameCap : null);
+
         addUnderlying(
           holding.symbol || holding.holdingName,
           holding.holdingName || holding.symbol,
           totalValue * percent,
           'EQUITY',
-          getCapCategory(holding.holdingName) ?? undefined,
+          cap ?? undefined,
         );
       }
       const remaining = Math.max(0, 1 - accounted);

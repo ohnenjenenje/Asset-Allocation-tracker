@@ -26,12 +26,16 @@ export type Asset = {
   subItems?: Asset[];
 };
 
+export type MarketCapCategory = 'Large Cap' | 'Mid Cap' | 'Small Cap';
+
 export type PriceData = {
   symbol: string;
   regularMarketPrice: number | null;
   currency: string;
   shortName: string;
   marketCap?: number | null;
+  /** Authoritative cap bucket published by the quote source (NSE membership). */
+  capCategory?: MarketCapCategory | null;
   quoteType?: string | null;
   sector?: string | null;
   source?: string | null;

@@ -7,26 +7,47 @@
  * buckets, so index membership is a safer source than a single quote field.
  *
  * The lists change only at index rebalances, so they are cached in memory for
- * half a day. A failed refresh is retried sooner instead of being cached for
- * the full TTL.
+ * half a day. Two official hosts are queried in parallel because some hosted
+ * runtimes cannot reach NSE's Akamai edge. A committed snapshot is the final
+ * fallback, so a blocked refresh can never misclassify a Nifty 100 stock.
  */
 
-const NSE_ARCHIVE_BASE = 'https://nsearchives.nseindia.com/content/indices';
+import { setDefaultResultOrder } from 'node:dns';
 
-const CAP_LISTS: Array<{ file: string; category: 'Large Cap' | 'Mid Cap' | 'Small Cap' }> = [
+import {
+  NSE_CAP_FALLBACK,
+  type NseCapCategory,
+} from './nseCapFallback';
+
+// NSE publishes AAAA records that some hosted runtimes cannot route. Prefer
+// IPv4 here as well as in the price route so the refresh is not a coin flip.
+setDefaultResultOrder('ipv4first');
+
+const NSE_ARCHIVE_BASE = 'https://nsearchives.nseindia.com/content/indices';
+const NIFTY_INDICES_BASE = 'https://www.niftyindices.com/IndexConstituent';
+const CAP_SOURCES = [NSE_ARCHIVE_BASE, NIFTY_INDICES_BASE];
+
+const CAP_LISTS: Array<{ file: string; category: NseCapCategory }> = [
   { file: 'ind_nifty100list.csv', category: 'Large Cap' },
   { file: 'ind_niftymidcap150list.csv', category: 'Mid Cap' },
   { file: 'ind_niftysmallcap250list.csv', category: 'Small Cap' },
 ];
 
 const LIST_TTL_MS = 12 * 60 * 60 * 1000;
-const EMPTY_TTL_MS = 10 * 60 * 1000;
-const REQUEST_TIMEOUT_MS = 6_000;
+// A failed or partial refresh keeps the snapshot, but retry well before the
+// full TTL so a transient block does not pin stale membership for half a day.
+const RETRY_TTL_MS = 30 * 60 * 1000;
+const REQUEST_TIMEOUT_MS = 15_000;
 
-type CapCategory = 'Large Cap' | 'Mid Cap' | 'Small Cap';
+type CapCategory = NseCapCategory;
 
-let cached: { map: Map<string, CapCategory>; expires: number } | null = null;
-let inflight: Promise<Map<string, CapCategory>> | null = null;
+let cached: { map: Map<string, CapCategory>; expires: number } = {
+  // The committed snapshot is the cold-start answer. It is replaced by the
+  // live lists after the background refresh finishes.
+  map: new Map(Object.entries(NSE_CAP_FALLBACK)),
+  expires: 0,
+};
+let inflight: Promise<void> | null = null;
 
 /** Minimal RFC-4180-style parser so quoted company names with commas do not shift columns. */
 function parseCsvLine(line: string): string[] {
@@ -61,43 +82,66 @@ function parseCsvLine(line: string): string[] {
   return cells;
 }
 
+function parseCapList(csv: string, category: CapCategory): Array<[string, CapCategory]> {
+  const lines = csv.replace(/^\uFEFF/, '').split(/\r?\n/);
+  if (lines.length < 2) return [];
+
+  // Header: Company Name, Industry, Symbol, Series, ISIN Code
+  const header = parseCsvLine(lines[0]).map((cell) => cell.trim().toLowerCase());
+  const symbolIndex = header.indexOf('symbol');
+  if (symbolIndex < 0) return [];
+
+  const entries: Array<[string, CapCategory]> = [];
+  for (const line of lines.slice(1)) {
+    if (!line.trim()) continue;
+    const symbol = parseCsvLine(line)[symbolIndex]?.trim().toUpperCase();
+    if (symbol) entries.push([symbol, category]);
+  }
+  return entries;
+}
+
+async function fetchCsv(file: string): Promise<string> {
+  const attempts = CAP_SOURCES.map(async (base) => {
+    const response = await fetch(`${base}/${file}`, {
+      headers: {
+        Accept: 'text/csv,text/plain,*/*',
+        'User-Agent': 'AssetTracker/0.1',
+      },
+      cache: 'no-store',
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+
+    if (!response.ok) {
+      throw new Error(`${base} responded with ${response.status}`);
+    }
+
+    const csv = await response.text();
+    // A bot challenge is served as HTML with a 200, so validate the payload.
+    if (!csv.toLowerCase().includes('symbol')) {
+      throw new Error(`${base} returned an unexpected payload`);
+    }
+    return csv;
+  });
+
+  return Promise.any(attempts);
+}
+
 async function fetchCapList(
   file: string,
   category: CapCategory,
   map: Map<string, CapCategory>,
 ) {
-  const response = await fetch(`${NSE_ARCHIVE_BASE}/${file}`, {
-    headers: {
-      Accept: 'text/csv,text/plain,*/*',
-      'User-Agent': 'AssetTracker/0.1',
-    },
-    cache: 'no-store',
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
-
-  if (!response.ok) {
-    throw new Error(`NSE ${file} responded with ${response.status}`);
+  const csv = await fetchCsv(file);
+  const entries = parseCapList(csv, category);
+  if (entries.length === 0) {
+    throw new Error(`NSE ${file} contained no symbols`);
   }
-
-  const csv = await response.text();
-  const lines = csv.split(/\r?\n/);
-  if (lines.length < 2) return;
-
-  // Header: Company Name, Industry, Symbol, Series, ISIN Code
-  const header = parseCsvLine(lines[0]).map((cell) => cell.trim().toLowerCase());
-  const symbolIndex = header.indexOf('symbol');
-  if (symbolIndex < 0) return;
-
-  for (const line of lines.slice(1)) {
-    if (!line.trim()) continue;
-    const cells = parseCsvLine(line);
-    const symbol = cells[symbolIndex]?.trim().toUpperCase();
-    if (symbol) map.set(symbol, category);
-  }
+  for (const [symbol, cap] of entries) map.set(symbol, cap);
 }
 
 async function loadCapCategories(): Promise<Map<string, CapCategory>> {
-  const map = new Map<string, CapCategory>();
+  // Seed with the committed snapshot. Live lists overwrite it when reachable.
+  const map = new Map<string, CapCategory>(Object.entries(NSE_CAP_FALLBACK));
   const results = await Promise.allSettled(
     CAP_LISTS.map(({ file, category }) => fetchCapList(file, category, map)),
   );
@@ -105,34 +149,41 @@ async function loadCapCategories(): Promise<Map<string, CapCategory>> {
   const failures = results.filter((result) => result.status === 'rejected');
   if (failures.length > 0) {
     console.warn(
-      `[nse-cap] ${failures.length}/${CAP_LISTS.length} index lists failed to load`,
+      `[nse-cap] ${failures.length}/${CAP_LISTS.length} index lists failed to refresh; using snapshot fallback`,
     );
   }
 
   cached = {
     map,
-    expires: Date.now() + (map.size > 0 ? LIST_TTL_MS : EMPTY_TTL_MS),
+    expires: Date.now() + (failures.length === 0 ? LIST_TTL_MS : RETRY_TTL_MS),
   };
   return map;
 }
 
+function refreshCapCategories(): void {
+  if (inflight) return;
+
+  inflight = loadCapCategories()
+    .then(() => undefined)
+    .catch((error: any) => {
+      console.warn('[nse-cap] index list load failed:', error?.message || error);
+      cached = {
+        map: new Map(Object.entries(NSE_CAP_FALLBACK)),
+        expires: Date.now() + RETRY_TTL_MS,
+      };
+    })
+    .finally(() => {
+      inflight = null;
+    });
+}
+
 /**
  * Returns a symbol -> cap-category map for the Nifty 100, Midcap 150 and
- * Smallcap 250. Never throws: callers fall back to quote market caps.
+ * Smallcap 250. The committed snapshot is returned immediately; the official
+ * lists refresh in the background so a slow or blocked host never delays a
+ * quote response. Never throws.
  */
-export async function getNseCapCategories(): Promise<Map<string, CapCategory>> {
-  if (cached && Date.now() < cached.expires) return cached.map;
-  if (inflight) return inflight;
-
-  inflight = loadCapCategories().finally(() => {
-    inflight = null;
-  });
-
-  try {
-    return await inflight;
-  } catch (error: any) {
-    console.warn('[nse-cap] index list load failed:', error?.message || error);
-    cached = { map: new Map(), expires: Date.now() + EMPTY_TTL_MS };
-    return cached.map;
-  }
+export function getNseCapCategories(): Promise<Map<string, CapCategory>> {
+  if (Date.now() >= cached.expires) refreshCapCategories();
+  return Promise.resolve(cached.map);
 }

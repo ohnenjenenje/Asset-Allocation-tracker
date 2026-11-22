@@ -1,6 +1,6 @@
 import { ApiError, apiFetch } from '@/src/lib/api/client';
 
-import { guessCurrency, normalizeExchangeAsset } from './normalize';
+import { guessCurrency, isMarketCapCategory, normalizeExchangeAsset } from './normalize';
 import type {
   Asset,
   FundAssetAllocation,
@@ -8,6 +8,7 @@ import type {
   FundHolding,
   FundMarketCapWeightage,
   FundSectorWeighting,
+  MarketCapCategory,
   Policy,
   PortfolioSnapshot,
   PriceData,
@@ -138,6 +139,7 @@ interface RawQuote {
   currency?: string | null;
   shortName?: string | null;
   marketCap?: number | null;
+  capCategory?: MarketCapCategory | null;
   quoteType?: string | null;
   sector?: string | null;
   source?: string | null;
@@ -154,6 +156,7 @@ function normalizeQuote(raw: RawQuote): PriceData | null {
     currency: raw.currency ?? guessCurrency(raw.symbol),
     shortName: raw.shortName ?? raw.symbol,
     marketCap: raw.marketCap ?? null,
+    capCategory: isMarketCapCategory(raw.capCategory) ? raw.capCategory : null,
     quoteType: raw.quoteType ?? null,
     sector: raw.sector ?? null,
     source: raw.source ?? null,

@@ -1,4 +1,4 @@
-import type { Asset, PriceData } from './types';
+import type { Asset, MarketCapCategory, PriceData } from './types';
 
 export const CATEGORY_COLORS = [
   '#2563EB',
@@ -12,6 +12,11 @@ export const CATEGORY_COLORS = [
   '#F59E0B',
   '#10B981',
 ] as const;
+
+/** Type guard for the three cap buckets used by the exposure analytics. */
+export function isMarketCapCategory(value: unknown): value is MarketCapCategory {
+  return value === 'Large Cap' || value === 'Mid Cap' || value === 'Small Cap';
+}
 
 export function guessCurrency(symbol: string): string {
   if (!symbol) return 'INR';
@@ -233,6 +238,11 @@ export function getCapCategory(
 ): string | null {
   const lowerName = (name || '').toLowerCase();
   const lowerCat = (categoryName || '').toLowerCase();
+  const combined = `${lowerName} ${lowerCat}`;
+
+  // A large+mid blend is not a single cap bucket. Let the caller fall back to
+  // the fund's actual market-cap weights instead of forcing it into Large Cap.
+  if (/large\s*&?\s*mid|large\s*midcap|mid\s*&?\s*large/.test(combined)) return null;
 
   if (lowerName.includes('small') || lowerCat.includes('small')) return 'Small Cap';
   if (lowerName.includes('mid') || lowerCat.includes('mid')) return 'Mid Cap';
@@ -249,7 +259,9 @@ export function getCapCategory(
     lowerName.includes('alphaetf') ||
     lowerName.includes('alpha 50') ||
     lowerName.includes('nifty 100') ||
-    lowerName.includes('next 50')
+    lowerName.includes('next 50') ||
+    lowerName.includes('nasdaq') ||
+    lowerName.includes('s&p')
   ) {
     return 'Large Cap';
   }
