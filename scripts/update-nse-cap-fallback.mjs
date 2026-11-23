@@ -7,19 +7,27 @@
  * blocked egress path cannot silently misclassify Indian stocks.
  */
 
+import { setDefaultResultOrder } from 'node:dns';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+
+// NSE publishes AAAA records that some networks cannot route.
+setDefaultResultOrder('ipv4first');
 
 const SOURCES = [
   'https://nsearchives.nseindia.com/content/indices',
   'https://www.niftyindices.com/IndexConstituent',
 ];
 
+// `minSymbols` guards against a truncated CSV or a bot-challenge page being
+// committed as the offline fallback. Real counts are 100 / 150 / ~250.
 const LISTS = [
-  { file: 'ind_nifty100list.csv', category: 'Large Cap' },
-  { file: 'ind_niftymidcap150list.csv', category: 'Mid Cap' },
-  { file: 'ind_niftysmallcap250list.csv', category: 'Small Cap' },
+  { file: 'ind_nifty100list.csv', category: 'Large Cap', minSymbols: 90 },
+  { file: 'ind_niftymidcap150list.csv', category: 'Mid Cap', minSymbols: 135 },
+  { file: 'ind_niftysmallcap250list.csv', category: 'Small Cap', minSymbols: 225 },
 ];
+
+const REQUEST_TIMEOUT_MS = 20_000;
 
 const OUTPUT = path.join(process.cwd(), 'lib/market/nseCapFallback.ts');
 
@@ -64,6 +72,7 @@ async function download(file) {
           Accept: 'text/csv,text/plain,*/*',
           'User-Agent': 'Mozilla/5.0 (compatible; AssetTracker/0.1)',
         },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
       if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
       const csv = await response.text();
@@ -101,10 +110,16 @@ function block(symbols) {
 }
 
 const groups = {};
-for (const { file, category } of LISTS) {
+for (const { file, category, minSymbols } of LISTS) {
   const csv = await download(file);
-  groups[category] = extractSymbols(csv);
-  console.log(`${category}: ${groups[category].length} symbols`);
+  const symbols = extractSymbols(csv);
+  if (symbols.length < minSymbols) {
+    throw new Error(
+      `${category} list has only ${symbols.length} symbols (expected at least ${minSymbols}); refusing to write a truncated snapshot`,
+    );
+  }
+  groups[category] = symbols;
+  console.log(`${category}: ${symbols.length} symbols`);
 }
 
 const content = `/**

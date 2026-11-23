@@ -27,10 +27,14 @@ const NSE_ARCHIVE_BASE = 'https://nsearchives.nseindia.com/content/indices';
 const NIFTY_INDICES_BASE = 'https://www.niftyindices.com/IndexConstituent';
 const CAP_SOURCES = [NSE_ARCHIVE_BASE, NIFTY_INDICES_BASE];
 
-const CAP_LISTS: Array<{ file: string; category: NseCapCategory }> = [
-  { file: 'ind_nifty100list.csv', category: 'Large Cap' },
-  { file: 'ind_niftymidcap150list.csv', category: 'Mid Cap' },
-  { file: 'ind_niftysmallcap250list.csv', category: 'Small Cap' },
+const CAP_LISTS: Array<{
+  file: string;
+  category: NseCapCategory;
+  minSymbols: number;
+}> = [
+  { file: 'ind_nifty100list.csv', category: 'Large Cap', minSymbols: 90 },
+  { file: 'ind_niftymidcap150list.csv', category: 'Mid Cap', minSymbols: 135 },
+  { file: 'ind_niftysmallcap250list.csv', category: 'Small Cap', minSymbols: 225 },
 ];
 
 const LIST_TTL_MS = 12 * 60 * 60 * 1000;
@@ -129,12 +133,15 @@ async function fetchCsv(file: string): Promise<string> {
 async function fetchCapList(
   file: string,
   category: CapCategory,
+  minSymbols: number,
   map: Map<string, CapCategory>,
 ) {
   const csv = await fetchCsv(file);
   const entries = parseCapList(csv, category);
-  if (entries.length === 0) {
-    throw new Error(`NSE ${file} contained no symbols`);
+  if (entries.length < minSymbols) {
+    throw new Error(
+      `NSE ${file} contained ${entries.length} symbols (expected at least ${minSymbols})`,
+    );
   }
   for (const [symbol, cap] of entries) map.set(symbol, cap);
 }
@@ -143,7 +150,9 @@ async function loadCapCategories(): Promise<Map<string, CapCategory>> {
   // Seed with the committed snapshot. Live lists overwrite it when reachable.
   const map = new Map<string, CapCategory>(Object.entries(NSE_CAP_FALLBACK));
   const results = await Promise.allSettled(
-    CAP_LISTS.map(({ file, category }) => fetchCapList(file, category, map)),
+    CAP_LISTS.map(({ file, category, minSymbols }) =>
+      fetchCapList(file, category, minSymbols, map),
+    ),
   );
 
   const failures = results.filter((result) => result.status === 'rejected');

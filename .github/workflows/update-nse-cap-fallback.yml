@@ -1,0 +1,46 @@
+name: Refresh NSE cap snapshot
+
+on:
+  schedule:
+    # Monthly on the 1st. Nifty rebalances are semi-annual, but ad-hoc index
+    # changes can happen at any time and the runtime fallback should not drift.
+    - cron: '17 2 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nse-cap-snapshot
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the default branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Regenerate the snapshot
+        run: node scripts/update-nse-cap-fallback.mjs
+
+      - name: Commit changes
+        run: |
+          if git diff --quiet -- lib/market/nseCapFallback.ts; then
+            echo "Snapshot already up to date."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add lib/market/nseCapFallback.ts
+          git commit -m "chore: refresh NSE market-cap snapshot"
+          git push origin "HEAD:${{ github.event.repository.default_branch }}"
