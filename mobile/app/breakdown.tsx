@@ -8,7 +8,11 @@ import {
   Pressable,
   StyleSheet,
   Text,
+  TextInput,
   View,
+  type DimensionValue,
+  type StyleProp,
+  type ViewStyle,
 } from 'react-native';
 
 import { Badge } from '@/src/components/ui/Badge';
@@ -19,8 +23,6 @@ import { Chip } from '@/src/components/ui/Chip';
 import { IconButton } from '@/src/components/ui/IconButton';
 import { Screen } from '@/src/components/ui/Screen';
 import { ScreenHeader } from '@/src/components/ui/ScreenHeader';
-import { SectionHeader } from '@/src/components/ui/SectionHeader';
-import { TextField } from '@/src/components/ui/TextField';
 import type { AllocationNode } from '@/src/features/portfolio/analytics';
 import {
   buildCompositionTree,
@@ -100,10 +102,161 @@ function entryNumbers(entries: Record<string, DraftEntry>): Record<string, numbe
   return next;
 }
 
-function levelTone(level: PolicyDecisionLevel): 'neutral' | 'accent' | 'warning' {
-  if (level === 'policy') return 'accent';
-  if (level === 'monitor') return 'warning';
-  return 'neutral';
+function MiniField({
+  label,
+  value,
+  onChangeText,
+  suffix,
+  decimal = true,
+  disabled = false,
+  error = false,
+  errorText,
+  placeholder,
+  autoCapitalize,
+  style,
+}: {
+  label: string;
+  value: string;
+  onChangeText: (value: string) => void;
+  suffix?: string;
+  decimal?: boolean;
+  disabled?: boolean;
+  error?: boolean;
+  errorText?: string;
+  placeholder?: string;
+  autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
+  style?: StyleProp<ViewStyle>;
+}) {
+  const { colors } = useTheme();
+  const [focused, setFocused] = useState(false);
+
+  return (
+    <View style={[styles.field, style]}>
+      <Text
+        style={[styles.fieldLabel, { color: error ? colors.negative : colors.muted }]}
+        numberOfLines={1}
+      >
+        {label}
+      </Text>
+      <View
+        style={[
+          styles.fieldBox,
+          {
+            backgroundColor: disabled ? colors.cardMuted : colors.bg,
+            borderColor: error ? colors.negative : focused ? colors.accent : colors.border,
+          },
+        ]}
+      >
+        <TextInput
+          value={value}
+          onChangeText={onChangeText}
+          editable={!disabled}
+          placeholder={placeholder}
+          placeholderTextColor={colors.muted}
+          keyboardType={decimal ? 'decimal-pad' : 'default'}
+          inputMode={decimal ? 'decimal' : 'text'}
+          selectTextOnFocus={decimal}
+          autoCapitalize={autoCapitalize}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          style={[
+            styles.fieldInput,
+            numeric,
+            { color: disabled ? colors.muted : colors.text },
+          ]}
+        />
+        {suffix ? (
+          <Text style={[styles.fieldSuffix, { color: colors.muted }]}>{suffix}</Text>
+        ) : null}
+      </View>
+      {errorText ? (
+        <Text style={[styles.fieldError, { color: colors.negative }]} numberOfLines={2}>
+          {errorText}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+function LevelControl({
+  value,
+  onChange,
+  disabled = false,
+  style,
+}: {
+  value: PolicyDecisionLevel;
+  onChange: (level: PolicyDecisionLevel) => void;
+  disabled?: boolean;
+  style?: StyleProp<ViewStyle>;
+}) {
+  const { colors } = useTheme();
+
+  return (
+    <View
+      style={[
+        styles.segment,
+        { backgroundColor: colors.cardMuted, borderColor: colors.border },
+        disabled && styles.segmentDisabled,
+        style,
+      ]}
+    >
+      {LEVELS.map((option) => {
+        const selected = value === option.key;
+        return (
+          <Pressable
+            key={option.key}
+            onPress={() => onChange(option.key)}
+            disabled={disabled}
+            accessibilityRole="button"
+            accessibilityLabel={`${option.label} level`}
+            accessibilityHint={option.hint}
+            accessibilityState={{ selected, disabled }}
+            style={[
+              styles.segmentOption,
+              selected && { backgroundColor: colors.accentSoft },
+            ]}
+          >
+            <Text
+              style={[
+                styles.segmentText,
+                {
+                  color: selected ? colors.accent : colors.muted,
+                  fontWeight: selected ? '600' : '500',
+                },
+              ]}
+              numberOfLines={1}
+            >
+              {option.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+function ToggleSwitch({ on }: { on: boolean }) {
+  const { colors, scheme } = useTheme();
+
+  return (
+    <View
+      style={[
+        styles.switchTrack,
+        { backgroundColor: on ? colors.accent : colors.border },
+      ]}
+    >
+      <View
+        style={[
+          styles.switchThumb,
+          {
+            backgroundColor:
+              scheme === 'dark' ? colors.textSecondary : colors.card,
+            transform: [{ translateX: on ? 16 : 0 }],
+          },
+        ]}
+      />
+    </View>
+  );
 }
 
 export default function BreakdownScreen() {
@@ -127,7 +280,7 @@ export default function BreakdownScreen() {
         <ScreenHeader
           eyebrow="Institutional allocation"
           title="Sleeve composition"
-          subtitle="Optional targets inside each sleeve. Root policy and rebalance stay unchanged."
+          subtitle="Set how each sleeve is built without changing the root policy."
           action={
             <IconButton
               icon="x"
@@ -483,6 +636,7 @@ function BreakdownEditor({
   const sleevesWithComposition = roots.filter((root) =>
     directChildPaths(draftTargets, root).length > 0,
   ).length;
+  const compositionReady = config.isValid && validation.isValid && !hasRangeIssues;
 
   return (
     <View style={styles.stack}>
@@ -515,57 +669,78 @@ function BreakdownEditor({
       ) : null}
 
       <Card style={styles.summaryCard}>
-        <View style={styles.summaryHeader}>
-          <View style={styles.summaryText}>
-            <Text style={[type.label, { color: colors.muted }]}>Composition model</Text>
-            <Text style={[styles.summaryValue, numeric, { color: colors.text }]}>
-              {totalDefined} {totalDefined === 1 ? 'sub-category' : 'sub-categories'}
-            </Text>
+        <View style={styles.summaryTop}>
+          <View style={styles.summaryStats}>
+            <View style={styles.summaryStat}>
+              <Text style={[styles.statLabel, { color: colors.muted }]}>
+                Sub-categories
+              </Text>
+              <Text style={[styles.statValue, numeric, { color: colors.text }]}>
+                {totalDefined}
+              </Text>
+            </View>
+            <View style={[styles.statRule, { backgroundColor: colors.border }]} />
+            <View style={styles.summaryStat}>
+              <Text style={[styles.statLabel, { color: colors.muted }]}>
+                Sleeves covered
+              </Text>
+              <Text style={[styles.statValue, numeric, { color: colors.text }]}>
+                {sleevesWithComposition}
+                <Text style={[styles.statValueMuted, { color: colors.muted }]}>
+                  /{roots.length}
+                </Text>
+              </Text>
+            </View>
           </View>
-          <View style={styles.summaryBadges}>
-            <Badge
-              label={`${sleevesWithComposition}/${roots.length} sleeves`}
-              tone="accent"
-            />
-            <Badge
-              label={validation.isValid ? 'Valid' : 'Needs attention'}
-              tone={validation.isValid ? 'positive' : 'warning'}
-            />
-          </View>
+          <Badge
+            label={compositionReady ? 'Valid' : 'Needs attention'}
+            tone={compositionReady ? 'positive' : 'warning'}
+          />
         </View>
 
-        <Text style={[type.caption, { color: colors.muted }]}>
-          Roots decide the portfolio. Children explain how each sleeve is built and only
-          trigger compliance when promoted. Target inputs are % of the immediate parent.
+        <Text style={[styles.summaryCopy, { color: colors.muted }]}>
+          Each target is a % of its immediate parent; roots stay the only policy level.
+          Composition is informational, Monitor watches the range, Policy is actionable.
         </Text>
 
         <Pressable
           onPress={isDemo ? undefined : () => setAllowUnallocated((value) => !value)}
-          accessibilityRole="button"
-          accessibilityState={{ selected: allowUnallocated, disabled: isDemo }}
-          style={[
-            styles.modeRow,
-            {
-              backgroundColor: allowUnallocated ? colors.warningSoft : colors.cardMuted,
-              borderColor: allowUnallocated ? colors.warning : colors.border,
-            },
+          disabled={isDemo}
+          accessibilityRole="switch"
+          accessibilityLabel="Allow unallocated remainder"
+          accessibilityState={{ checked: allowUnallocated, disabled: isDemo }}
+          style={({ pressed }) => [
+            styles.unallocatedRow,
+            { borderTopColor: colors.border },
+            pressed && !isDemo ? styles.rowPressed : null,
+            isDemo ? styles.optionDisabled : null,
           ]}
         >
-          <Feather
-            name={allowUnallocated ? 'toggle-right' : 'toggle-left'}
-            size={18}
-            color={allowUnallocated ? colors.warning : colors.muted}
-          />
-          <View style={styles.modeText}>
+          <View
+            style={[
+              styles.optionIcon,
+              {
+                backgroundColor: allowUnallocated
+                  ? colors.warningSoft
+                  : colors.cardMuted,
+              },
+            ]}
+          >
+            <Feather
+              name="pie-chart"
+              size={15}
+              color={allowUnallocated ? colors.warning : colors.muted}
+            />
+          </View>
+          <View style={styles.optionText}>
             <Text style={[type.bodyMedium, { color: colors.text }]}>
-              {allowUnallocated ? 'Explicit Unallocated remainder' : 'Require 100% per parent'}
+              Allow unallocated
             </Text>
             <Text style={[type.caption, { color: colors.muted }]}>
-              {allowUnallocated
-                ? 'A parent may sum below 100%; the remainder is shown and saved explicitly.'
-                : 'Every parent with children must total 100% before saving.'}
+              Parents may total under 100%; the remainder is saved explicitly.
             </Text>
           </View>
+          <ToggleSwitch on={allowUnallocated} />
         </Pressable>
       </Card>
 
@@ -586,83 +761,182 @@ function BreakdownEditor({
           decisionLevels: levelMap,
         });
         const coverage = compositionCoverage(tree, rootCurrentValue);
+        const coverageTone =
+          coverage >= 95
+            ? colors.positive
+            : coverage > 0
+              ? colors.warning
+              : colors.muted;
+        const coverageWidth = `${Number.isFinite(coverage)
+          ? Math.min(100, Math.max(0, coverage))
+          : 0}%` as DimensionValue;
         const parentError = validation.parentErrors[root];
         const sum = validation.sumByParent[root];
         const unallocated = validation.unallocatedByParent[root];
+        const sumColor = parentError
+          ? colors.negative
+          : unallocated
+            ? colors.warning
+            : colors.positive;
 
         return (
-          <View key={root}>
-            <SectionHeader
-              title={root}
-              subtitle={`${formatPercent(rootTarget)} of portfolio · range ${formatPercent(
-                range.min,
-              )}–${formatPercent(range.max)}`}
-              actionLabel="Add sub-category"
-              onAction={isDemo ? undefined : () => openAdd(root)}
-            />
-
-            <Card style={styles.sleeveCard}>
-              <View style={styles.sleeveHeader}>
+          <View key={root} style={styles.sleeve}>
+            <View style={styles.sleeveHeader}>
+              <View style={styles.sleeveTitle}>
                 <View
                   style={[
                     styles.sleeveDot,
                     { backgroundColor: colorForSleeve(root, indexValue) },
                   ]}
                 />
-                <View style={styles.sleeveTitle}>
-                  <Text style={[type.bodyMedium, { color: colors.text }]}>
-                    Current {formatPercent(rootCurrentPct)}
+                <View style={styles.sleeveTitleText}>
+                  <Text style={[type.title, { color: colors.text }]} numberOfLines={1}>
+                    {root}
                   </Text>
-                  <Text style={[type.caption, { color: colors.muted }]}>
-                    {formatCompactINR(rootCurrentValue)} · target{' '}
+                  <Text
+                    style={[type.caption, { color: colors.muted }]}
+                    numberOfLines={1}
+                  >
+                    Band {formatPercent(range.min, { precision: 1 })}–
+                    {formatPercent(range.max, { precision: 1 })} ·{' '}
+                    {tree.length === 0
+                      ? 'No groups'
+                      : `${tree.length} ${tree.length === 1 ? 'group' : 'groups'}`}
+                  </Text>
+                </View>
+              </View>
+              {!isDemo ? (
+                <Pressable
+                  onPress={() => openAdd(root)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Add sub-category to ${root}`}
+                  hitSlop={8}
+                  style={({ pressed }) => [
+                    styles.addAction,
+                    pressed ? styles.rowPressed : null,
+                  ]}
+                >
+                  <Feather name="plus" size={14} color={colors.accent} />
+                  <Text style={[styles.addActionText, { color: colors.accent }]}>
+                    Add
+                  </Text>
+                </Pressable>
+              ) : null}
+            </View>
+
+            <Card padded={false} style={styles.sleeveCard}>
+              <View style={styles.sleeveStats}>
+                <View style={styles.sleeveStat}>
+                  <Text style={[styles.statLabel, { color: colors.muted }]}>
+                    Current
+                  </Text>
+                  <Text style={[styles.sleeveStatValue, numeric, { color: colors.text }]}>
+                    {formatPercent(rootCurrentPct, { precision: 1 })}
+                  </Text>
+                  <Text style={[styles.sleeveStatSub, numeric, { color: colors.muted }]}>
+                    {formatCompactINR(rootCurrentValue)}
+                  </Text>
+                </View>
+                <View style={[styles.sleeveStatRule, { backgroundColor: colors.border }]} />
+                <View style={styles.sleeveStat}>
+                  <Text style={[styles.statLabel, { color: colors.muted }]}>
+                    Target
+                  </Text>
+                  <Text style={[styles.sleeveStatValue, numeric, { color: colors.text }]}>
+                    {formatPercent(rootTarget, { precision: 1 })}
+                  </Text>
+                  <Text style={[styles.sleeveStatSub, numeric, { color: colors.muted }]}>
                     {formatCompactINR((totalValue * rootTarget) / 100)}
                   </Text>
                 </View>
-                <Badge
-                  label={`${formatPercent(coverage, {})} covered`}
-                  tone={coverage >= 95 ? 'positive' : coverage > 0 ? 'warning' : 'neutral'}
+                <View style={[styles.sleeveStatRule, { backgroundColor: colors.border }]} />
+                <View style={styles.sleeveStat}>
+                  <Text style={[styles.statLabel, { color: colors.muted }]}>
+                    Covered
+                  </Text>
+                  <Text
+                    style={[
+                      styles.sleeveStatValue,
+                      numeric,
+                      { color: coverageTone },
+                    ]}
+                  >
+                    {formatPercent(coverage, { precision: 1 })}
+                  </Text>
+                  <Text style={[styles.sleeveStatSub, { color: colors.muted }]}>
+                    of sleeve value
+                  </Text>
+                </View>
+              </View>
+
+              <View style={[styles.coverageTrack, { backgroundColor: colors.cardMuted }]}>
+                <View
+                  style={{
+                    width: coverageWidth,
+                    height: '100%',
+                    backgroundColor: coverageTone,
+                  }}
                 />
               </View>
 
-              {tree.length === 0 ? (
-                <View style={styles.empty}>
-                  <Text style={[type.caption, { color: colors.muted }]}>
-                    No sub-categories yet. Add the groups you use to implement this sleeve;
-                    nothing is created automatically.
-                  </Text>
-                </View>
-              ) : (
-                <View style={styles.tree}>
-                  {tree.map((node) => renderRow(node))}
-                </View>
-              )}
+              <View style={styles.tree}>
+                {tree.length === 0 ? (
+                  <View style={styles.empty}>
+                    <Feather name="layers" size={16} color={colors.muted} />
+                    <Text style={[type.caption, styles.emptyText, { color: colors.muted }]}>
+                      No sub-categories yet. Add the groups you use to implement this
+                      sleeve.
+                    </Text>
+                  </View>
+                ) : (
+                  tree.map((node, nodeIndex) => (
+                    <View
+                      key={node.path}
+                      style={
+                        nodeIndex > 0
+                          ? {
+                              borderTopWidth: StyleSheet.hairlineWidth,
+                              borderTopColor: colors.border,
+                            }
+                          : null
+                      }
+                    >
+                      {renderRow(node)}
+                    </View>
+                  ))
+                )}
 
-              {addingAt === root ? renderAddForm(root) : null}
+                {addingAt === root ? renderAddForm(root) : null}
+              </View>
 
               {tree.length > 0 ? (
                 <View style={[styles.sumRow, { borderTopColor: colors.border }]}>
-                  <Text
-                    style={[
-                      type.caption,
-                      {
-                        color: parentError
-                          ? colors.negative
+                  <View style={styles.sumText}>
+                    <Feather
+                      name={
+                        parentError
+                          ? 'alert-circle'
                           : unallocated
-                            ? colors.warning
-                            : colors.positive,
-                      },
-                    ]}
-                  >
-                    {parentError
-                      ? parentError
-                      : unallocated
-                        ? `Children ${formatPercent(sum)} · ${formatPercent(
-                            unallocated,
-                          )} explicit Unallocated`
-                        : `Children total ${formatPercent(sum)} ✓`}
-                  </Text>
+                            ? 'alert-triangle'
+                            : 'check-circle'
+                      }
+                      size={12}
+                      color={sumColor}
+                    />
+                    <Text style={[type.caption, { color: sumColor, flex: 1 }]}>
+                      {parentError
+                        ? parentError
+                        : unallocated
+                          ? `Children ${formatPercent(sum, {
+                              precision: 1,
+                            })} · ${formatPercent(unallocated, {
+                              precision: 1,
+                            })} unallocated`
+                          : `Children total ${formatPercent(sum, { precision: 1 })}`}
+                    </Text>
+                  </View>
                   <Text style={[type.caption, { color: colors.muted }]}>
-                    {tree.length} direct {tree.length === 1 ? 'group' : 'groups'}
+                    {tree.length} {tree.length === 1 ? 'group' : 'groups'}
                   </Text>
                 </View>
               ) : null}
@@ -670,16 +944,6 @@ function BreakdownEditor({
           </View>
         );
       })}
-
-      <Card style={styles.footerCard}>
-        <Text style={[type.bodyMedium, { color: colors.text }]}>What saving changes</Text>
-        <Text style={[type.caption, { color: colors.muted }]}>
-          The app creates a new policy version with the composition tree, explicit ranges
-          and decision levels. Sleeve targets, bands, review cadence and the rebalance
-          planner stay exactly as they are. Composition never creates a second risk budget
-          unless you promote a node.
-        </Text>
-      </Card>
 
       {!validation.isValid ? (
         <Banner
@@ -704,8 +968,8 @@ function BreakdownEditor({
           size="lg"
         />
         <Text style={[styles.saveHint, { color: colors.muted }]}>
-          Saving creates a new version. The allocation tab, donut, health card and
-          rebalance planner remain root-only.
+          Saving creates a new policy version. Root targets, bands and the rebalance
+          planner stay unchanged.
         </Text>
       </View>
     </View>
@@ -718,165 +982,155 @@ function BreakdownEditor({
     const sum = validation.sumByParent[node.path];
     const unallocated = validation.unallocatedByParent[node.path];
     const rangeIssue = rangeIssues[node.path];
-    const label = LEVELS.find((option) => option.key === entry.level);
+    const childError =
+      entry.target.trim() === '' ? 'Required' : validation.childErrors[node.path];
+    const effectiveValue = effective[node.path] ?? node.effectiveTarget;
+    const sumColor = parentError
+      ? colors.negative
+      : unallocated
+        ? colors.warning
+        : colors.positive;
 
     return (
-      <View
-        key={node.path}
-        style={[
-          styles.row,
-          {
-            borderLeftColor:
-              entry.level === 'policy'
-                ? colors.accent
-                : entry.level === 'monitor'
-                  ? colors.warning
-                  : colors.border,
-            marginLeft: Math.min(28, (node.depth - 1) * 12),
-          },
-        ]}
-      >
-        <View style={styles.rowHeader}>
-          <View style={styles.rowTitle}>
+      <View key={node.path} style={styles.node}>
+        <View style={styles.nodeHeader}>
+          <View style={styles.nodeTitle}>
             <Text style={[type.bodyMedium, { color: colors.text }]} numberOfLines={1}>
               {node.label}
             </Text>
-            <Text style={[type.caption, { color: colors.muted }]} numberOfLines={1}>
-              {node.hasHoldings
-                ? `Current ${formatPercent(node.currentOfParent)} of parent · ${formatCompactINR(
-                    node.currentValue,
-                  )}`
-                : 'Not detected in current holdings'}
-            </Text>
+            <View style={styles.nodeMetaRow}>
+              <View
+                style={[
+                  styles.statusDot,
+                  {
+                    backgroundColor: node.hasHoldings
+                      ? colors.positive
+                      : colors.border,
+                  },
+                ]}
+              />
+              <Text style={[styles.nodeMeta, { color: colors.muted }]}>
+                {node.hasHoldings
+                  ? `${formatPercent(node.currentOfParent, {
+                      precision: 1,
+                    })} of parent · ${formatCompactINR(node.currentValue)}`
+                  : 'Not detected'}
+                {' · '}
+                <Text style={{ color: colors.textSecondary }}>
+                  {formatPercent(effectiveValue, { precision: 1 })} portfolio
+                </Text>
+              </Text>
+            </View>
           </View>
-          <Badge
-            label={node.hasHoldings ? label?.label ?? 'Composition' : 'Not detected'}
-            tone={node.hasHoldings ? levelTone(entry.level) : 'neutral'}
+
+          {!isDemo ? (
+            <View style={styles.nodeActions}>
+              <Pressable
+                onPress={() => openAdd(node.path)}
+                accessibilityRole="button"
+                accessibilityLabel={`Add sub-category under ${node.label}`}
+                hitSlop={8}
+                style={({ pressed }) => [
+                  styles.nodeAction,
+                  pressed ? styles.rowPressed : null,
+                ]}
+              >
+                <Feather name="plus" size={15} color={colors.muted} />
+              </Pressable>
+              <Pressable
+                onPress={() => confirmRemove(node.path)}
+                accessibilityRole="button"
+                accessibilityLabel={`Remove ${node.label}`}
+                hitSlop={8}
+                style={({ pressed }) => [
+                  styles.nodeAction,
+                  pressed ? styles.rowPressed : null,
+                ]}
+              >
+                <Feather name="trash-2" size={15} color={colors.muted} />
+              </Pressable>
+            </View>
+          ) : null}
+        </View>
+
+        <View style={styles.controlsRow}>
+          <MiniField
+            label="Target (% parent)"
+            value={entry.target}
+            onChangeText={(value) => updateEntry(node.path, { target: value })}
+            suffix="%"
+            disabled={isDemo}
+            error={Boolean(childError)}
+            errorText={childError}
+            style={styles.targetField}
           />
-        </View>
-
-        <View style={styles.weights}>
-          <Text style={[type.caption, { color: colors.textSecondary }]}>
-            Target {formatPercent(node.target)} of parent
-          </Text>
-          <Text style={[type.caption, { color: colors.muted }]}>
-            = {formatPercent(effective[node.path] ?? node.effectiveTarget)} of portfolio
-          </Text>
-        </View>
-
-        <View style={styles.rowInputs}>
-          <View style={styles.inputGrow}>
-            <TextField
-              label="Target % of parent"
-              value={entry.target}
-              onChangeText={(value) => updateEntry(node.path, { target: value })}
-              keyboardType="decimal-pad"
-              inputMode="decimal"
-              selectTextOnFocus
-              editable={!isDemo}
-              error={
-                entry.target.trim() === ''
-                  ? 'Required'
-                  : validation.childErrors[node.path] && entry.target.trim() !== ''
-                    ? validation.childErrors[node.path]
-                    : undefined
-              }
-            />
-          </View>
           {entry.level !== 'composition' ? (
             <>
-              <View style={styles.inputThird}>
-                <TextField
-                  label="Min %"
-                  value={entry.min}
-                  onChangeText={(value) => updateEntry(node.path, { min: value })}
-                  keyboardType="decimal-pad"
-                  inputMode="decimal"
-                  selectTextOnFocus
-                  editable={!isDemo}
-                  error={rangeIssue && !rangeIssue.includes('outside') ? rangeIssue : undefined}
-                />
-              </View>
-              <View style={styles.inputThird}>
-                <TextField
-                  label="Max %"
-                  value={entry.max}
-                  onChangeText={(value) => updateEntry(node.path, { max: value })}
-                  keyboardType="decimal-pad"
-                  inputMode="decimal"
-                  selectTextOnFocus
-                  editable={!isDemo}
-                  error={rangeIssue && !rangeIssue.includes('outside') ? rangeIssue : undefined}
-                />
-              </View>
+              <MiniField
+                label="Min %"
+                value={entry.min}
+                onChangeText={(value) => updateEntry(node.path, { min: value })}
+                suffix="%"
+                disabled={isDemo}
+                error={Boolean(rangeIssue)}
+                style={styles.rangeField}
+              />
+              <MiniField
+                label="Max %"
+                value={entry.max}
+                onChangeText={(value) => updateEntry(node.path, { max: value })}
+                suffix="%"
+                disabled={isDemo}
+                error={Boolean(rangeIssue)}
+                style={styles.rangeField}
+              />
             </>
           ) : null}
         </View>
 
         {rangeIssue ? (
-          <Text style={[type.caption, { color: colors.negative }]}>{rangeIssue}</Text>
+          <Text style={[styles.rowError, { color: colors.negative }]}>
+            {rangeIssue}
+          </Text>
         ) : null}
 
         <View style={styles.levelRow}>
-          {LEVELS.map((option) => (
-            <Chip
-              key={option.key}
-              label={option.label}
-              selected={entry.level === option.key}
-              onPress={
-                isDemo ? undefined : () => updateEntry(node.path, { level: option.key })
-              }
-            />
-          ))}
-        </View>
-        <Text style={[type.caption, { color: colors.muted }]}>
-          {label?.hint}. Ranges are effective % of the total portfolio.
-        </Text>
-
-        <View style={styles.actions}>
-          <Button
-            label="Add sub-category"
-            onPress={() => openAdd(node.path)}
-            variant="ghost"
-            size="sm"
-            icon="plus"
+          <Text style={[styles.levelLabel, { color: colors.muted }]}>Level</Text>
+          <LevelControl
+            value={entry.level}
+            onChange={(level) => updateEntry(node.path, { level })}
             disabled={isDemo}
-          />
-          <Button
-            label="Remove"
-            onPress={() => confirmRemove(node.path)}
-            variant="ghost"
-            size="sm"
-            icon="trash-2"
-            disabled={isDemo}
+            style={styles.levelControl}
           />
         </View>
 
         {addingAt === node.path ? renderAddForm(node.path) : null}
 
         {node.children.length > 0 ? (
-          <View style={styles.childTree}>
+          <View style={[styles.children, { borderLeftColor: colors.border }]}>
             {node.children.map((child) => renderRow(child))}
             <View style={styles.subSum}>
-              <Text
-                style={[
-                  type.caption,
-                  {
-                    color: parentError
-                      ? colors.negative
-                      : unallocated
-                        ? colors.warning
-                        : colors.positive,
-                  },
-                ]}
-              >
+              <Feather
+                name={
+                  parentError
+                    ? 'alert-circle'
+                    : unallocated
+                      ? 'alert-triangle'
+                      : 'check-circle'
+                }
+                size={12}
+                color={sumColor}
+              />
+              <Text style={[type.caption, { color: sumColor, flex: 1 }]}>
                 {parentError
                   ? parentError
                   : unallocated
-                    ? `Children ${formatPercent(sum)} · ${formatPercent(
-                        unallocated,
-                      )} explicit Unallocated`
-                    : `Children total ${formatPercent(sum)} ✓`}
+                    ? `Children ${formatPercent(sum, {
+                        precision: 1,
+                      })} · ${formatPercent(unallocated, {
+                        precision: 1,
+                      })} unallocated`
+                    : `Children total ${formatPercent(sum, { precision: 1 })}`}
               </Text>
             </View>
           </View>
@@ -888,10 +1142,33 @@ function BreakdownEditor({
   function renderAddForm(parentPath: string) {
     const suggestions = compositionSuggestions(nodes, parentPath, draftTargets).slice(0, 6);
     return (
-      <View style={[styles.addForm, { backgroundColor: colors.cardMuted }]}>
-        <Text style={[type.label, { color: colors.muted }]}>
-          New group under {parentPath.split(' > ').pop()}
-        </Text>
+      <View
+        style={[
+          styles.addForm,
+          { backgroundColor: colors.cardMuted, borderColor: colors.border },
+        ]}
+      >
+        <View style={styles.addHeader}>
+          <View style={styles.addTitle}>
+            <Text style={[styles.addEyebrow, { color: colors.muted }]}>
+              New sub-category
+            </Text>
+            <Text
+              style={[type.bodyMedium, { color: colors.text }]}
+              numberOfLines={2}
+            >
+              {parentPath.split(' > ').join(' › ')}
+            </Text>
+          </View>
+          <IconButton
+            icon="x"
+            onPress={closeAdd}
+            accessibilityLabel="Cancel adding sub-category"
+            variant="plain"
+            size={30}
+          />
+        </View>
+
         {suggestions.length > 0 ? (
           <View style={styles.suggestions}>
             {suggestions.map((suggestion) => (
@@ -904,45 +1181,49 @@ function BreakdownEditor({
             ))}
           </View>
         ) : null}
-        <TextField
-          label="Sub-category name"
-          placeholder="e.g. Domestic Equity"
+
+        <MiniField
+          label="Name"
+          placeholder="e.g. Domestic equity"
           value={newName}
           onChangeText={(value) => {
             setNewName(value);
             setAddError(null);
           }}
+          decimal={false}
           autoCapitalize="words"
-          editable={!isDemo}
+          disabled={isDemo}
         />
-        <TextField
-          label="Target % of parent"
+
+        <MiniField
+          label="Target (% parent)"
           placeholder="0"
           value={newTarget}
           onChangeText={(value) => {
             setNewTarget(value);
             setAddError(null);
           }}
-          keyboardType="decimal-pad"
-          inputMode="decimal"
-          editable={!isDemo}
+          suffix="%"
+          disabled={isDemo}
         />
+
         <View style={styles.levelRow}>
-          {LEVELS.map((option) => (
-            <Chip
-              key={option.key}
-              label={option.label}
-              selected={newLevel === option.key}
-              onPress={() => setNewLevel(option.key)}
-            />
-          ))}
+          <Text style={[styles.levelLabel, { color: colors.muted }]}>Level</Text>
+          <LevelControl
+            value={newLevel}
+            onChange={setNewLevel}
+            disabled={isDemo}
+            style={styles.levelControl}
+          />
         </View>
+
         {addError ? (
-          <Text style={[type.caption, { color: colors.negative }]}>{addError}</Text>
+          <Text style={[styles.rowError, { color: colors.negative }]}>{addError}</Text>
         ) : null}
-        <View style={styles.actions}>
+
+        <View style={styles.addActions}>
           <Button
-            label="Add group"
+            label="Add sub-category"
             onPress={() => addChild(parentPath)}
             variant="primary"
             size="sm"
@@ -964,51 +1245,250 @@ function BreakdownEditor({
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   stack: { gap: space.xl },
+
   summaryCard: { gap: space.md },
-  summaryHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: space.md },
-  summaryText: { flex: 1, gap: 2 },
-  summaryValue: { fontSize: 26, fontWeight: '600', letterSpacing: -0.4 },
-  summaryBadges: { alignItems: 'flex-end', gap: space.xs },
-  modeRow: {
+  summaryTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: space.md,
+  },
+  summaryStats: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.lg,
+    flex: 1,
+  },
+  summaryStat: { gap: 2 },
+  statLabel: {
+    fontSize: 10,
+    fontWeight: '600',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  statValue: { fontSize: 22, fontWeight: '600', letterSpacing: -0.4 },
+  statValueMuted: { fontSize: 14, fontWeight: '500' },
+  statRule: { width: StyleSheet.hairlineWidth, height: 28 },
+  summaryCopy: { fontSize: 12, lineHeight: 18, maxWidth: 680 },
+  unallocatedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: space.md,
+  },
+  optionIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: radius.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  optionText: { flex: 1, gap: 2 },
+  optionDisabled: { opacity: 0.55 },
+  switchTrack: {
+    width: 40,
+    height: 24,
+    borderRadius: radius.full,
+    padding: 2,
+    justifyContent: 'center',
+  },
+  switchThumb: { width: 20, height: 20, borderRadius: radius.full },
+
+  sleeve: { gap: space.sm },
+  sleeveHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+    marginTop: space.xs,
+  },
+  sleeveTitle: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     gap: space.sm,
-    borderWidth: 1,
-    borderRadius: radius.lg,
-    padding: space.md,
   },
-  modeText: { flex: 1, gap: 2 },
-  sleeveCard: { gap: space.md, padding: space.md },
-  sleeveHeader: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
-  sleeveDot: { width: 8, height: 8, borderRadius: radius.full },
-  sleeveTitle: { flex: 1, gap: 2 },
-  empty: { paddingVertical: space.sm },
-  tree: { gap: space.sm },
-  row: {
-    borderLeftWidth: 2,
-    paddingLeft: space.md,
-    gap: space.sm,
-  },
-  childTree: { gap: space.sm, marginTop: space.xs },
-  rowHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: space.sm },
-  rowTitle: { flex: 1, gap: 2 },
-  weights: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
-  rowInputs: { flexDirection: 'row', gap: space.sm, alignItems: 'flex-start' },
-  inputGrow: { flex: 1.5 },
-  inputThird: { flex: 1 },
-  levelRow: { flexDirection: 'row', flexWrap: 'wrap', gap: space.xs },
-  actions: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
-  sumRow: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    paddingTop: space.sm,
+  sleeveTitleText: { flex: 1, gap: 2 },
+  sleeveDot: { width: 9, height: 9, borderRadius: radius.full },
+  addAction: {
     flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingVertical: space.xs,
+    paddingHorizontal: space.xxs,
+  },
+  addActionText: { fontSize: 13, fontWeight: '600' },
+  sleeveCard: { overflow: 'hidden' },
+
+  sleeveStats: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    paddingVertical: space.md,
+    paddingHorizontal: space.lg,
+  },
+  sleeveStat: { flex: 1, gap: 2 },
+  sleeveStatRule: { width: StyleSheet.hairlineWidth, marginHorizontal: space.md },
+  sleeveStatValue: { fontSize: 18, fontWeight: '600', letterSpacing: -0.2 },
+  sleeveStatSub: { fontSize: 11 },
+  coverageTrack: { height: 2, flexDirection: 'row' },
+
+  tree: { paddingHorizontal: space.lg },
+  empty: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    paddingVertical: space.lg,
+  },
+  emptyText: { flex: 1, lineHeight: 17 },
+
+  node: { paddingVertical: space.md, gap: space.sm },
+  nodeHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: space.sm },
+  nodeTitle: { flex: 1, gap: 2 },
+  nodeMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginTop: 1,
+  },
+  statusDot: { width: 6, height: 6, borderRadius: radius.full },
+  nodeMeta: { flex: 1, lineHeight: 16 },
+  nodeActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.xxs,
+    marginTop: -3,
+  },
+  nodeAction: {
+    width: 28,
+    height: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: radius.sm,
+  },
+  rowPressed: { opacity: 0.55 },
+
+  controlsRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: space.sm,
+    maxWidth: 560,
+  },
+  targetField: { flex: 1.35, minWidth: 0 },
+  rangeField: { flex: 1, minWidth: 0 },
+  field: { gap: 4, minWidth: 0 },
+  fieldLabel: {
+    fontSize: 10,
+    fontWeight: '600',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+  },
+  fieldBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 38,
+    borderWidth: 1,
+    borderRadius: radius.sm,
+    paddingHorizontal: space.sm,
+    minWidth: 0,
+  },
+  fieldInput: {
+    flex: 1,
+    flexShrink: 1,
+    height: 36,
+    minWidth: 0,
+    paddingVertical: 0,
+    paddingHorizontal: 0,
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  fieldSuffix: { fontSize: 12, fontWeight: '500', marginLeft: 2 },
+  fieldError: { fontSize: 10, lineHeight: 13 },
+  rowError: { fontSize: 11, lineHeight: 15 },
+
+  levelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    maxWidth: 560,
+  },
+  levelLabel: {
+    fontSize: 10,
+    fontWeight: '600',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+  },
+  levelControl: { flex: 1 },
+  segment: {
+    flexDirection: 'row',
+    gap: 2,
+    padding: 2,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: radius.sm,
+  },
+  segmentOption: {
+    flex: 1,
+    height: 26,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 6,
+    paddingHorizontal: space.xs,
+  },
+  segmentText: { fontSize: 11, letterSpacing: 0.1 },
+  segmentDisabled: { opacity: 0.6 },
+
+  children: {
+    marginTop: space.xs,
+    marginLeft: space.xs,
+    paddingLeft: space.md,
+    borderLeftWidth: StyleSheet.hairlineWidth,
+  },
+  subSum: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingTop: space.xs,
+  },
+
+  sumRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'space-between',
     gap: space.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingVertical: space.sm,
+    paddingHorizontal: space.lg,
   },
-  subSum: { paddingTop: space.xs },
-  addForm: { gap: space.md, borderRadius: radius.lg, padding: space.md },
+  sumText: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    flex: 1,
+  },
+
+  addForm: {
+    gap: space.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: radius.lg,
+    padding: space.md,
+    marginTop: space.xs,
+    marginBottom: space.md,
+    maxWidth: 640,
+  },
+  addHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: space.sm,
+  },
+  addTitle: { flex: 1, gap: 2 },
+  addEyebrow: {
+    fontSize: 10,
+    fontWeight: '600',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
   suggestions: { flexDirection: 'row', flexWrap: 'wrap', gap: space.xs },
-  footerCard: { gap: space.sm },
-  saveBlock: { gap: space.md },
+  addActions: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
+
+  saveBlock: { gap: space.md, marginTop: space.sm },
   saveHint: { fontSize: 11, lineHeight: 16, textAlign: 'center' },
 });
