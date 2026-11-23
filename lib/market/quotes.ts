@@ -5,6 +5,10 @@
  * to fall back to Google Sheets and was reported as stale. These providers give
  * the price API a live path for each asset class while Yahoo remains available
  * as an optional fallback.
+ *
+ * Groww and Moneycontrol are public website endpoints, not licensed APIs. They
+ * are enabled by default for personal use; set ALLOW_UNOFFICIAL_QUOTES=false
+ * before sharing a deployment publicly.
  */
 
 export interface MarketQuote {
@@ -24,6 +28,26 @@ const USER_AGENT =
   '(KHTML, like Gecko) Chrome/131.0 Safari/537.36';
 
 const REQUEST_TIMEOUT_MS = 8_000;
+
+let warnedAboutUnofficialQuotes = false;
+
+/**
+ * Indian equities use Groww and Moneycontrol's public website endpoints. They
+ * require no credentials, but they are not licensed APIs and can be blocked or
+ * changed without notice. Set ALLOW_UNOFFICIAL_QUOTES=false to disable them.
+ */
+function unofficialQuotesEnabled(): boolean {
+  if (process.env.ALLOW_UNOFFICIAL_QUOTES === 'false') {
+    if (!warnedAboutUnofficialQuotes) {
+      console.warn(
+        '[quotes] Groww/Moneycontrol disabled; Indian equities will use Yahoo/Sheets.',
+      );
+      warnedAboutUnofficialQuotes = true;
+    }
+    return false;
+  }
+  return true;
+}
 
 const toNumber = (value: unknown): number | null => {
   if (typeof value === 'number') {
@@ -660,6 +684,7 @@ export async function fetchFallbackQuote(
   if (isMutualFundCode(upper)) return null;
 
   if (upper.endsWith('.NS') || upper.endsWith('.BO')) {
+    if (!unofficialQuotesEnabled()) return null;
     return (await fetchGrowwQuote(upper)) || (await fetchMoneycontrolQuote(upper));
   }
 

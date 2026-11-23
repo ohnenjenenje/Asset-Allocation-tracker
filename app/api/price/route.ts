@@ -18,6 +18,63 @@ const yahoo = new YahooFinance();
 const QUOTE_CACHE_TTL_MS = 30_000;
 const quoteCache = new Map<string, { quote: any; fetchedAt: number }>();
 
+// `/api/price` is intentionally public so the web dashboard can use it without
+// a Firebase token. Keep it from becoming an open quote proxy: cap each request
+// and apply a per-IP fixed window. The mobile app sends one request for the
+// whole portfolio; the web app chunks at 8 symbols, so these limits are well
+// above normal use.
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const MAX_RATE_BUCKETS = 2_000;
+
+function positiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+const PRICE_API_RATE_LIMIT = positiveInt(process.env.PRICE_API_RATE_LIMIT, 120);
+const PRICE_API_SYNC_RATE_LIMIT = positiveInt(process.env.PRICE_API_SYNC_RATE_LIMIT, 60);
+const PRICE_API_MAX_SYMBOLS = positiveInt(process.env.PRICE_API_MAX_SYMBOLS, 250);
+
+type RateBucket = { count: number; resetAt: number };
+const rateBuckets = new Map<string, RateBucket>();
+
+function clientKey(request: Request): string {
+  const forwarded = request.headers.get('x-forwarded-for');
+  if (forwarded) {
+    const first = forwarded.split(',')[0]?.trim();
+    if (first) return first;
+  }
+  return request.headers.get('x-real-ip')?.trim() || 'unknown';
+}
+
+function consumeRateLimit(
+  key: string,
+  max: number,
+): { allowed: boolean; retryAfterSeconds: number } {
+  const now = Date.now();
+
+  if (rateBuckets.size >= MAX_RATE_BUCKETS) {
+    for (const [bucketKey, bucket] of rateBuckets) {
+      if (now >= bucket.resetAt) rateBuckets.delete(bucketKey);
+    }
+  }
+
+  const bucket = rateBuckets.get(key);
+  if (!bucket || now >= bucket.resetAt) {
+    rateBuckets.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    return { allowed: true, retryAfterSeconds: 0 };
+  }
+
+  bucket.count += 1;
+  if (bucket.count > max) {
+    return {
+      allowed: false,
+      retryAfterSeconds: Math.max(1, Math.ceil((bucket.resetAt - now) / 1000)),
+    };
+  }
+  return { allowed: true, retryAfterSeconds: 0 };
+}
+
 // Yahoo returns HTTP 429 from Render. After two failures, stop trying for a
 // while so one blocked host does not add latency to every symbol on the page.
 const YAHOO_COOLDOWN_MS = 5 * 60_000;
@@ -148,12 +205,49 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: 'Query parameter "symbols" is required' }, { status: 400 });
     }
 
-    const symbols = symbolsParam.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+    const symbols = [
+      ...new Set(
+        symbolsParam
+          .split(',')
+          .map((symbol) => symbol.trim().toUpperCase())
+          .filter(Boolean),
+      ),
+    ];
+    if (symbols.length === 0) {
+      return NextResponse.json({ error: 'At least one symbol is required' }, { status: 400 });
+    }
+
     // Reads are live by default. `sync=true` is the only mode that writes to
     // Google Sheets; `refresh=true` is kept as a backwards-compatible alias.
     const refresh = searchParams.get('refresh') === 'true';
     const sync = searchParams.get('sync') === 'true' || refresh;
     const live = searchParams.get('live') !== 'false' || refresh;
+
+    const rateLimit = consumeRateLimit(
+      `${clientKey(request)}:${sync ? 'sync' : 'read'}`,
+      sync ? PRICE_API_SYNC_RATE_LIMIT : PRICE_API_RATE_LIMIT,
+    );
+    if (!rateLimit.allowed) {
+      return NextResponse.json(
+        { error: 'Too many price requests. Please retry shortly.' },
+        {
+          status: 429,
+          headers: {
+            'Cache-Control': 'no-store',
+            'Retry-After': String(rateLimit.retryAfterSeconds),
+          },
+        },
+      );
+    }
+
+    if (symbols.length > PRICE_API_MAX_SYMBOLS) {
+      return NextResponse.json(
+        {
+          error: `Too many symbols: ${symbols.length}. Maximum is ${PRICE_API_MAX_SYMBOLS}.`,
+        },
+        { status: 400, headers: { 'Cache-Control': 'no-store' } },
+      );
+    }
 
     // NSE index membership is the authoritative source for Indian cap buckets.
     // Start the (cached) load alongside the quote work instead of blocking the
