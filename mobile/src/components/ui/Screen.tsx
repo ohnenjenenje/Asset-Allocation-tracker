@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { space } from '@/src/lib/theme/tokens';
+import { layout, space } from '@/src/lib/theme/tokens';
 import { useTheme } from '@/src/lib/theme/ThemeProvider';
 
 interface ScreenProps {
@@ -35,10 +35,20 @@ export function Screen({
 
   // The safe-area padding lives on a wrapper, not the ScrollView itself.
   // Otherwise the scroll viewport stays full-bleed and content slides under the
-  // status bar clock and icons while scrolling.
+  // status bar clock and icons while scrolling. Left/right insets matter on
+  // tablets and landscape phones with cutouts.
   return (
     <View
-      style={[styles.root, { backgroundColor: colors.bg, paddingTop: insets.top }, style]}
+      style={[
+        styles.root,
+        {
+          backgroundColor: colors.bg,
+          paddingTop: insets.top,
+          paddingLeft: insets.left,
+          paddingRight: insets.right,
+        },
+        style,
+      ]}
     >
       {scroll ? (
         <ScrollView
@@ -64,10 +74,10 @@ export function Screen({
             ) : undefined
           }
         >
-          {children}
+          <View style={styles.centered}>{children}</View>
         </ScrollView>
       ) : (
-        children
+        <View style={[styles.centered, styles.fill]}>{children}</View>
       )}
     </View>
   );
@@ -78,4 +88,10 @@ const styles = StyleSheet.create({
   content: {
     paddingHorizontal: space.lg,
   },
+  centered: {
+    width: '100%',
+    maxWidth: layout.contentMaxWidth,
+    alignSelf: 'center',
+  },
+  fill: { flex: 1 },
 });

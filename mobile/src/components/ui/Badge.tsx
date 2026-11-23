@@ -1,4 +1,10 @@
-import { StyleSheet, Text, View } from 'react-native';
+import {
+  StyleSheet,
+  Text,
+  View,
+  type StyleProp,
+  type ViewStyle,
+} from 'react-native';
 
 import { numeric, radius, space, type } from '@/src/lib/theme/tokens';
 import { useTheme } from '@/src/lib/theme/ThemeProvider';
@@ -8,9 +14,10 @@ export type BadgeTone = 'neutral' | 'positive' | 'negative' | 'accent' | 'warnin
 interface BadgeProps {
   label: string;
   tone?: BadgeTone;
+  style?: StyleProp<ViewStyle>;
 }
 
-export function Badge({ label, tone = 'neutral' }: BadgeProps) {
+export function Badge({ label, tone = 'neutral', style }: BadgeProps) {
   const { colors } = useTheme();
 
   const tones: Record<BadgeTone, { fg: string; bg: string }> = {
@@ -23,7 +30,7 @@ export function Badge({ label, tone = 'neutral' }: BadgeProps) {
   const palette = tones[tone];
 
   return (
-    <View style={[styles.badge, { backgroundColor: palette.bg }]}>
+    <View style={[styles.badge, { backgroundColor: palette.bg }, style]}>
       <Text style={[styles.label, numeric, { color: palette.fg }]} numberOfLines={1}>
         {label}
       </Text>

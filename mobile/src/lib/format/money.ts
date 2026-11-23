@@ -22,6 +22,10 @@ const percentFormatter = new Intl.NumberFormat('en-IN', {
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,
 });
+const percent1Formatter = new Intl.NumberFormat('en-IN', {
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+});
 
 function fallbackINR(value: number, exact: boolean): string {
   const fixed = exact ? value.toFixed(2) : Math.round(value).toString();
@@ -56,9 +60,14 @@ export function formatQuantity(quantity: number): string {
   }
 }
 
-export function formatPercent(value: number, opts: { signed?: boolean } = {}): string {
-  if (!Number.isFinite(value)) return '0.00%';
-  const formatted = percentFormatter.format(Math.abs(value));
+export function formatPercent(
+  value: number,
+  opts: { signed?: boolean; precision?: 1 | 2 } = {},
+): string {
+  const precision = opts.precision ?? 2;
+  if (!Number.isFinite(value)) return precision === 1 ? '0.0%' : '0.00%';
+  const formatter = precision === 1 ? percent1Formatter : percentFormatter;
+  const formatted = formatter.format(Math.abs(value));
   if (opts.signed) return `${value >= 0 ? '+' : '-'}${formatted}%`;
   return `${formatted}%`;
 }

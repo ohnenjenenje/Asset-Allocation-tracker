@@ -3,7 +3,7 @@
     "name": "Asset Tracker",
     "slug": "asset-tracker",
     "version": "0.1.0",
-    "orientation": "portrait",
+    "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": "assettracker",
     "userInterfaceStyle": "automatic",

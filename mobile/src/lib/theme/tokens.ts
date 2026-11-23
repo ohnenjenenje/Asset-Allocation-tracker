@@ -85,6 +85,15 @@ export const radius = {
   full: 999,
 } as const;
 
+/**
+ * Responsive layout thresholds. Android-first: one breakpoint switches the
+ * allocation table from the four-column phone layout to the full table.
+ */
+export const layout = {
+  tabletMinWidth: 720,
+  contentMaxWidth: 1040,
+} as const;
+
 /** Four-step type scale: display / title / body / caption. */
 export const type = {
   display: { fontSize: 28, fontWeight: '600' as const, letterSpacing: -0.6 },
