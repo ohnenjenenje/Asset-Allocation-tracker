@@ -15,7 +15,6 @@ import {
   type ViewStyle,
 } from 'react-native';
 
-import { Badge } from '@/src/components/ui/Badge';
 import { Banner } from '@/src/components/ui/Banner';
 import { Button } from '@/src/components/ui/Button';
 import { Card } from '@/src/components/ui/Card';
@@ -65,6 +64,8 @@ const LEVELS: { key: PolicyDecisionLevel; label: string; hint: string }[] = [
   { key: 'policy', label: 'Policy', hint: 'Actionable compliance node' },
 ];
 
+const NEW_LEVEL_KEY = '@new';
+
 interface DraftEntry {
   target: string;
   min: string;
@@ -110,9 +111,10 @@ function MiniField({
   decimal = true,
   disabled = false,
   error = false,
-  errorText,
   placeholder,
   autoCapitalize,
+  accessibilityLabel,
+  align = 'left',
   style,
 }: {
   label: string;
@@ -122,9 +124,10 @@ function MiniField({
   decimal?: boolean;
   disabled?: boolean;
   error?: boolean;
-  errorText?: string;
   placeholder?: string;
   autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
+  accessibilityLabel?: string;
+  align?: 'left' | 'right';
   style?: StyleProp<ViewStyle>;
 }) {
   const { colors } = useTheme();
@@ -142,7 +145,7 @@ function MiniField({
         style={[
           styles.fieldBox,
           {
-            backgroundColor: disabled ? colors.cardMuted : colors.bg,
+            backgroundColor: colors.cardMuted,
             borderColor: error ? colors.negative : focused ? colors.accent : colors.border,
           },
         ]}
@@ -159,78 +162,133 @@ function MiniField({
           autoCapitalize={autoCapitalize}
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
+          accessibilityLabel={accessibilityLabel ?? label}
           style={[
             styles.fieldInput,
             numeric,
-            { color: disabled ? colors.muted : colors.text },
+            {
+              color: disabled ? colors.muted : colors.text,
+              textAlign: align,
+            },
           ]}
         />
         {suffix ? (
           <Text style={[styles.fieldSuffix, { color: colors.muted }]}>{suffix}</Text>
         ) : null}
       </View>
-      {errorText ? (
-        <Text style={[styles.fieldError, { color: colors.negative }]} numberOfLines={2}>
-          {errorText}
-        </Text>
-      ) : null}
     </View>
   );
 }
 
-function LevelControl({
+function levelFor(key: PolicyDecisionLevel) {
+  return LEVELS.find((option) => option.key === key) ?? LEVELS[0];
+}
+
+function LevelPill({
+  value,
+  open,
+  onPress,
+  disabled = false,
+}: {
+  value: PolicyDecisionLevel;
+  open: boolean;
+  onPress: () => void;
+  disabled?: boolean;
+}) {
+  const { colors } = useTheme();
+  const level = levelFor(value);
+  const dotColor =
+    value === 'policy'
+      ? colors.accent
+      : value === 'monitor'
+        ? colors.warning
+        : colors.muted;
+
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      accessibilityRole="button"
+      accessibilityLabel={`Level: ${level.label}`}
+      accessibilityHint={level.hint}
+      accessibilityState={{ expanded: open, disabled }}
+      style={({ pressed }) => [
+        styles.levelPill,
+        {
+          backgroundColor: colors.cardMuted,
+          borderColor: open ? colors.accent : colors.border,
+        },
+        disabled ? styles.optionDisabled : null,
+        pressed && !disabled ? styles.rowPressed : null,
+      ]}
+    >
+      <View style={[styles.levelDot, { backgroundColor: dotColor }]} />
+      <Text
+        style={[styles.levelPillText, { color: colors.textSecondary }]}
+        numberOfLines={1}
+      >
+        {level.label}
+      </Text>
+      <Feather
+        name={open ? 'chevron-up' : 'chevron-down'}
+        size={11}
+        color={colors.muted}
+      />
+    </Pressable>
+  );
+}
+
+function LevelMenu({
   value,
   onChange,
-  disabled = false,
-  style,
 }: {
   value: PolicyDecisionLevel;
   onChange: (level: PolicyDecisionLevel) => void;
-  disabled?: boolean;
-  style?: StyleProp<ViewStyle>;
 }) {
   const { colors } = useTheme();
 
   return (
-    <View
-      style={[
-        styles.segment,
-        { backgroundColor: colors.cardMuted, borderColor: colors.border },
-        disabled && styles.segmentDisabled,
-        style,
-      ]}
-    >
-      {LEVELS.map((option) => {
-        const selected = value === option.key;
-        return (
-          <Pressable
-            key={option.key}
-            onPress={() => onChange(option.key)}
-            disabled={disabled}
-            accessibilityRole="button"
-            accessibilityLabel={`${option.label} level`}
-            accessibilityHint={option.hint}
-            accessibilityState={{ selected, disabled }}
-            style={[
-              styles.segmentOption,
-              selected && { backgroundColor: colors.accentSoft },
-            ]}
-          >
-            <Text
-              style={[
-                styles.segmentText,
-                {
-                  color: selected ? colors.accent : colors.muted,
-                  fontWeight: selected ? '600' : '500',
-                },
+    <View style={styles.levelMenuWrap}>
+      <View
+        style={[
+          styles.levelMenu,
+          { backgroundColor: colors.cardMuted, borderColor: colors.border },
+        ]}
+      >
+        {LEVELS.map((option) => {
+          const selected = option.key === value;
+          return (
+            <Pressable
+              key={option.key}
+              onPress={() => onChange(option.key)}
+              accessibilityRole="button"
+              accessibilityLabel={`${option.label}: ${option.hint}`}
+              accessibilityState={{ selected }}
+              style={({ pressed }) => [
+                styles.levelOption,
+                selected && { backgroundColor: colors.accentSoft },
+                pressed ? styles.rowPressed : null,
               ]}
-              numberOfLines={1}
             >
-              {option.label}
-            </Text>
-          </Pressable>
-        );
-      })}
+              <Text
+                style={[
+                  styles.levelOptionText,
+                  {
+                    color: selected ? colors.accent : colors.muted,
+                    fontWeight: selected ? '600' : '500',
+                  },
+                ]}
+                numberOfLines={1}
+              >
+                {option.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      <Text style={[styles.levelHint, { color: colors.muted }]}>
+        {levelFor(value).hint}
+      </Text>
     </View>
   );
 }
@@ -278,9 +336,9 @@ export default function BreakdownScreen() {
     >
       <Screen>
         <ScreenHeader
-          eyebrow="Institutional allocation"
+          eyebrow="Portfolio policy"
           title="Sleeve composition"
-          subtitle="Set how each sleeve is built without changing the root policy."
+          subtitle="Sub-targets are % of parent; ranges are % of portfolio."
           action={
             <IconButton
               icon="x"
@@ -345,6 +403,7 @@ function BreakdownEditor({
     config.policy.allowUnallocated ?? false,
   );
   const [addingAt, setAddingAt] = useState<string | null>(null);
+  const [levelMenuPath, setLevelMenuPath] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
   const [newTarget, setNewTarget] = useState('');
   const [newLevel, setNewLevel] = useState<PolicyDecisionLevel>('composition');
@@ -515,6 +574,7 @@ function BreakdownEditor({
 
   const openAdd = (parentPath: string) => {
     setAddingAt(parentPath);
+    setLevelMenuPath(null);
     setNewName('');
     setNewTarget('');
     setNewLevel('composition');
@@ -523,6 +583,7 @@ function BreakdownEditor({
 
   const closeAdd = () => {
     setAddingAt(null);
+    setLevelMenuPath(null);
     setNewName('');
     setNewTarget('');
     setAddError(null);
@@ -601,6 +662,7 @@ function BreakdownEditor({
             if (addingAt === path || addingAt?.startsWith(`${path} > `)) {
               closeAdd();
             }
+            setLevelMenuPath(null);
           },
         },
       ],
@@ -637,6 +699,16 @@ function BreakdownEditor({
     directChildPaths(draftTargets, root).length > 0,
   ).length;
   const compositionReady = config.isValid && validation.isValid && !hasRangeIssues;
+  const compositionStatusLabel = !compositionReady
+    ? 'Needs fixes'
+    : totalDefined === 0
+      ? 'Not set'
+      : 'Valid';
+  const compositionStatusColor = !compositionReady
+    ? colors.warning
+    : totalDefined === 0
+      ? colors.muted
+      : colors.positive;
 
   return (
     <View style={styles.stack}>
@@ -668,40 +740,51 @@ function BreakdownEditor({
         />
       ) : null}
 
-      <Card style={styles.summaryCard}>
-        <View style={styles.summaryTop}>
-          <View style={styles.summaryStats}>
-            <View style={styles.summaryStat}>
-              <Text style={[styles.statLabel, { color: colors.muted }]}>
-                Sub-categories
+      <Card padded={false}>
+        <View style={styles.summaryStrip}>
+          <View style={styles.summaryMetric}>
+            <Text style={[styles.statLabel, { color: colors.muted }]}>
+              Sub-categories
+            </Text>
+            <Text style={[styles.summaryValue, numeric, { color: colors.text }]}>
+              {totalDefined}
+            </Text>
+          </View>
+
+          <View style={[styles.statRule, { backgroundColor: colors.border }]} />
+
+          <View style={styles.summaryMetric}>
+            <Text style={[styles.statLabel, { color: colors.muted }]}>
+              Sleeves covered
+            </Text>
+            <Text style={[styles.summaryValue, numeric, { color: colors.text }]}>
+              {sleevesWithComposition}
+              <Text style={[styles.summaryValueMuted, { color: colors.muted }]}>
+                /{roots.length}
               </Text>
-              <Text style={[styles.statValue, numeric, { color: colors.text }]}>
-                {totalDefined}
-              </Text>
-            </View>
-            <View style={[styles.statRule, { backgroundColor: colors.border }]} />
-            <View style={styles.summaryStat}>
-              <Text style={[styles.statLabel, { color: colors.muted }]}>
-                Sleeves covered
-              </Text>
-              <Text style={[styles.statValue, numeric, { color: colors.text }]}>
-                {sleevesWithComposition}
-                <Text style={[styles.statValueMuted, { color: colors.muted }]}>
-                  /{roots.length}
-                </Text>
+            </Text>
+          </View>
+
+          <View style={styles.summaryStatus}>
+            <Text style={[styles.statLabel, { color: colors.muted }]}>Status</Text>
+            <View style={styles.statusLine}>
+              <Feather
+                name={
+                  !compositionReady
+                    ? 'alert-circle'
+                    : totalDefined === 0
+                      ? 'minus-circle'
+                      : 'check-circle'
+                }
+                size={12}
+                color={compositionStatusColor}
+              />
+              <Text style={[styles.statusText, { color: compositionStatusColor }]}>
+                {compositionStatusLabel}
               </Text>
             </View>
           </View>
-          <Badge
-            label={compositionReady ? 'Valid' : 'Needs attention'}
-            tone={compositionReady ? 'positive' : 'warning'}
-          />
         </View>
-
-        <Text style={[styles.summaryCopy, { color: colors.muted }]}>
-          Each target is a % of its immediate parent; roots stay the only policy level.
-          Composition is informational, Monitor watches the range, Policy is actionable.
-        </Text>
 
         <Pressable
           onPress={isDemo ? undefined : () => setAllowUnallocated((value) => !value)}
@@ -716,28 +799,12 @@ function BreakdownEditor({
             isDemo ? styles.optionDisabled : null,
           ]}
         >
-          <View
-            style={[
-              styles.optionIcon,
-              {
-                backgroundColor: allowUnallocated
-                  ? colors.warningSoft
-                  : colors.cardMuted,
-              },
-            ]}
-          >
-            <Feather
-              name="pie-chart"
-              size={15}
-              color={allowUnallocated ? colors.warning : colors.muted}
-            />
-          </View>
           <View style={styles.optionText}>
-            <Text style={[type.bodyMedium, { color: colors.text }]}>
-              Allow unallocated
+            <Text style={[styles.optionTitle, { color: colors.text }]}>
+              Allow unallocated remainder
             </Text>
-            <Text style={[type.caption, { color: colors.muted }]}>
-              Parents may total under 100%; the remainder is saved explicitly.
+            <Text style={[styles.optionHint, { color: colors.muted }]}>
+              Parents may total under 100%; remainder saved.
             </Text>
           </View>
           <ToggleSwitch on={allowUnallocated} />
@@ -750,8 +817,14 @@ function BreakdownEditor({
         const rootCurrentPct =
           totalValue > 0 ? (rootCurrentValue / totalValue) * 100 : 0;
         const range = config.ranges[root] ?? {
-          min: Math.max(0, rootTarget - (config.bands[root] ?? defaultBandFor(root))),
-          max: Math.min(100, rootTarget + (config.bands[root] ?? defaultBandFor(root))),
+          min: Math.max(
+            0,
+            rootTarget - (config.bands[root] ?? defaultBandFor(root)),
+          ),
+          max: Math.min(
+            100,
+            rootTarget + (config.bands[root] ?? defaultBandFor(root)),
+          ),
         };
         const tree = buildCompositionTree({
           targets: draftTargets,
@@ -767,9 +840,9 @@ function BreakdownEditor({
             : coverage > 0
               ? colors.warning
               : colors.muted;
-        const coverageWidth = `${Number.isFinite(coverage)
-          ? Math.min(100, Math.max(0, coverage))
-          : 0}%` as DimensionValue;
+        const coverageWidth = `${
+          Number.isFinite(coverage) ? Math.min(100, Math.max(0, coverage)) : 0
+        }%` as DimensionValue;
         const parentError = validation.parentErrors[root];
         const sum = validation.sumByParent[root];
         const unallocated = validation.unallocatedByParent[root];
@@ -790,11 +863,14 @@ function BreakdownEditor({
                   ]}
                 />
                 <View style={styles.sleeveTitleText}>
-                  <Text style={[type.title, { color: colors.text }]} numberOfLines={1}>
+                  <Text
+                    style={[styles.sleeveName, { color: colors.text }]}
+                    numberOfLines={1}
+                  >
                     {root}
                   </Text>
                   <Text
-                    style={[type.caption, { color: colors.muted }]}
+                    style={[styles.sleeveMeta, { color: colors.muted }]}
                     numberOfLines={1}
                   >
                     Band {formatPercent(range.min, { precision: 1 })}–
@@ -816,7 +892,7 @@ function BreakdownEditor({
                     pressed ? styles.rowPressed : null,
                   ]}
                 >
-                  <Feather name="plus" size={14} color={colors.accent} />
+                  <Feather name="plus" size={12} color={colors.accent} />
                   <Text style={[styles.addActionText, { color: colors.accent }]}>
                     Add
                   </Text>
@@ -830,26 +906,38 @@ function BreakdownEditor({
                   <Text style={[styles.statLabel, { color: colors.muted }]}>
                     Current
                   </Text>
-                  <Text style={[styles.sleeveStatValue, numeric, { color: colors.text }]}>
+                  <Text
+                    style={[styles.sleeveStatValue, numeric, { color: colors.text }]}
+                  >
                     {formatPercent(rootCurrentPct, { precision: 1 })}
                   </Text>
-                  <Text style={[styles.sleeveStatSub, numeric, { color: colors.muted }]}>
+                  <Text
+                    style={[styles.sleeveStatSub, numeric, { color: colors.muted }]}
+                  >
                     {formatCompactINR(rootCurrentValue)}
                   </Text>
                 </View>
-                <View style={[styles.sleeveStatRule, { backgroundColor: colors.border }]} />
+                <View
+                  style={[styles.sleeveStatRule, { backgroundColor: colors.border }]}
+                />
                 <View style={styles.sleeveStat}>
                   <Text style={[styles.statLabel, { color: colors.muted }]}>
                     Target
                   </Text>
-                  <Text style={[styles.sleeveStatValue, numeric, { color: colors.text }]}>
+                  <Text
+                    style={[styles.sleeveStatValue, numeric, { color: colors.text }]}
+                  >
                     {formatPercent(rootTarget, { precision: 1 })}
                   </Text>
-                  <Text style={[styles.sleeveStatSub, numeric, { color: colors.muted }]}>
+                  <Text
+                    style={[styles.sleeveStatSub, numeric, { color: colors.muted }]}
+                  >
                     {formatCompactINR((totalValue * rootTarget) / 100)}
                   </Text>
                 </View>
-                <View style={[styles.sleeveStatRule, { backgroundColor: colors.border }]} />
+                <View
+                  style={[styles.sleeveStatRule, { backgroundColor: colors.border }]}
+                />
                 <View style={styles.sleeveStat}>
                   <Text style={[styles.statLabel, { color: colors.muted }]}>
                     Covered
@@ -869,7 +957,9 @@ function BreakdownEditor({
                 </View>
               </View>
 
-              <View style={[styles.coverageTrack, { backgroundColor: colors.cardMuted }]}>
+              <View
+                style={[styles.coverageTrack, { backgroundColor: colors.cardMuted }]}
+              >
                 <View
                   style={{
                     width: coverageWidth,
@@ -882,10 +972,11 @@ function BreakdownEditor({
               <View style={styles.tree}>
                 {tree.length === 0 ? (
                   <View style={styles.empty}>
-                    <Feather name="layers" size={16} color={colors.muted} />
-                    <Text style={[type.caption, styles.emptyText, { color: colors.muted }]}>
-                      No sub-categories yet. Add the groups you use to implement this
-                      sleeve.
+                    <Feather name="layers" size={14} color={colors.muted} />
+                    <Text style={[styles.emptyText, { color: colors.muted }]}>
+                      {isDemo
+                        ? 'No sub-categories defined for this sleeve.'
+                        : 'No sub-categories. Add the groups that implement this sleeve.'}
                     </Text>
                   </View>
                 ) : (
@@ -920,10 +1011,10 @@ function BreakdownEditor({
                             ? 'alert-triangle'
                             : 'check-circle'
                       }
-                      size={12}
+                      size={11}
                       color={sumColor}
                     />
-                    <Text style={[type.caption, { color: sumColor, flex: 1 }]}>
+                    <Text style={[styles.sumLabel, { color: sumColor }]}>
                       {parentError
                         ? parentError
                         : unallocated
@@ -935,7 +1026,7 @@ function BreakdownEditor({
                           : `Children total ${formatPercent(sum, { precision: 1 })}`}
                     </Text>
                   </View>
-                  <Text style={[type.caption, { color: colors.muted }]}>
+                  <Text style={[styles.sumCount, { color: colors.muted }]}>
                     {tree.length} {tree.length === 1 ? 'group' : 'groups'}
                   </Text>
                 </View>
@@ -965,11 +1056,12 @@ function BreakdownEditor({
           loading={save.isPending}
           icon={config.isTemplate ? 'check' : 'save'}
           fullWidth
-          size="lg"
+          size="md"
         />
         <Text style={[styles.saveHint, { color: colors.muted }]}>
-          Saving creates a new policy version. Root targets, bands and the rebalance
-          planner stay unchanged.
+          {isDemo
+            ? 'Demo composition is read-only. Nothing is written to the server.'
+            : 'Saving creates a new policy version. Root targets, bands and the rebalance planner stay unchanged.'}
         </Text>
       </View>
     </View>
@@ -995,7 +1087,7 @@ function BreakdownEditor({
       <View key={node.path} style={styles.node}>
         <View style={styles.nodeHeader}>
           <View style={styles.nodeTitle}>
-            <Text style={[type.bodyMedium, { color: colors.text }]} numberOfLines={1}>
+            <Text style={[styles.nodeName, { color: colors.text }]} numberOfLines={1}>
               {node.label}
             </Text>
             <View style={styles.nodeMetaRow}>
@@ -1009,7 +1101,7 @@ function BreakdownEditor({
                   },
                 ]}
               />
-              <Text style={[styles.nodeMeta, { color: colors.muted }]}>
+              <Text style={[styles.nodeMeta, { color: colors.muted }]} numberOfLines={1}>
                 {node.hasHoldings
                   ? `${formatPercent(node.currentOfParent, {
                       precision: 1,
@@ -1017,7 +1109,7 @@ function BreakdownEditor({
                   : 'Not detected'}
                 {' · '}
                 <Text style={{ color: colors.textSecondary }}>
-                  {formatPercent(effectiveValue, { precision: 1 })} portfolio
+                  target {formatPercent(effectiveValue, { precision: 1 })} of portfolio
                 </Text>
               </Text>
             </View>
@@ -1035,7 +1127,7 @@ function BreakdownEditor({
                   pressed ? styles.rowPressed : null,
                 ]}
               >
-                <Feather name="plus" size={15} color={colors.muted} />
+                <Feather name="plus" size={13} color={colors.muted} />
               </Pressable>
               <Pressable
                 onPress={() => confirmRemove(node.path)}
@@ -1047,7 +1139,7 @@ function BreakdownEditor({
                   pressed ? styles.rowPressed : null,
                 ]}
               >
-                <Feather name="trash-2" size={15} color={colors.muted} />
+                <Feather name="trash-2" size={13} color={colors.muted} />
               </Pressable>
             </View>
           ) : null}
@@ -1055,60 +1147,102 @@ function BreakdownEditor({
 
         <View style={styles.controlsRow}>
           <MiniField
-            label="Target (% parent)"
+            label="Target %"
             value={entry.target}
             onChangeText={(value) => updateEntry(node.path, { target: value })}
             suffix="%"
             disabled={isDemo}
             error={Boolean(childError)}
-            errorText={childError}
+            accessibilityLabel={`${node.label} target percentage of parent`}
+            align="right"
             style={styles.targetField}
           />
-          {entry.level !== 'composition' ? (
+          {entry.level === 'composition' ? (
+            <View style={styles.rangeCell}>
+              <Text style={[styles.fieldLabel, { color: colors.muted }]}>Range</Text>
+              <View style={styles.rangeEmpty}>
+                <Text style={[styles.rangeEmptyText, { color: colors.muted }]}>—</Text>
+              </View>
+            </View>
+          ) : (
             <>
               <MiniField
-                label="Min %"
+                label="Min"
                 value={entry.min}
                 onChangeText={(value) => updateEntry(node.path, { min: value })}
                 suffix="%"
                 disabled={isDemo}
                 error={Boolean(rangeIssue)}
+                accessibilityLabel={`${node.label} range minimum`}
+                align="right"
                 style={styles.rangeField}
               />
               <MiniField
-                label="Max %"
+                label="Max"
                 value={entry.max}
                 onChangeText={(value) => updateEntry(node.path, { max: value })}
                 suffix="%"
                 disabled={isDemo}
                 error={Boolean(rangeIssue)}
+                accessibilityLabel={`${node.label} range maximum`}
+                align="right"
                 style={styles.rangeField}
               />
             </>
-          ) : null}
+          )}
+          <View style={styles.levelCell}>
+            <Text style={[styles.fieldLabel, { color: colors.muted }]}>Level</Text>
+            <LevelPill
+              value={entry.level}
+              open={levelMenuPath === node.path}
+              onPress={() =>
+                setLevelMenuPath(levelMenuPath === node.path ? null : node.path)
+              }
+              disabled={isDemo}
+            />
+          </View>
         </View>
 
+        {levelMenuPath === node.path ? (
+          <LevelMenu
+            value={entry.level}
+            onChange={(level) => {
+              updateEntry(node.path, { level });
+              setLevelMenuPath(null);
+            }}
+          />
+        ) : null}
+
+        {childError ? (
+          <Text style={[styles.rowError, { color: colors.negative }]}>
+            {childError}
+          </Text>
+        ) : null}
         {rangeIssue ? (
           <Text style={[styles.rowError, { color: colors.negative }]}>
             {rangeIssue}
           </Text>
         ) : null}
 
-        <View style={styles.levelRow}>
-          <Text style={[styles.levelLabel, { color: colors.muted }]}>Level</Text>
-          <LevelControl
-            value={entry.level}
-            onChange={(level) => updateEntry(node.path, { level })}
-            disabled={isDemo}
-            style={styles.levelControl}
-          />
-        </View>
-
         {addingAt === node.path ? renderAddForm(node.path) : null}
 
         {node.children.length > 0 ? (
           <View style={[styles.children, { borderLeftColor: colors.border }]}>
-            {node.children.map((child) => renderRow(child))}
+            {node.children.map((child, childIndex) => (
+              <View
+                key={child.path}
+                style={
+                  childIndex > 0
+                    ? {
+                        borderTopWidth: StyleSheet.hairlineWidth,
+                        borderTopColor: colors.border,
+                      }
+                    : null
+                }
+              >
+                {renderRow(child)}
+              </View>
+            ))}
             <View style={styles.subSum}>
               <Feather
                 name={
@@ -1118,10 +1252,10 @@ function BreakdownEditor({
                       ? 'alert-triangle'
                       : 'check-circle'
                 }
-                size={12}
+                size={11}
                 color={sumColor}
               />
-              <Text style={[type.caption, { color: sumColor, flex: 1 }]}>
+              <Text style={[styles.sumLabel, { color: sumColor }]}>
                 {parentError
                   ? parentError
                   : unallocated
@@ -1154,7 +1288,7 @@ function BreakdownEditor({
               New sub-category
             </Text>
             <Text
-              style={[type.bodyMedium, { color: colors.text }]}
+              style={[styles.addParent, { color: colors.text }]}
               numberOfLines={2}
             >
               {parentPath.split(' > ').join(' › ')}
@@ -1165,7 +1299,7 @@ function BreakdownEditor({
             onPress={closeAdd}
             accessibilityLabel="Cancel adding sub-category"
             variant="plain"
-            size={30}
+            size={28}
           />
         </View>
 
@@ -1195,27 +1329,44 @@ function BreakdownEditor({
           disabled={isDemo}
         />
 
-        <MiniField
-          label="Target (% parent)"
-          placeholder="0"
-          value={newTarget}
-          onChangeText={(value) => {
-            setNewTarget(value);
-            setAddError(null);
-          }}
-          suffix="%"
-          disabled={isDemo}
-        />
-
-        <View style={styles.levelRow}>
-          <Text style={[styles.levelLabel, { color: colors.muted }]}>Level</Text>
-          <LevelControl
-            value={newLevel}
-            onChange={setNewLevel}
+        <View style={styles.addFields}>
+          <MiniField
+            label="Target %"
+            placeholder="0"
+            value={newTarget}
+            onChangeText={(value) => {
+              setNewTarget(value);
+              setAddError(null);
+            }}
+            suffix="%"
             disabled={isDemo}
-            style={styles.levelControl}
+            align="right"
+            style={styles.addTargetField}
           />
+          <View style={styles.levelCell}>
+            <Text style={[styles.fieldLabel, { color: colors.muted }]}>Level</Text>
+            <LevelPill
+              value={newLevel}
+              open={levelMenuPath === NEW_LEVEL_KEY}
+              onPress={() =>
+                setLevelMenuPath(
+                  levelMenuPath === NEW_LEVEL_KEY ? null : NEW_LEVEL_KEY,
+                )
+              }
+              disabled={isDemo}
+            />
+          </View>
         </View>
+
+        {levelMenuPath === NEW_LEVEL_KEY ? (
+          <LevelMenu
+            value={newLevel}
+            onChange={(level) => {
+              setNewLevel(level);
+              setLevelMenuPath(null);
+            }}
+          />
+        ) : null}
 
         {addError ? (
           <Text style={[styles.rowError, { color: colors.negative }]}>{addError}</Text>
@@ -1223,68 +1374,54 @@ function BreakdownEditor({
 
         <View style={styles.addActions}>
           <Button
-            label="Add sub-category"
+            label="Add"
             onPress={() => addChild(parentPath)}
             variant="primary"
             size="sm"
             icon="plus"
             disabled={isDemo}
           />
-          <Button
-            label="Cancel"
-            onPress={closeAdd}
-            variant="ghost"
-            size="sm"
-          />
+          <Button label="Cancel" onPress={closeAdd} variant="ghost" size="sm" />
         </View>
       </View>
     );
   }
 }
-
 const styles = StyleSheet.create({
   flex: { flex: 1 },
-  stack: { gap: space.xl },
+  stack: { gap: space.lg },
 
-  summaryCard: { gap: space.md },
-  summaryTop: {
+  summaryStrip: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
     gap: space.md,
+    padding: space.md,
   },
-  summaryStats: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.lg,
-    flex: 1,
-  },
-  summaryStat: { gap: 2 },
+  summaryMetric: { flex: 1, gap: 2 },
+  summaryValue: { fontSize: 18, fontWeight: '600', letterSpacing: -0.3 },
+  summaryValueMuted: { fontSize: 12, fontWeight: '500' },
   statLabel: {
     fontSize: 10,
     fontWeight: '600',
-    letterSpacing: 0.5,
+    letterSpacing: 0.4,
     textTransform: 'uppercase',
   },
-  statValue: { fontSize: 22, fontWeight: '600', letterSpacing: -0.4 },
-  statValueMuted: { fontSize: 14, fontWeight: '500' },
-  statRule: { width: StyleSheet.hairlineWidth, height: 28 },
-  summaryCopy: { fontSize: 12, lineHeight: 18, maxWidth: 680 },
+  statRule: { width: StyleSheet.hairlineWidth, height: 30 },
+  summaryStatus: { alignItems: 'flex-end', gap: 2 },
+  statusLine: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  statusText: { fontSize: 12, fontWeight: '600' },
+
   unallocatedRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: space.md,
     borderTopWidth: StyleSheet.hairlineWidth,
-    paddingTop: space.md,
+    paddingHorizontal: space.md,
+    paddingVertical: 9,
   },
-  optionIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: radius.sm,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  optionText: { flex: 1, gap: 2 },
+  optionText: { flex: 1, gap: 1 },
+  optionTitle: { fontSize: 12, fontWeight: '500' },
+  optionHint: { fontSize: 10, lineHeight: 14 },
   optionDisabled: { opacity: 0.55 },
   switchTrack: {
     width: 40,
@@ -1295,87 +1432,93 @@ const styles = StyleSheet.create({
   },
   switchThumb: { width: 20, height: 20, borderRadius: radius.full },
 
-  sleeve: { gap: space.sm },
+  sleeve: { gap: 6 },
   sleeveHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: space.md,
-    marginTop: space.xs,
+    gap: space.sm,
+    marginTop: space.xxs,
   },
   sleeveTitle: {
     flex: 1,
+    minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: space.sm,
+    gap: 6,
   },
-  sleeveTitleText: { flex: 1, gap: 2 },
-  sleeveDot: { width: 9, height: 9, borderRadius: radius.full },
+  sleeveTitleText: { flex: 1, minWidth: 0, gap: 1 },
+  sleeveDot: { width: 8, height: 8, borderRadius: radius.full },
+  sleeveName: { fontSize: 13, fontWeight: '600' },
+  sleeveMeta: { fontSize: 10, lineHeight: 13 },
   addAction: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 3,
-    paddingVertical: space.xs,
-    paddingHorizontal: space.xxs,
+    gap: 2,
+    paddingVertical: 2,
+    paddingHorizontal: 2,
   },
-  addActionText: { fontSize: 13, fontWeight: '600' },
+  addActionText: { fontSize: 11, fontWeight: '600' },
   sleeveCard: { overflow: 'hidden' },
 
   sleeveStats: {
     flexDirection: 'row',
     alignItems: 'stretch',
-    paddingVertical: space.md,
-    paddingHorizontal: space.lg,
+    paddingVertical: space.sm,
+    paddingHorizontal: space.md,
   },
-  sleeveStat: { flex: 1, gap: 2 },
-  sleeveStatRule: { width: StyleSheet.hairlineWidth, marginHorizontal: space.md },
-  sleeveStatValue: { fontSize: 18, fontWeight: '600', letterSpacing: -0.2 },
-  sleeveStatSub: { fontSize: 11 },
+  sleeveStat: { flex: 1, gap: 1 },
+  sleeveStatRule: { width: StyleSheet.hairlineWidth, marginHorizontal: 10 },
+  sleeveStatValue: { fontSize: 13, fontWeight: '600', letterSpacing: -0.2 },
+  sleeveStatSub: { fontSize: 10 },
   coverageTrack: { height: 2, flexDirection: 'row' },
 
-  tree: { paddingHorizontal: space.lg },
+  tree: { paddingHorizontal: space.md },
   empty: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: space.sm,
-    paddingVertical: space.lg,
+    paddingVertical: space.md,
   },
-  emptyText: { flex: 1, lineHeight: 17 },
+  emptyText: { flex: 1, fontSize: 10, lineHeight: 14 },
 
-  node: { paddingVertical: space.md, gap: space.sm },
+  node: { paddingVertical: space.sm, gap: 6 },
   nodeHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: space.sm },
-  nodeTitle: { flex: 1, gap: 2 },
+  nodeTitle: { flex: 1, minWidth: 0, gap: 1 },
+  nodeName: { fontSize: 12, fontWeight: '600', lineHeight: 15 },
   nodeMetaRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
-    marginTop: 1,
+    gap: 4,
   },
-  statusDot: { width: 6, height: 6, borderRadius: radius.full },
-  nodeMeta: { flex: 1, lineHeight: 16 },
+  statusDot: { width: 5, height: 5, borderRadius: radius.full },
+  nodeMeta: { flex: 1, fontSize: 10, lineHeight: 13 },
   nodeActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: space.xxs,
-    marginTop: -3,
+    marginTop: -2,
   },
   nodeAction: {
-    width: 28,
-    height: 28,
+    width: 26,
+    height: 26,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: radius.sm,
+    borderRadius: 6,
   },
   rowPressed: { opacity: 0.55 },
 
   controlsRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: space.sm,
+    gap: 6,
     maxWidth: 560,
   },
-  targetField: { flex: 1.35, minWidth: 0 },
-  rangeField: { flex: 1, minWidth: 0 },
-  field: { gap: 4, minWidth: 0 },
+  targetField: { width: 76, minWidth: 0 },
+  rangeField: { width: 54, minWidth: 0 },
+  rangeCell: { width: 114, gap: 3 },
+  rangeEmpty: { height: 30, alignItems: 'center', justifyContent: 'center' },
+  rangeEmptyText: { fontSize: 12, fontWeight: '500' },
+  levelCell: { width: 96, gap: 3 },
+  field: { gap: 3, minWidth: 0 },
   fieldLabel: {
     fontSize: 10,
     fontWeight: '600',
@@ -1385,68 +1528,69 @@ const styles = StyleSheet.create({
   fieldBox: {
     flexDirection: 'row',
     alignItems: 'center',
-    height: 38,
-    borderWidth: 1,
+    height: 30,
+    borderWidth: StyleSheet.hairlineWidth,
     borderRadius: radius.sm,
-    paddingHorizontal: space.sm,
+    paddingHorizontal: 6,
     minWidth: 0,
+    overflow: 'hidden',
   },
   fieldInput: {
     flex: 1,
-    flexShrink: 1,
-    height: 36,
     minWidth: 0,
+    width: 0,
+    height: 28,
     paddingVertical: 0,
     paddingHorizontal: 0,
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: '500',
   },
-  fieldSuffix: { fontSize: 12, fontWeight: '500', marginLeft: 2 },
-  fieldError: { fontSize: 10, lineHeight: 13 },
-  rowError: { fontSize: 11, lineHeight: 15 },
+  fieldSuffix: { fontSize: 10, fontWeight: '500', marginLeft: 1 },
+  rowError: { fontSize: 10, lineHeight: 13 },
 
-  levelRow: {
+  levelPill: {
+    alignSelf: 'flex-start',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: space.sm,
-    maxWidth: 560,
+    gap: 4,
+    height: 30,
+    maxWidth: 110,
+    paddingHorizontal: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 6,
   },
-  levelLabel: {
-    fontSize: 10,
-    fontWeight: '600',
-    letterSpacing: 0.4,
-    textTransform: 'uppercase',
-  },
-  levelControl: { flex: 1 },
-  segment: {
+  levelDot: { width: 5, height: 5, borderRadius: radius.full },
+  levelPillText: { fontSize: 10, fontWeight: '500', flexShrink: 1 },
+  levelMenuWrap: { gap: 4, maxWidth: 560 },
+  levelMenu: {
     flexDirection: 'row',
     gap: 2,
     padding: 2,
     borderWidth: StyleSheet.hairlineWidth,
     borderRadius: radius.sm,
   },
-  segmentOption: {
+  levelOption: {
     flex: 1,
     height: 26,
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 6,
-    paddingHorizontal: space.xs,
   },
-  segmentText: { fontSize: 11, letterSpacing: 0.1 },
-  segmentDisabled: { opacity: 0.6 },
+  levelOptionText: { fontSize: 10, letterSpacing: 0.1 },
+  levelHint: { fontSize: 10, lineHeight: 13 },
 
   children: {
-    marginTop: space.xs,
-    marginLeft: space.xs,
-    paddingLeft: space.md,
+    marginTop: space.xxs,
+    marginLeft: 6,
+    paddingLeft: 14,
     borderLeftWidth: StyleSheet.hairlineWidth,
   },
   subSum: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
-    paddingTop: space.xs,
+    gap: 4,
+    paddingTop: 6,
+    paddingBottom: 2,
   },
 
   sumRow: {
@@ -1455,40 +1599,49 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: space.sm,
     borderTopWidth: StyleSheet.hairlineWidth,
-    paddingVertical: space.sm,
-    paddingHorizontal: space.lg,
+    paddingVertical: 7,
+    paddingHorizontal: space.md,
   },
   sumText: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
+    gap: 4,
     flex: 1,
   },
+  sumLabel: { fontSize: 10, lineHeight: 14, flexShrink: 1 },
+  sumCount: { fontSize: 10 },
 
   addForm: {
-    gap: space.md,
+    gap: space.sm,
     borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: radius.lg,
-    padding: space.md,
-    marginTop: space.xs,
-    marginBottom: space.md,
-    maxWidth: 640,
+    borderRadius: radius.md,
+    padding: 10,
+    marginTop: 6,
+    marginBottom: space.sm,
+    maxWidth: 600,
   },
   addHeader: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: space.sm,
   },
-  addTitle: { flex: 1, gap: 2 },
+  addTitle: { flex: 1, gap: 1 },
   addEyebrow: {
     fontSize: 10,
     fontWeight: '600',
-    letterSpacing: 0.5,
+    letterSpacing: 0.4,
     textTransform: 'uppercase',
   },
+  addParent: { fontSize: 12, fontWeight: '500' },
   suggestions: { flexDirection: 'row', flexWrap: 'wrap', gap: space.xs },
-  addActions: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
+  addFields: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
+  },
+  addTargetField: { flex: 1, minWidth: 0 },
+  addActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
 
-  saveBlock: { gap: space.md, marginTop: space.sm },
-  saveHint: { fontSize: 11, lineHeight: 16, textAlign: 'center' },
+  saveBlock: { gap: space.sm, marginTop: space.xxs },
+  saveHint: { fontSize: 10, lineHeight: 14, textAlign: 'center' },
 });
