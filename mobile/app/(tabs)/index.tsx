@@ -145,6 +145,8 @@ export default function AllocationHomeScreen() {
           <>
             {progress.active ? <LoadingProgress progress={progress} compact /> : null}
 
+            <PortfolioStrip summary={summary} />
+
             <TargetVsActualCard
               evaluation={policyEvaluation}
               nodes={analytics.allocationAnalysis}
@@ -170,8 +172,6 @@ export default function AllocationHomeScreen() {
               </Text>
               <View style={[styles.compareLine, { backgroundColor: colors.border }]} />
             </View>
-
-            <PortfolioStrip summary={summary} />
 
             {unmanaged.length > 0 ? (
               <UnmanagedCard
@@ -317,8 +317,8 @@ function StripStat({ label, value, hint, tone, accessibilityLabel }: StripStatPr
 function AllocationSkeleton() {
   return (
     <View style={styles.skeletonStack}>
-      <Skeleton height={460} borderRadius={16} />
       <Skeleton height={84} borderRadius={16} />
+      <Skeleton height={460} borderRadius={16} />
       <Skeleton height={360} borderRadius={16} />
     </View>
   );
