@@ -409,7 +409,7 @@ async function fetchStockAnalysisQuote(
 async function fetchNasdaqQuote(symbol: string): Promise<MarketQuote | null> {
   for (const assetclass of ['etf', 'stocks']) {
     const data = await getJson(
-      `https://api.nasdaq.com/api/quote/${encodeURIComponent(symbol)}/info?assetclass=${assetclass}`,
+      `https://api.nasdaq.com/api/quote/${encodeURIComponent(symbol)}/info?assetclass=${assetclass}&markettype=${assetclass}`,
       {
         headers: {
           Origin: 'https://www.nasdaq.com',
