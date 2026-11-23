@@ -165,14 +165,6 @@ export default function AllocationHomeScreen() {
               />
             ) : null}
 
-            <View style={styles.compareDivider} accessible={false}>
-              <View style={[styles.compareLine, { backgroundColor: colors.border }]} />
-              <Text style={[type.label, styles.compareLabel, { color: colors.muted }]}>
-                Previous layout
-              </Text>
-              <View style={[styles.compareLine, { backgroundColor: colors.border }]} />
-            </View>
-
             {unmanaged.length > 0 ? (
               <UnmanagedCard
                 slices={unmanaged}
@@ -382,14 +374,6 @@ function UnmanagedCard({ slices, readOnly = false, onExtend }: UnmanagedCardProp
 const styles = StyleSheet.create({
   stack: { gap: space.xl },
   headerActions: { flexDirection: 'row', gap: space.sm },
-  compareDivider: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.md,
-    paddingTop: space.xs,
-  },
-  compareLine: { flex: 1, height: StyleSheet.hairlineWidth },
-  compareLabel: { letterSpacing: 0.6 },
   portfolioStrip: {
     flexDirection: 'row',
     alignItems: 'stretch',
