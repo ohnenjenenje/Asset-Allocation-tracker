@@ -43,6 +43,11 @@ interface RowAction {
   tone: string;
 }
 
+function barWidth(percentage: number, scale: number): number {
+  if (scale <= 0) return 0;
+  return Math.min(100, Math.max(0, (percentage / scale) * 100));
+}
+
 /**
  * The allocation home's primary surface. Root sleeves carry the target
  * comparison and the rupee gap; tapping a row reveals composition. Phones get
@@ -57,7 +62,7 @@ export function TargetVsActualCard({
   onManageTargets,
   onPlanRebalance,
 }: TargetVsActualCardProps) {
-  const { colors } = useTheme();
+  const { colors, scheme } = useTheme();
   const { isTablet } = useResponsiveLayout();
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
@@ -148,18 +153,22 @@ export function TargetVsActualCard({
     [evaluation],
   );
 
-  const targetMarkers = useMemo(() => {
-    if (!evaluation.isValid || evaluation.targetedCount === 0) return [];
-    const markers: number[] = [];
-    let cumulative = 0;
-    for (const sleeve of evaluation.sleeves) {
-      cumulative += sleeve.targetPercentage;
-      if (cumulative > 0.5 && cumulative < 99.5) markers.push(cumulative);
-    }
-    return markers;
-  }, [evaluation]);
+  const targetSegments = useMemo(
+    () =>
+      evaluation.isValid && evaluation.targetedCount > 0
+        ? evaluation.sleeves
+            .filter((sleeve) => sleeve.targetPercentage > 0)
+            .map((sleeve) => ({
+              key: sleeve.path,
+              label: sleeve.label,
+              percentage: sleeve.targetPercentage,
+              color: sleeve.color,
+            }))
+        : [],
+    [evaluation],
+  );
 
-  const mixLabel =
+  const currentMixLabel =
     segments.length > 0
       ? `Current allocation mix: ${segments
           .map(
@@ -168,10 +177,19 @@ export function TargetVsActualCard({
                 precision: 1,
               })}`,
           )
-          .join(', ')}.${
-          targetMarkers.length > 0 ? ' Target markers show policy targets.' : ''
-        }`
+          .join(', ')}.`
       : 'No current allocation to show.';
+  const targetMixLabel =
+    targetSegments.length > 0
+      ? `Target allocation mix: ${targetSegments
+          .map(
+            (segment) =>
+              `${segment.label} ${formatPercent(segment.percentage, {
+                precision: 1,
+              })}`,
+          )
+          .join(', ')}.`
+      : '';
 
   const nextAction = nextPolicyAction(evaluation, readOnly);
   const toggle = (key: string) =>
@@ -215,11 +233,17 @@ export function TargetVsActualCard({
       </View>
 
       <View style={styles.barSection}>
+        <View style={styles.barLabelRow}>
+          <Text style={[styles.barLabel, styles.barLabelStrong, { color: colors.textSecondary }]}>
+            Actual
+          </Text>
+          <Text style={[styles.barLabel, { color: colors.muted }]}>Current mix</Text>
+        </View>
         <View
           style={styles.barTrack}
           accessible
           accessibilityRole="image"
-          accessibilityLabel={mixLabel}
+          accessibilityLabel={currentMixLabel}
         >
           <View style={[styles.bar, { backgroundColor: colors.cardMuted }]}>
             {segments.map((segment) => (
@@ -232,32 +256,48 @@ export function TargetVsActualCard({
               />
             ))}
           </View>
-          {targetMarkers.map((marker) => (
-            <View
-              key={marker}
-              style={[
-                styles.targetMarker,
-                {
-                  left: `${Math.min(100, Math.max(0, marker))}%`,
-                  backgroundColor: colors.text,
-                },
-              ]}
-            />
-          ))}
         </View>
-        <View style={styles.barCaption}>
-          <Text style={[styles.barCaptionText, { color: colors.muted }]}>
-            Current mix
-          </Text>
-          {targetMarkers.length > 0 ? (
-            <View style={styles.targetKey}>
-              <View
-                style={[styles.targetKeyTick, { backgroundColor: colors.textSecondary }]}
-              />
-              <Text style={[styles.barCaptionText, { color: colors.muted }]}>
+
+        {targetSegments.length > 0 ? (
+          <>
+            <View style={[styles.barLabelRow, styles.barTargetRow]}>
+              <Text
+                style={[styles.barLabel, styles.barLabelStrong, { color: colors.textSecondary }]}
+              >
                 Target
               </Text>
+              <Text style={[styles.barLabel, { color: colors.muted }]}>
+                Policy v{policyVersion}
+              </Text>
             </View>
+            <View
+              style={styles.barTrack}
+              accessible
+              accessibilityRole="image"
+              accessibilityLabel={targetMixLabel}
+            >
+              <View style={[styles.bar, { backgroundColor: colors.cardMuted }]}>
+                {targetSegments.map((segment) => (
+                  <View
+                    key={segment.key}
+                    style={{
+                      flex: segment.percentage,
+                      backgroundColor: segment.color,
+                      opacity: scheme === 'dark' ? 0.75 : 0.32,
+                    }}
+                  />
+                ))}
+              </View>
+            </View>
+          </>
+        ) : null}
+
+        <View style={styles.barCaption}>
+          <Text style={[styles.barCaptionText, { color: colors.muted }]}>
+            {targetSegments.length > 0 ? 'Solid = current · faded = target' : 'Current mix'}
+          </Text>
+          {targetSegments.length > 0 ? (
+            <Text style={[styles.barCaptionText, { color: colors.muted }]}>Same sleeve order</Text>
           ) : null}
         </View>
       </View>
@@ -318,6 +358,7 @@ export function TargetVsActualCard({
             <AllocationRow
               key={row.key}
               row={row}
+              scale={100}
               expanded={expanded}
               onToggle={toggle}
               isTablet={isTablet}
@@ -336,7 +377,7 @@ export function TargetVsActualCard({
         <Text style={[styles.footerText, { color: colors.muted }]}>
           {needsTargets
             ? 'Targets come from the default template until you confirm a policy.'
-            : 'Bands apply to each sleeve independently. Tap a row to inspect its holdings.'}
+            : 'The tick marks each target. Bands apply to each sleeve independently. Tap a row to inspect its holdings.'}
         </Text>
         {actionable && onPlanRebalance ? (
           <Button
@@ -372,6 +413,8 @@ export function TargetVsActualCard({
 
 interface AllocationRowProps {
   row: AllocationTableRow;
+  /** Local percentage scale for this row's current-vs-target bar. */
+  scale: number;
   expanded: Record<string, boolean>;
   onToggle: (key: string) => void;
   isTablet: boolean;
@@ -381,6 +424,7 @@ interface AllocationRowProps {
 
 function AllocationRow({
   row,
+  scale,
   expanded,
   onToggle,
   isTablet,
@@ -391,6 +435,7 @@ function AllocationRow({
   const open = Boolean(expanded[row.key]);
   const hasChildren = row.children.length > 0;
   const indent = row.depth * (isTablet ? space.xl : space.lg);
+  const childScale = Math.max(row.currentPercentage, row.targetPercentage ?? 0, 5);
   const action = rowAction(row, actionable, Boolean(onAction), colors);
   const gapTone = gapToneFor(row, actionable);
   const accessibilityLabel = rowAccessibilityLabel(row, open, hasChildren);
@@ -406,6 +451,17 @@ function AllocationRow({
       <Text style={[styles.dash, { color: colors.muted }]}>—</Text>
     );
 
+  const bar =
+    row.targetPercentage != null ? (
+      <AllocationBar
+        row={row}
+        scale={scale}
+        actionable={actionable}
+        indent={indent}
+        isTablet={isTablet}
+      />
+    ) : null;
+
   return (
     <View>
       <View
@@ -418,65 +474,68 @@ function AllocationRow({
       >
         {isTablet ? (
           <>
-            <CategoryCell
-              row={row}
-              open={open}
-              hasChildren={hasChildren}
-              indent={indent}
-              onToggle={onToggle}
-              accessibilityLabel={accessibilityLabel}
-            />
-            <Text
-              style={[styles.numCell, styles.tabletActual, { color: colors.text }]}
-              numberOfLines={1}
-            >
-              {formatPercent(row.currentPercentage, { precision: 1 })}
-            </Text>
-            <Text
-              style={[styles.valueCell, styles.tabletCurVal, { color: colors.muted }]}
-              numberOfLines={1}
-            >
-              {formatCompactINR(row.currentValue)}
-            </Text>
-            <Text
-              style={[
-                styles.numCell,
-                styles.tabletTarget,
-                { color: colors.textSecondary },
-              ]}
-              numberOfLines={1}
-            >
-              {row.targetPercentage != null
-                ? formatPercent(row.targetPercentage, { precision: 1 })
-                : '—'}
-            </Text>
-            <Text
-              style={[
-                styles.valueCell,
-                styles.tabletTgtVal,
-                { color: colors.textSecondary },
-              ]}
-              numberOfLines={1}
-            >
-              {row.targetValue != null ? formatCompactINR(row.targetValue) : '—'}
-            </Text>
-            <View style={[styles.gapCell, styles.tabletGap]}>{gap}</View>
-            <View style={[styles.actionCell, styles.tabletAction]}>
-              {action && onAction ? (
-                <ActionButton
-                  label={action.label}
-                  accessibilityLabel={
-                    row.kind === 'unmanaged'
-                      ? `Map ${row.label} to a policy sleeve`
-                      : `${action.label} ${row.label}`
-                  }
-                  tone={action.tone}
-                  onPress={onAction}
-                />
-              ) : (
-                <Text style={[styles.dash, { color: colors.muted }]}>—</Text>
-              )}
+            <View style={styles.tabletContent}>
+              <CategoryCell
+                row={row}
+                open={open}
+                hasChildren={hasChildren}
+                indent={indent}
+                onToggle={onToggle}
+                accessibilityLabel={accessibilityLabel}
+              />
+              <Text
+                style={[styles.numCell, styles.tabletActual, { color: colors.text }]}
+                numberOfLines={1}
+              >
+                {formatPercent(row.currentPercentage, { precision: 1 })}
+              </Text>
+              <Text
+                style={[styles.valueCell, styles.tabletCurVal, { color: colors.muted }]}
+                numberOfLines={1}
+              >
+                {formatCompactINR(row.currentValue)}
+              </Text>
+              <Text
+                style={[
+                  styles.numCell,
+                  styles.tabletTarget,
+                  { color: colors.textSecondary },
+                ]}
+                numberOfLines={1}
+              >
+                {row.targetPercentage != null
+                  ? formatPercent(row.targetPercentage, { precision: 1 })
+                  : '—'}
+              </Text>
+              <Text
+                style={[
+                  styles.valueCell,
+                  styles.tabletTgtVal,
+                  { color: colors.textSecondary },
+                ]}
+                numberOfLines={1}
+              >
+                {row.targetValue != null ? formatCompactINR(row.targetValue) : '—'}
+              </Text>
+              <View style={[styles.gapCell, styles.tabletGap]}>{gap}</View>
+              <View style={[styles.actionCell, styles.tabletAction]}>
+                {action && onAction ? (
+                  <ActionButton
+                    label={action.label}
+                    accessibilityLabel={
+                      row.kind === 'unmanaged'
+                        ? `Map ${row.label} to a policy sleeve`
+                        : `${action.label} ${row.label}`
+                    }
+                    tone={action.tone}
+                    onPress={onAction}
+                  />
+                ) : (
+                  <Text style={[styles.dash, { color: colors.muted }]}>—</Text>
+                )}
+              </View>
             </View>
+            {bar}
           </>
         ) : (
           <>
@@ -510,6 +569,8 @@ function AllocationRow({
               <View style={[styles.gapCell, styles.phoneGap]}>{gap}</View>
             </View>
 
+            {bar}
+
             <View style={[styles.phoneSubRow, { paddingLeft: indent + 34 }]}>
               <Text
                 style={[styles.phoneSubText, { color: colors.muted }]}
@@ -539,6 +600,7 @@ function AllocationRow({
             <AllocationRow
               key={child.key}
               row={child}
+              scale={childScale}
               expanded={expanded}
               onToggle={onToggle}
               isTablet={isTablet}
@@ -547,6 +609,65 @@ function AllocationRow({
             />
           ))
         : null}
+    </View>
+  );
+}
+
+interface AllocationBarProps {
+  row: AllocationTableRow;
+  scale: number;
+  actionable: boolean;
+  indent: number;
+  isTablet: boolean;
+}
+
+/**
+ * Per-sleeve current-vs-target bar. The fill is status-coloured for root
+ * sleeves and brand-coloured for sub-sleeves; the tick marks the target on the
+ * same local scale as the fill.
+ */
+function AllocationBar({
+  row,
+  scale,
+  actionable,
+  indent,
+  isTablet,
+}: AllocationBarProps) {
+  const { colors } = useTheme();
+  if (row.targetPercentage == null) return null;
+
+  const currentWidth = barWidth(row.currentPercentage, scale);
+  const targetWidth = Math.min(99, barWidth(row.targetPercentage, scale));
+  const fillColor =
+    row.kind === 'sleeve' && actionable && row.status != null
+      ? row.status === 'within'
+        ? colors.positive
+        : row.status === 'watch'
+          ? colors.warning
+          : colors.negative
+      : colors.accent;
+
+  return (
+    <View style={[styles.sleeveBarRow, { paddingLeft: indent + (isTablet ? 19 : 34) }]}>
+      <View style={[styles.sleeveBarTrack, { backgroundColor: colors.border }]}>
+        <View
+          style={[
+            styles.sleeveBarFill,
+            { width: `${currentWidth}%`, backgroundColor: fillColor },
+          ]}
+        />
+        <View
+          style={[
+            styles.sleeveBarTarget,
+            { left: `${targetWidth}%`, backgroundColor: colors.text },
+          ]}
+        />
+      </View>
+      {row.bandPp != null ? (
+        <Text style={[styles.sleeveBarBand, { color: colors.textSecondary }]}>
+          Band ±{row.bandPp} pp
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -640,7 +761,9 @@ function rowAccessibilityLabel(
       : ''
   }${
     row.driftPp != null
-      ? `, drift ${formatDriftPp(row.driftPp, { signed: true })} against a ±${row.bandPp} pp band`
+      ? `, drift ${formatDriftPp(row.driftPp, { signed: true })}${
+          row.bandPp != null ? ` against a ±${row.bandPp} pp band` : ''
+        }`
       : ''
   }${row.kind === 'unmanaged' ? ', outside policy' : ''}${
     hasChildren
@@ -811,11 +934,19 @@ const styles = StyleSheet.create({
   meta: { lineHeight: 16 },
   manage: { paddingTop: 5 },
   manageText: { fontSize: 12, fontWeight: '600' },
-  barSection: { gap: 5, paddingHorizontal: space.lg, paddingTop: space.md },
+  barSection: { gap: 4, paddingHorizontal: space.lg, paddingTop: space.md },
+  barLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    gap: space.sm,
+  },
+  barLabel: { fontSize: 9.5 },
+  barLabelStrong: { fontWeight: '600' },
+  barTargetRow: { marginTop: 6 },
   barTrack: {
-    height: 14,
+    height: 8,
     justifyContent: 'center',
-    position: 'relative',
   },
   bar: {
     height: 8,
@@ -823,21 +954,14 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     flexDirection: 'row',
   },
-  targetMarker: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    width: 2,
-    borderRadius: 1,
-  },
   barCaption: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: space.sm,
+    marginTop: 1,
   },
   barCaptionText: { fontSize: 9.5 },
-  targetKey: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  targetKeyTick: { width: 2, height: 8, borderRadius: 1 },
   statusStrip: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -887,14 +1011,30 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.lg,
   },
   rowPhone: { paddingVertical: space.sm, gap: 2 },
-  rowTablet: {
-    minHeight: 44,
+  rowTablet: { paddingVertical: 6, gap: 2 },
+  tabletContent: {
+    minHeight: 32,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 8,
   },
   rowPressed: { opacity: 0.72 },
   phoneTop: { flexDirection: 'row', alignItems: 'center' },
+  sleeveBarRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    marginTop: 1,
+  },
+  sleeveBarTrack: {
+    flex: 1,
+    height: 5,
+    borderRadius: radius.full,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  sleeveBarFill: { height: '100%', borderRadius: radius.full },
+  sleeveBarTarget: { position: 'absolute', top: 0, bottom: 0, width: 2 },
+  sleeveBarBand: { fontSize: 9.5, fontWeight: '600' },
   chevronSlot: { width: 14, alignItems: 'center' },
   dot: { width: 8, height: 8, borderRadius: radius.full },
   holdingDot: { width: 5, height: 5, opacity: 0.5 },

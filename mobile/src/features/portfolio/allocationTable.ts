@@ -6,8 +6,9 @@ export type AllocationTableKind = 'sleeve' | 'unmanaged' | 'subcategory' | 'hold
 
 /**
  * One flattened-in-place row of the Target vs Actual table. Root rows carry the
- * policy comparison; child rows are composition detail and deliberately have no
- * target or drift so the table reads top-down.
+ * policy comparison plus the tolerance band and status. Child rows inherit
+ * sub-sleeve targets and drift from the allocation tree when a policy defines
+ * them; bands stay root-only because they are evaluated per root sleeve.
  */
 export interface AllocationTableRow {
   key: string;
@@ -93,23 +94,27 @@ function buildChildren(
   depth: number,
   total: number,
 ): AllocationTableRow[] {
-  const subcategories: AllocationTableRow[] = node.subCategories.map((child) => ({
-    key: `subcategory:${child.fullPath}`,
-    kind: 'subcategory',
-    depth,
-    label: child.category,
-    color,
-    currentPercentage: child.currentPercentage,
-    targetPercentage: null,
-    currentValue: child.currentValue,
-    targetValue: null,
-    driftPp: null,
-    driftValue: null,
-    bandPp: null,
-    status: null,
-    holdingCount: countHoldings(child),
-    children: buildChildren(child, color, depth + 1, total),
-  }));
+  const subcategories: AllocationTableRow[] = node.subCategories.map((child) => {
+    const hasTarget = child.idealPercentage > 0;
+
+    return {
+      key: `subcategory:${child.fullPath}`,
+      kind: 'subcategory',
+      depth,
+      label: child.category,
+      color,
+      currentPercentage: child.currentPercentage,
+      targetPercentage: hasTarget ? child.idealPercentage : null,
+      currentValue: child.currentValue,
+      targetValue: hasTarget ? child.currentValue - child.diffValue : null,
+      driftPp: hasTarget ? child.diffPercentage : null,
+      driftValue: hasTarget ? child.diffValue : null,
+      bandPp: null,
+      status: null,
+      holdingCount: countHoldings(child),
+      children: buildChildren(child, color, depth + 1, total),
+    };
+  });
 
   const holdings: AllocationTableRow[] = node.constituents
     .slice()

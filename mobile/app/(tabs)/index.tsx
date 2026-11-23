@@ -2,13 +2,9 @@ import { Feather } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { StyleSheet, Text, View } from 'react-native';
 
-import { Donut } from '@/src/components/charts/Donut';
-import { AllocationHealthCard } from '@/src/components/portfolio/AllocationHealthCard';
 import { HoldingRow } from '@/src/components/portfolio/HoldingRow';
-import { PolicyAllocationLegend } from '@/src/components/portfolio/PolicyAllocationLegend';
 import { QuoteFreshnessBanner } from '@/src/components/portfolio/QuoteFreshnessBanner';
 import { TargetVsActualCard } from '@/src/components/portfolio/TargetVsActualCard';
-import { AllocationAnalysisCard } from '@/src/components/portfolio/insights/AllocationAnalysisCard';
 import { Badge } from '@/src/components/ui/Badge';
 import { Banner } from '@/src/components/ui/Banner';
 import { Button } from '@/src/components/ui/Button';
@@ -21,17 +17,10 @@ import { SectionHeader } from '@/src/components/ui/SectionHeader';
 import { Skeleton } from '@/src/components/ui/Skeleton';
 import { EmptyState, ErrorState } from '@/src/components/ui/States';
 import type { PortfolioSummary } from '@/src/features/portfolio/aggregate';
-import type {
-  PolicySleeveEvaluation,
-  PolicyUnmanagedSlice,
-} from '@/src/features/portfolio/policy';
+import type { PolicyUnmanagedSlice } from '@/src/features/portfolio/policy';
 import { useAuth } from '@/src/features/auth/AuthProvider';
 import { usePortfolioData } from '@/src/features/portfolio/queries';
-import {
-  formatCompactINR,
-  formatDriftPp,
-  formatPercent,
-} from '@/src/lib/format/money';
+import { formatCompactINR, formatPercent } from '@/src/lib/format/money';
 import { formatRelativeTime } from '@/src/lib/format/time';
 import { numeric, radius, space, type } from '@/src/lib/theme/tokens';
 import { useTheme } from '@/src/lib/theme/ThemeProvider';
@@ -45,8 +34,7 @@ function greeting(): string {
 
 /**
  * Allocation is the app's home. The new Target vs Actual table leads; the
- * previous layout is temporarily stacked below it so the two can be compared
- * before deciding what to keep.
+ * previous layout's remaining sections are temporarily stacked below it.
  */
 export default function AllocationHomeScreen() {
   const router = useRouter();
@@ -75,58 +63,7 @@ export default function AllocationHomeScreen() {
   const firstName = displayName.charAt(0).toUpperCase() + displayName.slice(1);
   const greetingLabel = user ? `${greeting()}, ${firstName}` : greeting();
 
-  const {
-    sleeves,
-    unmanaged,
-    targetedCount,
-    inToleranceCount,
-    isTemplate,
-    isValid,
-  } = policyEvaluation;
-  const needsTargets = isTemplate || !isValid || targetedCount === 0;
-
-  const donutSlices = [
-    ...sleeves.map((sleeve) => ({
-      key: sleeve.path,
-      value: Math.max(0, sleeve.currentValue),
-      color: sleeve.color,
-    })),
-    ...unmanaged.map((slice) => ({
-      key: slice.path,
-      value: Math.max(0, slice.currentValue),
-      color: slice.color,
-    })),
-  ].filter((slice) => slice.value > 0);
-
-  const toleranceLabel =
-    targetedCount > 0
-      ? `${inToleranceCount}/${targetedCount} sleeves in tolerance`
-      : 'no sleeve targets';
-  const policySubtitle = isTemplate
-    ? isDemo
-      ? 'Default template · read-only in demo'
-      : 'Default template · confirm your targets'
-    : !isValid
-      ? `Policy v${policyConfig.policy.version} · targets total ${formatPercent(
-          policyEvaluation.targetSum,
-        )}`
-      : `Policy v${policyConfig.policy.version} · ${toleranceLabel}${
-          unmanaged.length > 0
-            ? ` · ${formatPercent(policyEvaluation.unmanagedPercentage)} unmanaged`
-            : ''
-        }`;
-
-  const offPolicy = sleeves
-    .filter((sleeve) => sleeve.status !== 'within')
-    .sort((a, b) => Math.abs(b.driftPp) - Math.abs(a.driftPp));
-
-  const donutTone = needsTargets
-    ? colors.text
-    : inToleranceCount === 0
-      ? colors.negative
-      : inToleranceCount === targetedCount
-        ? colors.positive
-        : colors.warning;
+  const { unmanaged } = policyEvaluation;
 
   const syncedLabel = lastSyncedAt ? formatRelativeTime(lastSyncedAt) : null;
   const quotesLabel = quotesAsOf ? formatRelativeTime(quotesAsOf) : null;
@@ -218,22 +155,6 @@ export default function AllocationHomeScreen() {
               onPlanRebalance={() => router.push('/rebalance')}
             />
 
-            <View style={styles.compareDivider} accessible={false}>
-              <View style={[styles.compareLine, { backgroundColor: colors.border }]} />
-              <Text style={[type.label, styles.compareLabel, { color: colors.muted }]}>
-                Previous layout
-              </Text>
-              <View style={[styles.compareLine, { backgroundColor: colors.border }]} />
-            </View>
-
-            <AllocationHealthCard
-              evaluation={policyEvaluation}
-              policyVersion={policyConfig.policy.version}
-              readOnly={isDemo}
-              onManageTargets={() => router.push('/policy')}
-              onPlanRebalance={() => router.push('/rebalance')}
-            />
-
             {priceError ? (
               <Banner
                 tone="warning"
@@ -242,43 +163,15 @@ export default function AllocationHomeScreen() {
               />
             ) : null}
 
-            {!needsTargets && offPolicy.length > 0 ? (
-              <DriftMonitor
-                sleeves={offPolicy}
-                onPlanRebalance={() => router.push('/rebalance')}
-              />
-            ) : null}
+            <View style={styles.compareDivider} accessible={false}>
+              <View style={[styles.compareLine, { backgroundColor: colors.border }]} />
+              <Text style={[type.label, styles.compareLabel, { color: colors.muted }]}>
+                Previous layout
+              </Text>
+              <View style={[styles.compareLine, { backgroundColor: colors.border }]} />
+            </View>
 
             <PortfolioStrip summary={summary} />
-
-            <View>
-              <SectionHeader
-                title="Current allocation"
-                subtitle={policySubtitle}
-                actionLabel={isDemo ? 'View' : 'Manage'}
-                onAction={() => router.push('/policy')}
-              />
-              <Card style={styles.allocationCard}>
-                <View style={styles.donutWrap}>
-                  <Donut
-                    data={donutSlices}
-                    accessibilityLabel={`Current allocation across ${sleeves.length} policy sleeves${
-                      unmanaged.length > 0
-                        ? ` and ${unmanaged.length} unmanaged categories`
-                        : ''
-                    }`}
-                  >
-                    <Text style={[type.label, { color: colors.muted }]}>
-                      {needsTargets ? 'Sleeves' : 'In tolerance'}
-                    </Text>
-                    <Text style={[styles.donutValue, numeric, { color: donutTone }]}>
-                      {needsTargets ? sleeves.length : `${inToleranceCount}/${targetedCount}`}
-                    </Text>
-                  </Donut>
-                </View>
-                <PolicyAllocationLegend evaluation={policyEvaluation} />
-              </Card>
-            </View>
 
             {unmanaged.length > 0 ? (
               <UnmanagedCard
@@ -287,19 +180,6 @@ export default function AllocationHomeScreen() {
                 onExtend={() => router.push('/policy')}
               />
             ) : null}
-
-            <View>
-              <SectionHeader
-                title="Allocation tree"
-                subtitle="Root sleeves carry the policy; tap to inspect sub-sleeves and holdings"
-              />
-              <AllocationAnalysisCard
-                nodes={analytics.allocationAnalysis}
-                total={analytics.totals.portfolio}
-                policy={policyEvaluation}
-                policyVersion={policyConfig.policy.version}
-              />
-            </View>
 
             <View>
               <SectionHeader
@@ -437,109 +317,10 @@ function StripStat({ label, value, hint, tone, accessibilityLabel }: StripStatPr
 function AllocationSkeleton() {
   return (
     <View style={styles.skeletonStack}>
-      <Skeleton height={420} borderRadius={16} />
-      <Skeleton height={196} borderRadius={16} />
-      <Skeleton height={210} borderRadius={16} />
+      <Skeleton height={460} borderRadius={16} />
       <Skeleton height={84} borderRadius={16} />
-      <Skeleton height={330} borderRadius={16} />
       <Skeleton height={360} borderRadius={16} />
     </View>
-  );
-}
-
-interface DriftMonitorProps {
-  sleeves: PolicySleeveEvaluation[];
-  onPlanRebalance: () => void;
-}
-
-/** Off-target sleeves with the rupee size of the rebalancing gap. */
-function DriftMonitor({ sleeves, onPlanRebalance }: DriftMonitorProps) {
-  const { colors } = useTheme();
-  const overweight = sleeves.filter((sleeve) => sleeve.driftPp > 0).length;
-  const underweight = sleeves.filter((sleeve) => sleeve.driftPp < 0).length;
-  const breaches = sleeves.filter((sleeve) => sleeve.status === 'breach').length;
-  const watches = sleeves.length - breaches;
-  const alertTone = breaches > 0 ? colors.negative : colors.warning;
-  const alertSoft = breaches > 0 ? colors.negativeSoft : colors.warningSoft;
-
-  return (
-    <Card style={styles.driftCard}>
-      <View style={styles.driftHeader}>
-        <View style={[styles.driftIcon, { backgroundColor: alertSoft }]}>
-          <Feather name="activity" size={15} color={alertTone} />
-        </View>
-        <View style={styles.driftHeaderText}>
-          <Text style={[type.title, { color: colors.text }]}>Drift & rebalance</Text>
-          <Text style={[type.caption, { color: colors.muted, marginTop: 2 }]}>
-            {breaches > 0
-              ? `${breaches} sleeve${breaches === 1 ? '' : 's'} outside band${
-                  watches > 0 ? ` · ${watches} near band` : ''
-                }`
-              : `${watches} nearing tolerance`}
-          </Text>
-        </View>
-        <Badge
-          label={`${overweight} over · ${underweight} under`}
-          tone={breaches > 0 ? 'negative' : 'warning'}
-        />
-      </View>
-
-      <View style={styles.driftRows}>
-        {sleeves.map((sleeve) => {
-          const over = sleeve.driftPp > 0;
-          const breach = sleeve.status === 'breach';
-          const tone = breach ? colors.negative : colors.warning;
-          const soft = breach ? colors.negativeSoft : colors.warningSoft;
-          return (
-            <View
-              key={sleeve.path}
-              style={[styles.driftRow, { backgroundColor: colors.cardMuted }]}
-            >
-              <View style={[styles.driftRowIcon, { backgroundColor: soft }]}>
-                <Feather
-                  name={over ? 'arrow-up-right' : 'arrow-down-right'}
-                  size={13}
-                  color={tone}
-                />
-              </View>
-              <View style={styles.driftRowText}>
-                <Text style={[styles.driftName, { color: colors.text }]} numberOfLines={1}>
-                  {sleeve.label}
-                </Text>
-                <Text style={[styles.driftHint, { color: colors.muted }]} numberOfLines={1}>
-                  {formatCompactINR(Math.abs(sleeve.driftValue))} {over ? 'above' : 'below'} · target{' '}
-                  {formatPercent(sleeve.targetPercentage)} ±{sleeve.bandPp}pp
-                </Text>
-              </View>
-              <View style={styles.driftRight}>
-                <Badge
-                  label={breach ? (over ? 'Trim' : 'Add') : 'Near band'}
-                  tone={breach ? 'negative' : 'warning'}
-                />
-                <Text style={[styles.driftPercent, numeric, { color: tone }]}>
-                  {formatDriftPp(sleeve.driftPp, { signed: true })}
-                </Text>
-              </View>
-            </View>
-          );
-        })}
-      </View>
-
-      <View style={[styles.driftFooter, { borderTopColor: colors.border }]}>
-        <Text style={[styles.driftFooterText, { color: colors.muted }]}>
-          Rebalance with new contributions first, then trim overweight sleeves. Bands apply to
-          each sleeve independently.
-        </Text>
-        <Button
-          label="Build rebalance plan"
-          icon="sliders"
-          variant="secondary"
-          size="sm"
-          fullWidth
-          onPress={onPlanRebalance}
-        />
-      </View>
-    </Card>
   );
 }
 
@@ -609,9 +390,6 @@ const styles = StyleSheet.create({
   },
   compareLine: { flex: 1, height: StyleSheet.hairlineWidth },
   compareLabel: { letterSpacing: 0.6 },
-  allocationCard: { gap: space.xl },
-  donutWrap: { alignItems: 'center' },
-  donutValue: { fontSize: 19, fontWeight: '600', marginTop: 2 },
   portfolioStrip: {
     flexDirection: 'row',
     alignItems: 'stretch',
@@ -622,42 +400,6 @@ const styles = StyleSheet.create({
   stripValue: { fontSize: 14, fontWeight: '600', letterSpacing: -0.1 },
   stripHint: { fontSize: 9.5 },
   stripDivider: { width: StyleSheet.hairlineWidth, marginVertical: 2 },
-  driftCard: { gap: space.md },
-  driftHeader: { flexDirection: 'row', alignItems: 'center', gap: space.md },
-  driftIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: radius.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  driftHeaderText: { flex: 1 },
-  driftRows: { gap: space.sm },
-  driftRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.sm,
-    borderRadius: radius.md,
-    padding: space.md,
-  },
-  driftRowIcon: {
-    width: 26,
-    height: 26,
-    borderRadius: radius.sm,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  driftRowText: { flex: 1 },
-  driftName: { fontSize: 12, fontWeight: '600' },
-  driftHint: { fontSize: 10, marginTop: 1 },
-  driftRight: { alignItems: 'flex-end', gap: 3 },
-  driftPercent: { fontSize: 12, fontWeight: '600' },
-  driftFooter: {
-    gap: space.sm,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    paddingTop: space.sm,
-  },
-  driftFooterText: { fontSize: 10, lineHeight: 15 },
   unmanagedCard: { gap: space.md },
   unmanagedHeader: { flexDirection: 'row', alignItems: 'center', gap: space.md },
   unmanagedIcon: {

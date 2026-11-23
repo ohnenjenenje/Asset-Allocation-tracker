@@ -127,6 +127,93 @@ describe('buildAllocationTableRows', () => {
     expect(subcategory.children[0].currentPercentage).toBeCloseTo(30);
   });
 
+  it('carries sub-sleeve targets and drift onto child rows', () => {
+    const targeted = node({
+      category: 'Domestic Equity',
+      fullPath: 'Equities > Domestic Equity',
+      currentValue: 4_000,
+      currentPercentage: 40,
+      idealPercentage: 30,
+      diffPercentage: 10,
+      diffValue: 1_000,
+      constituents: [{ name: 'TCS', symbol: 'TCS', value: 4_000 }],
+    });
+    const root = node({
+      category: 'Equities',
+      fullPath: 'Equities',
+      currentValue: 4_000,
+      currentPercentage: 40,
+      subCategories: [targeted],
+    });
+
+    const rows = buildAllocationTableRows(
+      {
+        sleeves: [
+          sleeve({
+            path: 'Equities',
+            label: 'Equities',
+            currentPercentage: 40,
+            targetPercentage: 30,
+            bandPp: 3,
+            driftPp: 10,
+            currentValue: 4_000,
+            targetValue: 3_000,
+            driftValue: 1_000,
+            status: 'breach',
+          }),
+        ],
+        unmanaged: [],
+      },
+      [root],
+      10_000,
+    );
+
+    const subcategory = findRow(
+      rows[0].children,
+      'subcategory:Equities > Domestic Equity',
+    );
+    expect(subcategory).toMatchObject({
+      targetPercentage: 30,
+      targetValue: 3_000,
+      driftPp: 10,
+      driftValue: 1_000,
+      bandPp: null,
+      status: null,
+    });
+    expect(subcategory.children[0]).toMatchObject({
+      kind: 'holding',
+      targetPercentage: null,
+      driftPp: null,
+    });
+  });
+
+  it('leaves child targets empty when the policy has none', () => {
+    const rows = buildAllocationTableRows(
+      {
+        sleeves: [
+          sleeve({
+            path: 'Equities',
+            label: 'Equities',
+            currentPercentage: 100,
+            targetPercentage: 60,
+          }),
+        ],
+        unmanaged: [],
+      },
+      [equities],
+      10_000,
+    );
+
+    const subcategory = findRow(
+      rows[0].children,
+      'subcategory:Equities > Domestic Equity',
+    );
+    expect(subcategory.targetPercentage).toBeNull();
+    expect(subcategory.targetValue).toBeNull();
+    expect(subcategory.driftPp).toBeNull();
+    expect(subcategory.driftValue).toBeNull();
+  });
+
   it('appends unmanaged rows without a target or drift', () => {
     const crypto = node({
       category: 'Crypto',
