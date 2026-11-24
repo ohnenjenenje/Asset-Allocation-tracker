@@ -33,12 +33,21 @@ export const DEFAULT_IDEAL_ALLOCATION: Record<string, number> = {
   Cash: 10,
 };
 
-export const CAP_ORDER = ['Large Cap', 'Mid Cap', 'Small Cap', 'Other / Uncategorized'];
+export const CAP_ORDER = [
+  'Large Cap',
+  'Mid Cap',
+  'Small Cap',
+  'Diversified Equity',
+  'Global Equity',
+  'Other / Uncategorized',
+];
 
 export const CAP_COLORS: Record<string, string> = {
   'Large Cap': '#2563EB',
   'Mid Cap': '#059669',
   'Small Cap': '#7C3AED',
+  'Diversified Equity': '#0EA5E9',
+  'Global Equity': '#DB2777',
   'Other / Uncategorized': '#71717A',
   'Flexi Cap': '#D97706',
   'Multi Cap': '#DB2777',
@@ -210,6 +219,114 @@ function capWeights(data?: FundData | null) {
   const small = num(weightage?.smallCap);
   const others = num(weightage?.others);
   return { large, mid, small, others, total: large + mid + small + others };
+}
+
+type FundCapBucket = MarketCapCategory | 'Global Equity' | 'Diversified Equity';
+
+/**
+ * Best-effort cap bucket for a fund. Single-cap mandates keep their exact
+ * bucket; global and multi-cap funds get a descriptive bucket rather than a
+ * misleading "Other / Uncategorized" slice.
+ */
+function resolveFundCap(
+  asset: Asset,
+  data?: FundData | null,
+): FundCapBucket | null {
+  const category = getCapCategory(asset.name, data?.categoryName);
+  if (isMarketCapCategory(category)) return category;
+  if (isGlobalFund(data?.categoryName, asset.name)) return 'Global Equity';
+
+  const description = `${asset.name ?? ''} ${data?.categoryName ?? ''}`.toLowerCase();
+  if (
+    /(flexi|multi|large\s*&?\s*mid|large\s*midcap|mid\s*&?\s*large|diversified|balanced advantage|dynamic asset)/.test(
+      description,
+    )
+  ) {
+    return 'Diversified Equity';
+  }
+  return null;
+}
+
+/**
+ * Normalize provider cap weights into buckets that sum to 100% of the equity
+ * sleeve. Provider "others" is unclassified equity, not necessarily an
+ * uncategorized holding: fold it into a known single cap, keep it in the
+ * global bucket, or spread it over the reported caps so the chart never shows
+ * a phantom "Other / Uncategorized" slice.
+ */
+function resolveCapWeights(
+  data: FundData | null | undefined,
+  fallbackCap: FundCapBucket | null,
+): { cap: FundCapBucket; weight: number }[] {
+  const weights = capWeights(data);
+  const knownTotal = weights.large + weights.mid + weights.small;
+  const others = weights.others;
+
+  if (knownTotal > 0) {
+    const buckets: { cap: FundCapBucket; raw: number }[] = (
+      [
+        ['Large Cap', weights.large],
+        ['Mid Cap', weights.mid],
+        ['Small Cap', weights.small],
+      ] as const
+    )
+      .filter(([, raw]) => raw > 0)
+      .map(([cap, raw]) => ({ cap, raw }));
+
+    if (others <= 0) {
+      return buckets.map((bucket) => ({ cap: bucket.cap, weight: bucket.raw / knownTotal }));
+    }
+
+    if (fallbackCap && isMarketCapCategory(fallbackCap)) {
+      // A single-cap fund's unclassified slice belongs to its own cap bucket.
+      const existing = buckets.find((bucket) => bucket.cap === fallbackCap);
+      if (existing) existing.raw += others;
+      else buckets.push({ cap: fallbackCap, raw: others });
+      const total = knownTotal + others;
+      return buckets.map((bucket) => ({ cap: bucket.cap, weight: bucket.raw / total }));
+    }
+
+    if (fallbackCap === 'Global Equity') {
+      // Indian cap bands are not meaningful for a global fund; keep the
+      // unclassified slice in the descriptive global bucket.
+      return [
+        ...buckets.map((bucket) => ({
+          cap: bucket.cap,
+          weight: bucket.raw / (knownTotal + others),
+        })),
+        { cap: 'Global Equity', weight: others / (knownTotal + others) },
+      ];
+    }
+
+    // Flexi/multi-cap or unknown mandate: spread unclassified equity over the
+    // reported caps so the chart still reconciles to the equity value.
+    return buckets.map((bucket) => ({ cap: bucket.cap, weight: bucket.raw / knownTotal }));
+  }
+
+  if (others > 0) {
+    return [{ cap: fallbackCap ?? 'Diversified Equity', weight: 1 }];
+  }
+  return [];
+}
+
+/**
+ * Best-effort sector label for a fund whose provider returned no sector
+ * weights. A global fund is not an Indian sector, and a diversified fund cannot
+ * be assigned one sector; both get an explicit descriptive bucket instead of
+ * being dropped into "Other / Uncategorized".
+ */
+function inferFundSector(asset: Asset, data?: FundData | null): string | null {
+  const description = `${asset.name ?? ''} ${data?.categoryName ?? ''}`.toLowerCase();
+  if (/(debt|bond|liquid|fixed income|gilt|money market)/.test(description)) return null;
+  if (isGlobalFund(data?.categoryName, asset.name)) return 'Global Equity';
+  if (
+    /(equity|index|flexi|multi|large|mid|small|elss|value|momentum|alpha|nifty|sensex|bees|etf)/.test(
+      description,
+    )
+  ) {
+    return 'Diversified Equity';
+  }
+  return null;
 }
 
 function holdingPercentIsPercentScale(holdings?: { holdingPercent: number }[]): boolean {
@@ -625,28 +742,20 @@ export function analyzePortfolio(input: {
     const equityValue = equityValues.get(asset) ?? 0;
     if (totalValue <= 0 || equityValue <= 0) continue;
 
+    const fund = isFundAsset(asset);
     const data = fundHoldings[asset.symbol];
     const holdings = data?.holdings ?? [];
-    const weights = capWeights(data);
+    const fundCap = fund ? resolveFundCap(asset, data) : null;
+    const resolvedWeights = fund ? resolveCapWeights(data, fundCap) : [];
     const nonEquity = Math.max(0, totalValue - equityValue);
 
-    if (weights.total > 0) {
-      const capEntries = [
-        ['Large Cap', weights.large],
-        ['Mid Cap', weights.mid],
-        ['Small Cap', weights.small],
-        ['Other / Uncategorized', weights.others],
-      ] as const;
-
-      for (const [cap, weight] of capEntries) {
+    if (resolvedWeights.length > 0) {
+      for (const { cap, weight } of resolvedWeights) {
         if (weight <= 0) continue;
-        const capValue = equityValue * (weight / weights.total);
-        const otherAllocations: { name: string; value: number }[] = capEntries
-          .filter(([otherCap, otherWeight]) => otherCap !== cap && otherWeight > 0)
-          .map(([otherCap, otherWeight]) => ({
-            name: otherCap,
-            value: equityValue * (otherWeight / weights.total),
-          }));
+        const capValue = equityValue * weight;
+        const otherAllocations: { name: string; value: number }[] = resolvedWeights
+          .filter((other) => other.cap !== cap && other.weight > 0)
+          .map((other) => ({ name: other.cap, value: equityValue * other.weight }));
         if (nonEquity > 0) {
           otherAllocations.push({ name: 'Non-Equity / Debt', value: nonEquity });
         }
@@ -663,10 +772,8 @@ export function analyzePortfolio(input: {
       continue;
     }
 
-    const fundCap = isFundAsset(asset)
-      ? getCapCategory(asset.name, data?.categoryName)
-      : null;
-    const categoryCap = isMarketCapCategory(fundCap) ? fundCap : null;
+    const categoryCap =
+      fund && isMarketCapCategory(fundCap) ? fundCap : null;
 
     // A fund whose mandate names one cap bucket is classified as a whole. This
     // keeps NASDAQ-100 / S&P 500 ETFs and Nifty 50 index funds out of "Other"
@@ -730,8 +837,9 @@ export function analyzePortfolio(input: {
         mappedValue += holdingValue;
       }
 
-      // No individual holding is classifiable. Do not invent a cap bucket from
-      // a sample of names; keep the exposure explicit instead.
+      // No individual holding is classifiable. Fall back to the fund's
+      // mandate before using the generic "Other" bucket; a top-10 sample of
+      // company names cannot be treated as an unknown mandate by itself.
       if (mappedValue <= 0) {
         const subHoldings = holdings
           .map((holding) => {
@@ -748,7 +856,7 @@ export function analyzePortfolio(input: {
           otherAllocations.push({ name: 'Non-Equity / Debt', value: nonEquity });
         }
         addToMarketCap(
-          'Other / Uncategorized',
+          fund ? (fundCap ?? 'Diversified Equity') : 'Other / Uncategorized',
           equityValue,
           false,
           asset.name,
@@ -791,10 +899,11 @@ export function analyzePortfolio(input: {
     }
 
     // Direct stock, or a fund with neither weights nor holdings. A fund whose
-    // mandate is a single cap bucket was already handled above; do not leak a
-    // style label such as "Flexi Cap" into the cap-bucket chart.
-    const cap = isFundAsset(asset)
-      ? 'Other / Uncategorized'
+    // mandate is a single cap bucket was already handled above; style labels
+    // such as "Flexi Cap" become a descriptive bucket instead of leaking into
+    // "Other / Uncategorized".
+    const cap = fund
+      ? (fundCap ?? 'Diversified Equity')
       : (capForAsset(asset, prices, usdToInr, data?.categoryName) ??
         'Other / Uncategorized');
     addToMarketCap(cap, equityValue, isDirectEquity(asset), asset.name, asset.symbol);
@@ -852,14 +961,18 @@ export function analyzePortfolio(input: {
     const equityValue = equityValues.get(asset) ?? 0;
     if (totalValue <= 0 || equityValue <= 0) continue;
 
+    const fund = isFundAsset(asset);
     const data = fundHoldings[asset.symbol];
     const sectors = data?.sectorWeightings ?? [];
-    const weights = capWeights(data);
     const direct = isDirectEquity(asset);
+    const fundCap = fund ? resolveFundCap(asset, data) : null;
+    const resolvedWeights = fund ? resolveCapWeights(data, fundCap) : [];
     const assetCap = capForAsset(asset, prices, usdToInr, data?.categoryName);
-    const defaultCap = isMarketCapCategory(assetCap)
-      ? assetCap
-      : 'Other / Uncategorized';
+    const defaultCap = fund
+      ? (fundCap ?? 'Diversified Equity')
+      : isMarketCapCategory(assetCap)
+        ? assetCap
+        : 'Other / Uncategorized';
 
     const distributeToCaps = (sectorName: string, value: number) => {
       const addToCap = (cap: string, amount: number) => {
@@ -867,15 +980,9 @@ export function analyzePortfolio(input: {
         addToRecord(sectorByCap[cap], sectorName, amount);
       };
 
-      if (!direct && weights.total > 0) {
-        const capEntries = [
-          ['Large Cap', weights.large],
-          ['Mid Cap', weights.mid],
-          ['Small Cap', weights.small],
-          ['Other / Uncategorized', weights.others],
-        ] as const;
-        for (const [cap, weight] of capEntries) {
-          if (weight > 0) addToCap(cap, value * (weight / weights.total));
+      if (!direct && resolvedWeights.length > 0) {
+        for (const entry of resolvedWeights) {
+          if (entry.weight > 0) addToCap(entry.cap, value * entry.weight);
         }
       } else {
         addToCap(defaultCap, value);
@@ -890,22 +997,34 @@ export function analyzePortfolio(input: {
         name: sector.sector || 'Other',
         percent: (sector.percentage || 0) / (percentScale ? 100 : 1),
       }));
-      const mappedValue = normalized.reduce(
-        (sum, sector) => sum + equityValue * sector.percent,
+      const totalPercent = normalized.reduce(
+        (sum, sector) => sum + sector.percent * 100,
         0,
       );
-      const unmappedSector = Math.max(0, equityValue - mappedValue);
+      // Provider sector weights often cover only the equity sleeve (94.9%)
+      // rather than 100%. Scale material coverage to the sleeve so the
+      // residual does not become a phantom "Other" slice. Sparse samples keep
+      // their reported values and use the inferred fund sector for the rest.
+      const scale =
+        totalPercent >= 50 ? equityValue / (totalPercent / 100) : equityValue;
+      const coveredValue = normalized.reduce(
+        (sum, sector) => sum + sector.percent * scale,
+        0,
+      );
+      const unmappedSector = Math.max(0, equityValue - coveredValue);
+      const fallbackSector =
+        (fund ? inferFundSector(asset, data) : null) ?? 'Diversified Equity';
       const nonEquity = Math.max(0, totalValue - equityValue);
 
       for (const sector of normalized) {
-        const value = equityValue * sector.percent;
+        const value = sector.percent * scale;
         if (value <= 0) continue;
         const otherAllocations = normalized
           .filter((other) => other.name !== sector.name)
-          .map((other) => ({ name: other.name, value: equityValue * other.percent }))
+          .map((other) => ({ name: other.name, value: other.percent * scale }))
           .filter((other) => other.value > 0);
-        if (unmappedSector > 0) {
-          otherAllocations.push({ name: 'Unmapped Equity', value: unmappedSector });
+        if (unmappedSector > equityValue * 0.001 && fallbackSector !== sector.name) {
+          otherAllocations.push({ name: fallbackSector, value: unmappedSector });
         }
         if (nonEquity > 0) {
           otherAllocations.push({ name: 'Non-Equity / Debt', value: nonEquity });
@@ -914,26 +1033,29 @@ export function analyzePortfolio(input: {
         distributeToCaps(sector.name, value);
       }
 
-      if (unmappedSector > 0) {
+      if (unmappedSector > equityValue * 0.001) {
         const otherAllocations = normalized
-          .map((sector) => ({ name: sector.name, value: equityValue * sector.percent }))
+          .map((sector) => ({ name: sector.name, value: sector.percent * scale }))
           .filter((other) => other.value > 0);
         if (nonEquity > 0) {
           otherAllocations.push({ name: 'Non-Equity / Debt', value: nonEquity });
         }
         addToSector(
-          'Other / Uncategorized',
+          fallbackSector,
           unmappedSector,
           false,
-          `Unmapped Equity (${asset.name})`,
-          `${asset.symbol}-unmapped`,
+          `${asset.name} (unclassified equity)`,
+          `${asset.symbol}-unclassified`,
           otherAllocations,
         );
-        distributeToCaps('Other / Uncategorized', unmappedSector);
+        distributeToCaps(fallbackSector, unmappedSector);
       }
     } else {
       const sectorName =
-        asset.manualSector || prices[asset.symbol]?.sector || 'Other / Uncategorized';
+        asset.manualSector ||
+        (fund ? inferFundSector(asset, data) : null) ||
+        prices[asset.symbol]?.sector ||
+        'Other / Uncategorized';
       addToSector(sectorName, equityValue, direct, asset.name, asset.symbol);
       distributeToCaps(sectorName, equityValue);
     }

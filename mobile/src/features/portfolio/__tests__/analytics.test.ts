@@ -230,4 +230,153 @@ describe('market-cap exposure', () => {
     expect(mid?.value).toBeGreaterThan(0);
     expect(large?.value).toBe(mid?.value);
   });
+
+  it('classifies a global fund by mandate when the provider has no weights', () => {
+    const fund = asset({
+      id: 'china',
+      symbol: 'MF_140243',
+      name: 'Edelweiss Greater China Equity Off-shore Fund - Direct Plan - Growth',
+      type: 'MUTUALFUND',
+      quantity: 100,
+      entryPrice: 10,
+    });
+    const prices = {
+      MF_140243: quote({ symbol: 'MF_140243', regularMarketPrice: 10 }),
+    };
+    const fundHoldings: Record<string, FundData> = {
+      MF_140243: {
+        assetAllocation: fundAllocation,
+        holdings: [
+          { symbol: 'JPM Greater China I2 acc USD', holdingName: 'JPM Greater China I2 acc USD', holdingPercent: 0.54 },
+        ],
+        sectorWeightings: [],
+        marketCapWeightage: null,
+      },
+    };
+
+    const result = analyze([fund], prices, fundHoldings);
+
+    expect(result.marketCap.find((slice) => slice.name === 'Global Equity')?.value).toBe(
+      100 * 10 * 100,
+    );
+    expect(result.sectors.find((slice) => slice.name === 'Global Equity')?.value).toBe(
+      100 * 10 * 100,
+    );
+    expect(result.marketCap.find((slice) => slice.name === 'Other / Uncategorized')).toBeUndefined();
+    expect(result.sectors.find((slice) => slice.name === 'Other / Uncategorized')).toBeUndefined();
+  });
+
+  it('folds provider "others" into known caps instead of charting Other', () => {
+    const fund = asset({
+      id: 'axis-small',
+      symbol: 'MF_125354',
+      name: 'Axis Small Cap Fund - Direct Plan - Growth',
+      type: 'MUTUALFUND',
+      quantity: 100,
+      entryPrice: 50,
+    });
+    const prices = {
+      MF_125354: quote({ symbol: 'MF_125354', regularMarketPrice: 50 }),
+    };
+    const fundHoldings: Record<string, FundData> = {
+      MF_125354: {
+        assetAllocation: fundAllocation,
+        marketCapWeightage: {
+          largeCap: 5.37,
+          midCap: 13.25,
+          smallCap: 66.01,
+          others: 15.37,
+        },
+      },
+    };
+
+    const result = analyze([fund], prices, fundHoldings);
+    const equityValue = 100 * 50 * 100;
+
+    expect(
+      result.marketCap.find((slice) => slice.name === 'Other / Uncategorized'),
+    ).toBeUndefined();
+    expect(result.marketCap.reduce((sum, slice) => sum + slice.value, 0)).toBeCloseTo(
+      equityValue,
+      0,
+    );
+    expect(result.marketCap.find((slice) => slice.name === 'Small Cap')?.value).toBeCloseTo(
+      equityValue * 0.8138,
+      0,
+    );
+  });
+
+  it('scales partial sector weights to the equity sleeve', () => {
+    const fund = asset({
+      id: 'flexi',
+      symbol: 'MF_118955',
+      name: 'HDFC Flexi Cap Fund - Growth Option - Direct Plan',
+      type: 'MUTUALFUND',
+      quantity: 100,
+      entryPrice: 20,
+    });
+    const prices = {
+      MF_118955: quote({ symbol: 'MF_118955', regularMarketPrice: 20 }),
+    };
+    const fundHoldings: Record<string, FundData> = {
+      MF_118955: {
+        assetAllocation: fundAllocation,
+        sectorWeightings: [
+          { sector: 'Financial Services', percentage: 36.04 },
+          { sector: 'Consumer Cyclical', percentage: 16.74 },
+          { sector: 'Healthcare', percentage: 11.15 },
+          { sector: 'Technology', percentage: 10.04 },
+          { sector: 'Industrials', percentage: 8.91 },
+          { sector: 'Energy', percentage: 7.12 },
+          { sector: 'Consumer Defensive', percentage: 4.9 },
+        ],
+        marketCapWeightage: {
+          largeCap: 75.37,
+          midCap: 9.54,
+          smallCap: 9.35,
+          others: 5.74,
+        },
+      },
+    };
+
+    const result = analyze([fund], prices, fundHoldings);
+    const equityValue = 100 * 20 * 100;
+
+    expect(result.sectors.find((slice) => slice.name === 'Other / Uncategorized')).toBeUndefined();
+    expect(result.sectors.reduce((sum, slice) => sum + slice.value, 0)).toBeCloseTo(
+      equityValue,
+      0,
+    );
+  });
+
+  it('gives a blend fund with only sector data a descriptive cap bucket', () => {
+    const fund = asset({
+      id: 'blend2',
+      symbol: 'MF_149343',
+      name: 'Edelweiss NIFTY Large Midcap 250 - Direct Growth',
+      type: 'MUTUALFUND',
+      quantity: 100,
+      entryPrice: 10,
+    });
+    const prices = {
+      MF_149343: quote({ symbol: 'MF_149343', regularMarketPrice: 10 }),
+    };
+    const fundHoldings: Record<string, FundData> = {
+      MF_149343: {
+        assetAllocation: fundAllocation,
+        sectorWeightings: [{ sector: 'Financial Services', percentage: 99.7 }],
+        marketCapWeightage: null,
+      },
+    };
+
+    const result = analyze([fund], prices, fundHoldings);
+
+    expect(
+      result.marketCap.find((slice) => slice.name === 'Diversified Equity')?.value,
+    ).toBe(100 * 10 * 100);
+    expect(result.marketCap.find((slice) => slice.name === 'Other / Uncategorized')).toBeUndefined();
+    expect(result.capRows.find((row) => row.cap === 'Diversified Equity')?.total).toBe(
+      100 * 10 * 100,
+    );
+  });
 });
