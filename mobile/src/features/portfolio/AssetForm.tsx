@@ -9,6 +9,7 @@ import { space, type } from '@/src/lib/theme/tokens';
 import { useTheme } from '@/src/lib/theme/ThemeProvider';
 
 import { AssetSearch } from './AssetSearch';
+import { CRYPTO_SUBTYPES, cryptoSubtypeFromSymbol } from './crypto';
 import type { Asset } from './types';
 import {
   applyPositionEdit,
@@ -26,6 +27,7 @@ import {
   validateAssetForm,
   type AssetFormOutput,
   type AssetFormValues,
+  type AssetType,
 } from './schema';
 
 interface AssetFormProps {
@@ -68,6 +70,11 @@ export function AssetForm({
     )
       ? (initial?.manualLiquidity as AssetFormValues['manualLiquidity'])
       : '',
+    cryptoSubtype: (CRYPTO_SUBTYPES as readonly string[]).includes(
+      initial?.cryptoSubtype ?? '',
+    )
+      ? (initial?.cryptoSubtype as AssetFormValues['cryptoSubtype'])
+      : '',
     account: initial?.account ?? '',
   });
   const [position, setPosition] = useState(() => initialPositionState(initial));
@@ -80,6 +87,16 @@ export function AssetForm({
   ) => {
     setValues((current) => ({ ...current, [key]: value }));
     if (errors[key]) setErrors((current) => ({ ...current, [key]: undefined }));
+    setFormError(null);
+  };
+
+  const selectType = (assetType: AssetType) => {
+    setValues((current) => ({
+      ...current,
+      type: assetType,
+      cryptoSubtype: assetType === 'CRYPTO' ? current.cryptoSubtype : '',
+    }));
+    if (errors.type) setErrors((current) => ({ ...current, type: undefined }));
     setFormError(null);
   };
 
@@ -186,10 +203,54 @@ export function AssetForm({
               key={assetType}
               label={ASSET_TYPE_LABELS[assetType]}
               selected={values.type === assetType}
-              onPress={disabled ? undefined : () => update('type', assetType)}
+              onPress={disabled ? undefined : () => selectType(assetType)}
             />
           ))}
         </View>
+
+        {values.type === 'CRYPTO' ? (
+          <>
+            <View style={[styles.divider, { backgroundColor: colors.border }]} />
+            <Text style={[type.label, { color: colors.muted }]}>
+              Crypto subtype
+            </Text>
+            <Text style={[type.caption, { color: colors.muted }]}>
+              BTC, ETH and the known stablecoins are detected automatically.
+              Memecoins and other coins need an explicit choice so nothing is
+              guessed from the name.
+            </Text>
+            <View style={styles.chips}>
+              <Chip
+                label="Auto"
+                selected={!values.cryptoSubtype}
+                onPress={
+                  disabled
+                    ? undefined
+                    : () => update('cryptoSubtype', '')
+                }
+              />
+              {CRYPTO_SUBTYPES.map((subtype) => (
+                <Chip
+                  key={subtype}
+                  label={subtype}
+                  selected={values.cryptoSubtype === subtype}
+                  onPress={
+                    disabled
+                      ? undefined
+                      : () => update('cryptoSubtype', subtype)
+                  }
+                />
+              ))}
+            </View>
+            <Text style={[type.caption, { color: colors.textSecondary }]}>
+              {values.cryptoSubtype
+                ? `Explicit override: ${values.cryptoSubtype}`
+                : cryptoSubtypeFromSymbol(values.symbol)
+                  ? `Auto: ${cryptoSubtypeFromSymbol(values.symbol)}`
+                  : 'Auto: no subtype detected — this holding stays directly under Crypto.'}
+            </Text>
+          </>
+        ) : null}
 
         <View style={[styles.divider, { backgroundColor: colors.border }]} />
 

@@ -772,3 +772,178 @@ describe('market-cap exposure', () => {
     );
   });
 });
+
+describe('crypto subtype allocation', () => {
+  const btcBinance = asset({
+    id: 'btc-binance',
+    symbol: 'BTC-USD',
+    name: 'BTC',
+    type: 'CRYPTO',
+    currency: 'USD',
+    quantity: 0.5,
+    entryPrice: 50_000,
+    exchange: 'Binance',
+    costBasisKnown: false,
+  });
+  const btcCoindcx = asset({
+    id: 'btc-coindcx',
+    symbol: 'BTC-USD',
+    name: 'BTC',
+    type: 'CRYPTO',
+    currency: 'USD',
+    quantity: 0.5,
+    entryPrice: 55_000,
+    exchange: 'CoinDCX',
+    costBasisKnown: false,
+  });
+  const ethereum = asset({
+    id: 'eth',
+    symbol: 'ETH-USD',
+    name: 'Ethereum',
+    type: 'CRYPTO',
+    currency: 'USD',
+    quantity: 1,
+    entryPrice: 2_500,
+  });
+  const tether = asset({
+    id: 'usdt',
+    symbol: 'USDT-USD',
+    name: 'Tether',
+    type: 'CRYPTO',
+    currency: 'USD',
+    quantity: 1_000,
+    entryPrice: 1,
+  });
+  const dogecoin = asset({
+    id: 'doge',
+    symbol: 'DOGE-USD',
+    name: 'Dogecoin',
+    type: 'CRYPTO',
+    currency: 'USD',
+    quantity: 1_000,
+    entryPrice: 0.08,
+    cryptoSubtype: 'Memecoins',
+  });
+  const unknown = asset({
+    id: 'mystery',
+    symbol: 'MYSTERY-USD',
+    name: 'Mystery Coin',
+    type: 'CRYPTO',
+    currency: 'USD',
+    quantity: 10,
+    entryPrice: 2,
+  });
+
+  const prices = {
+    'BTC-USD': quote({
+      symbol: 'BTC-USD',
+      currency: 'USD',
+      regularMarketPrice: 70_000,
+    }),
+    'ETH-USD': quote({
+      symbol: 'ETH-USD',
+      currency: 'USD',
+      regularMarketPrice: 3_000,
+    }),
+    'USDT-USD': quote({
+      symbol: 'USDT-USD',
+      currency: 'USD',
+      regularMarketPrice: 1,
+    }),
+    'DOGE-USD': quote({
+      symbol: 'DOGE-USD',
+      currency: 'USD',
+      regularMarketPrice: 0.1,
+    }),
+    'MYSTERY-USD': quote({
+      symbol: 'MYSTERY-USD',
+      currency: 'USD',
+      regularMarketPrice: 2,
+    }),
+  };
+
+  it('splits crypto into canonical subtypes and leaves unknown coins at the root', () => {
+    const result = analyze(
+      [btcBinance, btcCoindcx, ethereum, tether, dogecoin, unknown],
+      prices,
+    );
+    const crypto = result.allocationAnalysis.find(
+      (node) => node.fullPath === 'Crypto',
+    );
+
+    expect(crypto).toBeDefined();
+    const bitcoin = crypto?.subCategories.find(
+      (node) => node.fullPath === 'Crypto > Bitcoin',
+    );
+    expect(bitcoin?.currentValue).toBe(Math.round(0.5 * 70_000 * 84 * 100 * 2));
+    expect(bitcoin?.constituents).toHaveLength(1);
+    expect(bitcoin?.constituents[0]).toMatchObject({
+      name: 'Bitcoin',
+      symbol: 'BTC',
+      value: Math.round(0.5 * 70_000 * 84 * 100 * 2),
+    });
+
+    expect(
+      crypto?.subCategories.find(
+        (node) => node.fullPath === 'Crypto > Ethereum',
+      )?.currentValue,
+    ).toBe(Math.round(3_000 * 84 * 100));
+    expect(
+      crypto?.subCategories.find(
+        (node) => node.fullPath === 'Crypto > Stablecoins',
+      )?.currentValue,
+    ).toBe(Math.round(1_000 * 84 * 100));
+    expect(
+      crypto?.subCategories.find(
+        (node) => node.fullPath === 'Crypto > Memecoins',
+      )?.currentValue,
+    ).toBe(Math.round(1_000 * 0.1 * 84 * 100));
+    expect(
+      crypto?.subCategories.find(
+        (node) => node.fullPath === 'Crypto > Other Crypto',
+      ),
+    ).toBeUndefined();
+
+    expect(crypto?.constituents.map((item) => item.symbol)).toEqual([
+      'MYSTERY',
+    ]);
+    expect(crypto?.constituents[0]?.value).toBe(Math.round(10 * 2 * 84 * 100));
+    expect(crypto?.currentValue).toBeCloseTo(
+      Math.round(0.5 * 70_000 * 84 * 100 * 2) +
+        Math.round(3_000 * 84 * 100) +
+        Math.round(1_000 * 84 * 100) +
+        Math.round(1_000 * 0.1 * 84 * 100) +
+        Math.round(10 * 2 * 84 * 100),
+      0,
+    );
+  });
+
+  it('honours an explicit subtype over the inferred symbol', () => {
+    const wrapped = asset({
+      id: 'btc-other',
+      symbol: 'BTC-USD',
+      name: 'Bitcoin (other sleeve)',
+      type: 'CRYPTO',
+      currency: 'USD',
+      quantity: 1,
+      entryPrice: 60_000,
+      cryptoSubtype: 'Other Crypto',
+    });
+
+    const result = analyze([wrapped], prices);
+    const crypto = result.allocationAnalysis.find(
+      (node) => node.fullPath === 'Crypto',
+    );
+
+    expect(
+      crypto?.subCategories.find(
+        (node) => node.fullPath === 'Crypto > Bitcoin',
+      ),
+    ).toBeUndefined();
+    expect(
+      crypto?.subCategories.find(
+        (node) => node.fullPath === 'Crypto > Other Crypto',
+      )?.currentValue,
+    ).toBe(Math.round(70_000 * 84 * 100));
+  });
+});

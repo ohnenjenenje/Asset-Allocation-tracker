@@ -2,6 +2,12 @@ import { toPaise } from '@/src/lib/format/money';
 
 import { flattenAssets, priceFor } from './aggregate';
 import {
+  cryptoAllocationPath,
+  cryptoBaseSymbol,
+  cryptoDisplayName,
+  isCryptoAllocationPath,
+} from './crypto';
+import {
   canonicalSectorLabel,
   getCapCategory,
   getCommoditySubCategory,
@@ -670,14 +676,25 @@ export function analyzePortfolio(input: {
     if (value <= 0) return;
     const key = name.trim();
     const existing = allocationMap.get(key);
+    const crypto = isCryptoAllocationPath(key);
+    // Institutions show one exposure line per coin even when the balance is
+    // spread across venues. The underlying lots stay separate elsewhere.
+    const symbol = crypto ? cryptoBaseSymbol(asset.symbol) : asset.symbol;
+    const displayName = crypto
+      ? cryptoDisplayName(symbol, asset.name)
+      : asset.name;
+    const constituent = crypto
+      ? existing?.constituents.find((item) => item.symbol === symbol)
+      : undefined;
     if (existing) {
       existing.value += value;
-      existing.constituents.push({ name: asset.name, symbol: asset.symbol, value });
+      if (constituent) constituent.value += value;
+      else existing.constituents.push({ name: displayName, symbol, value });
     } else {
       allocationMap.set(key, {
         name: key,
         value,
-        constituents: [{ name: asset.name, symbol: asset.symbol, value }],
+        constituents: [{ name: displayName, symbol, value }],
       });
     }
   };
@@ -739,8 +756,10 @@ export function analyzePortfolio(input: {
     }
 
     // Non-equity fallbacks: debt funds, commodities and everything outside the
-    // equity sleeve keep their existing top-level treatment.
-    let finalCategory = topCategory;
+    // equity sleeve keep their existing top-level treatment. Crypto gets its
+    // canonical subtype child when one can be inferred or was chosen.
+    const cryptoPath = cryptoAllocationPath(asset);
+    let finalCategory = cryptoPath ? normalizeGroup(cryptoPath) : topCategory;
     if (fund && isDebtFund(data?.categoryName, asset.name)) {
       finalCategory = 'Fixed Income';
     } else if (finalCategory === 'Commodities') {

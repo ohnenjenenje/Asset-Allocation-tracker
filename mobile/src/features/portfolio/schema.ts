@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { CRYPTO_SUBTYPES } from './crypto';
+
 export const ASSET_TYPES = [
   'STOCK',
   'MUTUALFUND',
@@ -66,6 +68,8 @@ export const LIQUIDITY_OPTIONS = [
   'Illiquid',
 ] as const;
 
+export const CRYPTO_SUBTYPE_OPTIONS = ['', ...CRYPTO_SUBTYPES] as const;
+
 export const assetFormSchema = z.object({
   name: z.string().trim().min(1, 'Enter the asset name.').max(80, 'Keep the name under 80 characters.'),
   symbol: z
@@ -84,6 +88,7 @@ export const assetFormSchema = z.object({
   manualSector: z.string().trim().max(60, 'Keep the sector under 60 characters.').optional(),
   manualCap: z.enum(CAP_OVERRIDE_OPTIONS).optional(),
   manualLiquidity: z.enum(LIQUIDITY_OPTIONS).optional(),
+  cryptoSubtype: z.enum(CRYPTO_SUBTYPE_OPTIONS).optional(),
   account: z.string().trim().max(40, 'Keep the account name under 40 characters.').optional(),
 });
 

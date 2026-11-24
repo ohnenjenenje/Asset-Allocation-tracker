@@ -40,6 +40,8 @@ export default function NewAssetScreen() {
       manualSector: values.manualSector?.trim() || undefined,
       manualCap: values.manualCap || undefined,
       manualLiquidity: values.manualLiquidity || undefined,
+      cryptoSubtype:
+        values.type === 'CRYPTO' ? values.cryptoSubtype || undefined : undefined,
       account: values.account?.trim() || undefined,
       currency: values.currency,
     };

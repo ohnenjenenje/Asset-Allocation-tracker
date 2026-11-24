@@ -2,6 +2,13 @@
  * Domain types. Kept structurally compatible with the web app's `lib/types.ts`
  * so the same MongoDB documents can be consumed without a translation layer.
  */
+export type CryptoSubtype =
+  | 'Bitcoin'
+  | 'Ethereum'
+  | 'Stablecoins'
+  | 'Memecoins'
+  | 'Other Crypto';
+
 export type Asset = {
   id: string;
   symbol: string;
@@ -13,6 +20,13 @@ export type Asset = {
   /** Manual classification overrides, used before provider or inferred data. */
   manualCap?: string;
   manualLiquidity?: LiquidityTier;
+  /** Explicit crypto child sleeve. Omitted means infer from the symbol. */
+  cryptoSubtype?: CryptoSubtype;
+  /**
+   * False when the entry price is only a valuation placeholder, as with
+   * exchange balance snapshots. Missing values fall back to entryPrice > 0.
+   */
+  costBasisKnown?: boolean;
   /** Household account this holding belongs to. Defaults to the primary account. */
   account?: string;
   purchaseDate?: string;

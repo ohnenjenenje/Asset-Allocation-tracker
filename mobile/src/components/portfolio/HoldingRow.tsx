@@ -14,6 +14,8 @@ interface HoldingRowProps {
   rank?: number;
   onPress?: () => void;
   showWeight?: boolean;
+  /** Extra context such as the number of consolidated lots. */
+  metaLabel?: string;
 }
 
 function initials(name: string): string {
@@ -33,6 +35,7 @@ export function HoldingRow({
   rank,
   onPress,
   showWeight = true,
+  metaLabel,
 }: HoldingRowProps) {
   const { colors } = useTheme();
   const { asset, pnl, pnlPercent, hasLivePrice } = holding;
@@ -74,6 +77,17 @@ export function HoldingRow({
             <Text style={[styles.meta, { color: colors.muted }]} numberOfLines={1}>
               {asset.symbol}
             </Text>
+            {metaLabel ? (
+              <>
+                <Text style={[styles.meta, { color: colors.muted }]}>·</Text>
+                <Text
+                  style={[styles.meta, styles.metaFlex, { color: colors.muted }]}
+                  numberOfLines={1}
+                >
+                  {metaLabel}
+                </Text>
+              </>
+            ) : null}
             {!hasLivePrice ? (
               <View style={styles.staleRow}>
                 <Feather name="clock" size={9} color={colors.muted} />
@@ -165,6 +179,7 @@ const styles = StyleSheet.create({
   metaRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   staleRow: { flexDirection: 'row', alignItems: 'center', gap: 3 },
   meta: { fontSize: 11 },
+  metaFlex: { flexShrink: 1 },
   numbers: { alignItems: 'flex-end', gap: 2 },
   value: { fontSize: 14, fontWeight: '600' },
   pnl: { fontSize: 11, fontWeight: '600' },

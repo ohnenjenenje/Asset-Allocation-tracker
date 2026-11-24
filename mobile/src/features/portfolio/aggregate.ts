@@ -1,5 +1,12 @@
 import { toPaise } from '@/src/lib/format/money';
 
+import {
+  cryptoBaseSymbol,
+  cryptoDisplayName,
+  cryptoSubtypeForAsset,
+  hasKnownCostBasis,
+  isCryptoAsset,
+} from './crypto';
 import { CATEGORY_COLORS, normalizeCategory, resolveAssetCurrency, toINR } from './normalize';
 import type { Asset, PriceData } from './types';
 
@@ -24,6 +31,16 @@ export interface Holding {
   quoteSource?: string | null;
   /** True when the value came from a cache/fallback rather than a live quote. */
   quoteStale?: boolean;
+  /** Stable key for a display position; crypto lots share one key per coin. */
+  positionKey?: string;
+  /** Number of underlying lots represented by this display position. */
+  lotCount?: number;
+  /** Present only on a consolidated crypto position. */
+  lots?: Holding[];
+  /** Weighted average cost in paise, from lots with a real cost basis. */
+  averageCostPaise?: number | null;
+  /** True when at least one lot has no reliable cost basis. */
+  costBasisIncomplete?: boolean;
 }
 
 export interface PortfolioSummary {
@@ -31,12 +48,18 @@ export interface PortfolioSummary {
   investedValue: number;
   pnl: number;
   pnlPercent: number;
+  /** Number of stored lots, including exchange balances. */
   assetCount: number;
+  /** Number of display positions after consolidating crypto by coin. */
+  positionCount: number;
   /** Holdings valued by a live quote or a manual price. */
   pricedCount: number;
   categories: number;
   allocation: AllocationSlice[];
+  /** Individual lots; reports and tax-style views use these. */
   holdings: Holding[];
+  /** Consolidated crypto positions plus non-crypto holdings. */
+  positions: Holding[];
   topHoldings: Holding[];
 }
 
@@ -66,6 +89,122 @@ export function priceFor(asset: Asset, prices: Record<string, PriceData>): numbe
 function hasLivePrice(asset: Asset, prices: Record<string, PriceData>): boolean {
   if (asset.manualPrice !== undefined && asset.manualPrice !== null) return true;
   return prices[asset.symbol]?.regularMarketPrice != null;
+}
+
+function cryptoPositionKeyFor(asset: Asset): string {
+  const base = cryptoBaseSymbol(asset.symbol) || asset.symbol.trim().toUpperCase();
+  return `crypto:${base}`;
+}
+
+function enrichSingleHolding(holding: Holding): Holding {
+  const crypto = isCryptoAsset(holding.asset);
+  const known = hasKnownCostBasis(holding.asset);
+  const quantity = holding.asset.quantity;
+  const base = crypto ? cryptoBaseSymbol(holding.asset.symbol) : '';
+  const asset =
+    crypto && base
+      ? {
+          ...holding.asset,
+          name: cryptoDisplayName(base, holding.asset.name),
+          symbol: base,
+        }
+      : holding.asset;
+  return {
+    ...holding,
+    asset,
+    positionKey: crypto
+      ? cryptoPositionKeyFor(holding.asset)
+      : `asset:${holding.asset.id}`,
+    lotCount: 1,
+    averageCostPaise:
+      known && quantity > 0 ? holding.investedValue / quantity : null,
+    costBasisIncomplete: !known,
+  };
+}
+
+/**
+ * One exposure line per coin, with every venue balance kept as a child lot.
+ * This mirrors institutional portfolio systems: aggregate the position for
+ * exposure, but never destroy the lot-level cost basis.
+ */
+function consolidateCryptoLots(lots: Holding[]): Holding {
+  const first = lots[0];
+  const base =
+    cryptoBaseSymbol(first.asset.symbol) || first.asset.symbol.trim().toUpperCase();
+  const quantity = lots.reduce((sum, lot) => sum + lot.asset.quantity, 0);
+  const currentValue = lots.reduce((sum, lot) => sum + lot.currentValue, 0);
+  const investedValue = lots.reduce((sum, lot) => sum + lot.investedValue, 0);
+  const pnl = currentValue - investedValue;
+  const knownLots = lots.filter(
+    (lot) => hasKnownCostBasis(lot.asset) && lot.asset.quantity > 0,
+  );
+  const knownQuantity = knownLots.reduce(
+    (sum, lot) => sum + lot.asset.quantity,
+    0,
+  );
+  const knownInvested = knownLots.reduce(
+    (sum, lot) => sum + lot.investedValue,
+    0,
+  );
+  const averageCostPaise =
+    knownQuantity > 0 ? knownInvested / knownQuantity : null;
+  const subtype = cryptoSubtypeForAsset(first.asset) ?? undefined;
+  const asset: Asset = {
+    ...first.asset,
+    id: `crypto-position-${base}`,
+    name: cryptoDisplayName(base, first.asset.name),
+    symbol: base,
+    quantity,
+    entryPrice:
+      averageCostPaise != null
+        ? averageCostPaise / 100
+        : first.asset.entryPrice,
+    currency: 'INR',
+    type: 'CRYPTO',
+    categoryPath: subtype ? ['Crypto', subtype] : ['Crypto'],
+    isGroup: true,
+    subItems: lots.map((lot) => lot.asset),
+    exchange: undefined,
+    account: undefined,
+    costBasisKnown: knownLots.length === lots.length,
+  };
+
+  return {
+    asset,
+    category: 'Crypto',
+    currentValue,
+    investedValue,
+    pnl,
+    pnlPercent: investedValue > 0 ? (pnl / investedValue) * 100 : 0,
+    hasLivePrice: lots.some((lot) => lot.hasLivePrice),
+    quoteAsOf: lots.find((lot) => lot.quoteAsOf != null)?.quoteAsOf ?? null,
+    quoteSource: lots.find((lot) => lot.quoteSource)?.quoteSource ?? null,
+    quoteStale: lots.some((lot) => lot.quoteStale),
+    positionKey: `crypto:${base}`,
+    lotCount: lots.length,
+    lots,
+    averageCostPaise,
+    costBasisIncomplete: knownLots.length !== lots.length,
+  };
+}
+
+/** Collapse crypto lots by coin while leaving every other asset untouched. */
+function buildPositions(holdings: Holding[]): Holding[] {
+  const groups = new Map<string, Holding[]>();
+  for (const holding of holdings) {
+    const key = isCryptoAsset(holding.asset)
+      ? cryptoPositionKeyFor(holding.asset)
+      : `asset:${holding.asset.id}`;
+    const group = groups.get(key);
+    if (group) group.push(holding);
+    else groups.set(key, [holding]);
+  }
+
+  return [...groups.values()].map((group) =>
+    group.length === 1
+      ? enrichSingleHolding(group[0])
+      : consolidateCryptoLots(group),
+  );
 }
 
 /** Pure, memo-friendly derivation of every number the dashboard needs. */
@@ -125,6 +264,9 @@ export function summarize(
     }));
 
   const sorted = [...holdings].sort((a, b) => b.currentValue - a.currentValue);
+  const positions = buildPositions(holdings).sort(
+    (a, b) => b.currentValue - a.currentValue,
+  );
 
   return {
     currentValue,
@@ -132,10 +274,12 @@ export function summarize(
     pnl,
     pnlPercent: investedValue > 0 ? (pnl / investedValue) * 100 : 0,
     assetCount: holdings.length,
+    positionCount: positions.length,
     pricedCount: holdings.filter((holding) => holding.hasLivePrice).length,
     categories: byCategory.size,
     allocation,
     holdings: sorted,
-    topHoldings: sorted.slice(0, 5),
+    positions,
+    topHoldings: positions.slice(0, 5),
   };
 }

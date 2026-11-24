@@ -1,3 +1,4 @@
+import { STABLECOIN_BASES } from './crypto';
 import type {
   Asset,
   FundSectorWeighting,
@@ -222,6 +223,11 @@ const KNOWN_CASINGS: Record<string, string> = {
   gold: 'Gold',
   silver: 'Silver',
   crypto: 'Crypto',
+  bitcoin: 'Bitcoin',
+  ethereum: 'Ethereum',
+  stablecoins: 'Stablecoins',
+  memecoins: 'Memecoins',
+  'other crypto': 'Other Crypto',
   'large cap': 'Large Cap',
   'mid cap': 'Mid Cap',
   'small cap': 'Small Cap',
@@ -243,19 +249,6 @@ export function normalizeGroup(category: string): string {
     })
     .join(' > ');
 }
-
-const STABLECOIN_BASES = new Set([
-  'USDT',
-  'USDC',
-  'BUSD',
-  'FDUSD',
-  'TUSD',
-  'DAI',
-  'USDP',
-  'PYUSD',
-  'USDD',
-  'GUSD',
-]);
 
 /**
  * Normalize exchange balances to the same symbol/currency convention as saved
@@ -287,8 +280,11 @@ export function normalizeExchangeAsset(
     type: isInr ? 'CASH' : 'CRYPTO',
     currency: isInr ? 'INR' : 'USD',
     currentPrice,
-    // Exchange APIs do not expose cost basis; keep P&L neutral.
+    // Exchange APIs do not expose cost basis; keep P&L neutral but mark the
+    // lot so consolidation never presents this placeholder as a real average.
     entryPrice: Number(raw.entryPrice) > 0 ? Number(raw.entryPrice) : currentPrice,
+    costBasisKnown:
+      raw.costBasisKnown === true || isInr || isStablecoin,
     exchange,
   };
 }

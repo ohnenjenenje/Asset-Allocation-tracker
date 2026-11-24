@@ -59,7 +59,7 @@ const STANDARD_SUGGESTIONS: Record<string, string[]> = {
   'global equity': ['Large Cap', 'Mid Cap', 'Small Cap', 'Diversified'],
   commodities: ['Gold', 'Silver', 'Other Commodities'],
   'fixed income': ['Sovereign', 'Corporate', 'Short Duration'],
-  crypto: ['Bitcoin', 'Ethereum', 'Stablecoins'],
+  crypto: ['Bitcoin', 'Ethereum', 'Stablecoins', 'Memecoins', 'Other Crypto'],
   cash: ['Operating Cash', 'Strategic Reserve'],
 };
 

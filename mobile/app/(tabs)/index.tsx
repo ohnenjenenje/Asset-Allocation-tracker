@@ -16,7 +16,10 @@ import { ScreenHeader } from '@/src/components/ui/ScreenHeader';
 import { SectionHeader } from '@/src/components/ui/SectionHeader';
 import { Skeleton } from '@/src/components/ui/Skeleton';
 import { EmptyState, ErrorState } from '@/src/components/ui/States';
-import type { PortfolioSummary } from '@/src/features/portfolio/aggregate';
+import type {
+  Holding,
+  PortfolioSummary,
+} from '@/src/features/portfolio/aggregate';
 import type { PolicyUnmanagedSlice } from '@/src/features/portfolio/policy';
 import { useAuth } from '@/src/features/auth/AuthProvider';
 import { usePortfolioData } from '@/src/features/portfolio/queries';
@@ -70,10 +73,34 @@ export default function AllocationHomeScreen() {
   const subtitle = isRefreshing && syncedLabel
     ? 'Refreshing your allocation…'
     : syncedLabel
-      ? `Updated ${syncedLabel} · ${summary.assetCount} holdings${
+      ? `Updated ${syncedLabel} · ${summary.positionCount} holdings${
           quotesLabel ? ` · quotes ${quotesLabel}` : ''
         }`
       : 'Target versus current allocation';
+
+  const openHolding = (holding: Holding) => {
+    if (
+      holding.lots &&
+      holding.lots.length > 1 &&
+      holding.positionKey?.startsWith('crypto:')
+    ) {
+      router.push(`/position/${holding.positionKey.slice('crypto:'.length)}`);
+      return;
+    }
+    router.push(`/asset/${holding.asset.id}`);
+  };
+
+  const holdingMeta = (holding: Holding): string | undefined => {
+    if (holding.category !== 'Crypto') return undefined;
+    const lotCount = holding.lotCount ?? 1;
+    if (lotCount > 1) {
+      return `${lotCount} lots${
+        holding.costBasisIncomplete ? ' · partial cost basis' : ''
+      }`;
+    }
+    if (holding.costBasisIncomplete) return 'no cost basis';
+    return holding.asset.exchange;
+  };
 
   return (
     <Screen refreshing={isRefreshing} onRefresh={refetch}>
@@ -131,7 +158,7 @@ export default function AllocationHomeScreen() {
             <LoadingProgress progress={progress} />
             <AllocationSkeleton />
           </>
-        ) : summary.assetCount === 0 ? (
+        ) : summary.positionCount === 0 ? (
           <Card>
             <EmptyState
               icon="target"
@@ -182,7 +209,7 @@ export default function AllocationHomeScreen() {
               />
               <Card padded={false} style={styles.holdingsCard}>
                 {summary.topHoldings.map((holding, index) => (
-                  <View key={holding.asset.id}>
+                  <View key={holding.positionKey ?? holding.asset.id}>
                     {index > 0 ? (
                       <View style={[styles.divider, { backgroundColor: colors.border }]} />
                     ) : null}
@@ -194,14 +221,15 @@ export default function AllocationHomeScreen() {
                           ? (holding.currentValue / summary.currentValue) * 100
                           : 0
                       }
-                      onPress={() => router.push(`/asset/${holding.asset.id}`)}
+                      metaLabel={holdingMeta(holding)}
+                      onPress={() => openHolding(holding)}
                     />
                   </View>
                 ))}
-                {summary.assetCount > summary.topHoldings.length ? (
+                {summary.positionCount > summary.topHoldings.length ? (
                   <View style={[styles.more, { borderTopColor: colors.border }]}>
                     <Button
-                      label={`View ${summary.assetCount - summary.topHoldings.length} more`}
+                      label={`View ${summary.positionCount - summary.topHoldings.length} more`}
                       onPress={() => router.push('/assets')}
                       variant="ghost"
                       size="sm"

@@ -72,7 +72,7 @@ export default function HoldingsScreen() {
 
   const sections = useMemo<Section[]>(() => {
     const normalized = query.trim().toLowerCase();
-    const filtered = summary.holdings.filter((holding) => {
+    const filtered = summary.positions.filter((holding) => {
       const matchesCategory = category === 'All' || holding.category === category;
       const matchesQuery =
         normalized.length === 0 ||
@@ -99,7 +99,31 @@ export default function HoldingsScreen() {
         data,
       };
     });
-  }, [summary.holdings, query, category]);
+  }, [summary.positions, query, category]);
+
+  const positionMeta = (holding: Holding): string | undefined => {
+    if (holding.category !== 'Crypto') return undefined;
+    const lotCount = holding.lotCount ?? 1;
+    if (lotCount > 1) {
+      return `${lotCount} lots${
+        holding.costBasisIncomplete ? ' · partial cost basis' : ''
+      }`;
+    }
+    if (holding.costBasisIncomplete) return 'no cost basis';
+    return holding.asset.exchange;
+  };
+
+  const openPosition = (holding: Holding) => {
+    if (
+      holding.lots &&
+      holding.lots.length > 1 &&
+      holding.positionKey?.startsWith('crypto:')
+    ) {
+      router.push(`/position/${holding.positionKey.slice('crypto:'.length)}`);
+      return;
+    }
+    router.push(`/asset/${holding.asset.id}`);
+  };
 
   const listHeader = (
     <View style={styles.stack}>
@@ -107,8 +131,8 @@ export default function HoldingsScreen() {
         title="Holdings"
         subtitle={
           isDemo
-            ? `${summary.assetCount} demo holdings`
-            : `${summary.assetCount} holdings · ${formatCompactINR(summary.currentValue)}`
+            ? `${summary.positionCount} demo holdings`
+            : `${summary.positionCount} holdings · ${formatCompactINR(summary.currentValue)}`
         }
         action={
           isDemo ? undefined : (
@@ -251,23 +275,24 @@ export default function HoldingsScreen() {
               holding={item}
               showWeight={false}
               accentColor={colorByCategory[item.category]}
-              onPress={() => router.push(`/asset/${item.asset.id}`)}
+              metaLabel={positionMeta(item)}
+              onPress={() => openPosition(item)}
             />
           </Card>
         )}
         ListEmptyComponent={
           <Card>
             <EmptyState
-              icon={summary.assetCount === 0 ? 'plus-circle' : 'search'}
-              title={summary.assetCount === 0 ? 'No holdings yet' : 'No matches'}
+              icon={summary.positionCount === 0 ? 'plus-circle' : 'search'}
+              title={summary.positionCount === 0 ? 'No holdings yet' : 'No matches'}
               message={
-                summary.assetCount === 0
+                summary.positionCount === 0
                   ? 'Add your first holding to start tracking allocation and returns.'
                   : 'Try a different name, symbol or category filter.'
               }
-              actionLabel={summary.assetCount === 0 && !isDemo ? 'Add holding' : undefined}
+              actionLabel={summary.positionCount === 0 && !isDemo ? 'Add holding' : undefined}
               onAction={
-                summary.assetCount === 0 && !isDemo ? () => router.push('/asset/new') : undefined
+                summary.positionCount === 0 && !isDemo ? () => router.push('/asset/new') : undefined
               }
             />
           </Card>
