@@ -71,11 +71,36 @@ export const SECTOR_PALETTE = [
   '#EC4899',
 ] as const;
 
+export type EquityRegion = 'Domestic' | 'Global';
+
+/** Value split between Indian and overseas equity, in paise. */
+export interface RegionSplit {
+  domestic: number;
+  global: number;
+}
+
+/**
+ * The internal cap key stays `Global Equity` so existing policy paths and
+ * colours keep working. The Insights tab uses the institutional label below.
+ */
+export const GLOBAL_DIVERSIFIED_LABEL = 'Global – Diversified';
+
+export function capDisplayLabel(cap: string): string {
+  return cap === 'Global Equity' ? GLOBAL_DIVERSIFIED_LABEL : cap;
+}
+
+export const REGION_COLORS: Record<EquityRegion, string> = {
+  Domestic: '#0EA5E9',
+  Global: '#DB2777',
+};
+
 export interface ExposureConstituent {
   name: string;
   symbol: string;
   value: number;
   type: 'direct' | 'indirect';
+  /** Geography tag for market-cap drill-downs. */
+  region?: EquityRegion;
   subHoldings?: { name: string; value: number }[];
   otherAllocations?: { name: string; value: number }[];
 }
@@ -86,6 +111,8 @@ export interface ExposureSlice {
   value: number;
   direct: number;
   indirect: number;
+  /** Present on market-cap rows; sums to `value`. */
+  regions?: RegionSplit;
   constituents: ExposureConstituent[];
 }
 
@@ -128,6 +155,8 @@ export interface UnderlyingExposure {
 export interface CapSectorRow {
   cap: string;
   total: number;
+  /** Same Domestic/Global split as the matching market-cap row. */
+  regions: RegionSplit;
   sectors: { sector: string; value: number }[];
 }
 
@@ -223,49 +252,72 @@ function capWeights(data?: FundData | null) {
   return { large, mid, small, others, total: large + mid + small + others };
 }
 
-type FundCapBucket = MarketCapCategory | 'Global Equity' | 'Diversified Equity';
+/** Size tag in the institutional two-tag model. */
+export type EquitySize = MarketCapCategory | 'Diversified';
 
-/**
- * Best-effort cap bucket for a fund. Single-cap mandates keep their exact
- * bucket; global and multi-cap funds get a descriptive bucket rather than a
- * misleading "Other / Uncategorized" slice.
- */
-function resolveFundCap(
-  asset: Asset,
-  data?: FundData | null,
-): FundCapBucket | null {
-  const category = getCapCategory(asset.name, data?.categoryName);
-  if (isMarketCapCategory(category)) return category;
-  if (isGlobalFund(data?.categoryName, asset.name)) return 'Global Equity';
+export interface EquityBucket {
+  size: EquitySize;
+  /** Share of the equity sleeve, 0..1. */
+  weight: number;
+  /** Disclosed holdings in this bucket, as fractions of fund value. */
+  holdings?: { name: string; percent: number }[];
+}
 
-  const description = `${asset.name ?? ''} ${data?.categoryName ?? ''}`.toLowerCase();
-  if (
-    /(flexi|multi|large\s*&?\s*mid|large\s*midcap|mid\s*&?\s*large|diversified|balanced advantage|dynamic asset)/.test(
-      description,
-    )
-  ) {
-    return 'Diversified Equity';
-  }
-  return null;
+export interface AssetEquityProfile {
+  region: EquityRegion;
+  buckets: EquityBucket[];
 }
 
 /**
- * Normalize provider cap weights into buckets that sum to 100% of the equity
- * sleeve. Provider "others" is unclassified equity, not necessarily an
- * uncategorized holding: fold it into a known single cap, keep it in the
- * global bucket, or spread it over the reported caps so the chart never shows
- * a phantom "Other / Uncategorized" slice.
+ * Market-cap rows stay size-first, so a global diversified fund needs a
+ * descriptive key instead of an Indian size band. The key stays `Global Equity`
+ * for policy/colour compatibility; `capDisplayLabel` renders the institutional
+ * label in the UI.
+ */
+export function marketCapKey(region: EquityRegion, size: EquitySize): string {
+  if (size !== 'Diversified') return size;
+  return region === 'Global' ? 'Global Equity' : 'Diversified Equity';
+}
+
+/** Allocation paths are geography-first even though Insights is size-first. */
+export function allocationPathFor(region: EquityRegion, size: EquitySize): string {
+  const parent = region === 'Global' ? 'Equities > Global Equity' : 'Equities > Domestic Equity';
+  return `${parent} > ${size}`;
+}
+
+/** Domestic means an Indian listing or an Indian fund mandate. */
+function resolveAssetRegion(asset: Asset, data?: FundData | null): EquityRegion {
+  if (isFundAsset(asset)) {
+    return isGlobalFund(data?.categoryName, asset.name) ? 'Global' : 'Domestic';
+  }
+  return isDomesticEquity(asset) ? 'Domestic' : 'Global';
+}
+
+/** A single-cap mandate, or null when the fund name does not name one size. */
+function resolveFundSize(asset: Asset, data?: FundData | null): MarketCapCategory | null {
+  const category = getCapCategory(asset.name, data?.categoryName);
+  return isMarketCapCategory(category) ? category : null;
+}
+
+/**
+ * Normalize provider cap weights into size buckets. Provider "others" is
+ * unclassified equity, not a separate asset class:
+ *   - a single-cap mandate folds it into that size;
+ *   - a global fund with no size mandate keeps it as Diversified;
+ *   - a domestic flexi/multi-cap fund spreads it across reported sizes.
+ * The result always sums to 100% of the equity sleeve.
  */
 function resolveCapWeights(
   data: FundData | null | undefined,
-  fallbackCap: FundCapBucket | null,
-): { cap: FundCapBucket; weight: number }[] {
+  region: EquityRegion,
+  mandate: MarketCapCategory | null,
+): EquityBucket[] {
   const weights = capWeights(data);
   const knownTotal = weights.large + weights.mid + weights.small;
   const others = weights.others;
 
   if (knownTotal > 0) {
-    const buckets: { cap: FundCapBucket; raw: number }[] = (
+    const buckets: { size: EquitySize; raw: number }[] = (
       [
         ['Large Cap', weights.large],
         ['Mid Cap', weights.mid],
@@ -273,42 +325,145 @@ function resolveCapWeights(
       ] as const
     )
       .filter(([, raw]) => raw > 0)
-      .map(([cap, raw]) => ({ cap, raw }));
+      .map(([size, raw]) => ({ size, raw }));
 
-    if (others <= 0) {
-      return buckets.map((bucket) => ({ cap: bucket.cap, weight: bucket.raw / knownTotal }));
+    if (others > 0) {
+      if (mandate) {
+        const existing = buckets.find((bucket) => bucket.size === mandate);
+        if (existing) existing.raw += others;
+        else buckets.push({ size: mandate, raw: others });
+      } else if (region === 'Global') {
+        buckets.push({ size: 'Diversified', raw: others });
+      }
+      // Domestic without a mandate: leave `others` out of the numerator so it
+      // is spread proportionally over the reported sizes.
     }
 
-    if (fallbackCap && isMarketCapCategory(fallbackCap)) {
-      // A single-cap fund's unclassified slice belongs to its own cap bucket.
-      const existing = buckets.find((bucket) => bucket.cap === fallbackCap);
-      if (existing) existing.raw += others;
-      else buckets.push({ cap: fallbackCap, raw: others });
-      const total = knownTotal + others;
-      return buckets.map((bucket) => ({ cap: bucket.cap, weight: bucket.raw / total }));
-    }
-
-    if (fallbackCap === 'Global Equity') {
-      // Indian cap bands are not meaningful for a global fund; keep the
-      // unclassified slice in the descriptive global bucket.
-      return [
-        ...buckets.map((bucket) => ({
-          cap: bucket.cap,
-          weight: bucket.raw / (knownTotal + others),
-        })),
-        { cap: 'Global Equity', weight: others / (knownTotal + others) },
-      ];
-    }
-
-    // Flexi/multi-cap or unknown mandate: spread unclassified equity over the
-    // reported caps so the chart still reconciles to the equity value.
-    return buckets.map((bucket) => ({ cap: bucket.cap, weight: bucket.raw / knownTotal }));
+    const total = buckets.reduce((sum, bucket) => sum + bucket.raw, 0);
+    return buckets.map((bucket) => ({ size: bucket.size, weight: bucket.raw / total }));
   }
 
   if (others > 0) {
-    return [{ cap: fallbackCap ?? 'Diversified Equity', weight: 1 }];
+    return [{ size: mandate ?? 'Diversified', weight: 1 }];
   }
   return [];
+}
+
+function holdingSize(
+  holding: { symbol: string; holdingName: string },
+  prices: Record<string, PriceData>,
+  usdToInr: number,
+): MarketCapCategory | null {
+  const quote = prices[holding.symbol];
+  if (isMarketCapCategory(quote?.capCategory)) return quote.capCategory;
+  const band = marketCapBand(quote?.marketCap, quote?.currency || 'INR', usdToInr);
+  if (band) return band;
+  const nameCap = getCapCategory(holding.holdingName);
+  return isMarketCapCategory(nameCap) ? nameCap : null;
+}
+
+function holdingPercent(
+  holding: { holdingPercent: number },
+  percentScale: boolean,
+): number {
+  const raw = num(holding.holdingPercent);
+  return percentScale ? raw / 100 : raw;
+}
+
+/**
+ * Classify disclosed holdings into size buckets. A sample covering less than
+ * 5% of the fund is not a mandate; return null so the caller can fall back to
+ * the fund's stated size instead of extrapolating from a tiny slice.
+ */
+function resolveHoldingsBuckets(
+  data: FundData | null | undefined,
+  prices: Record<string, PriceData>,
+  usdToInr: number,
+): EquityBucket[] | null {
+  const holdings = data?.holdings ?? [];
+  if (holdings.length === 0) return null;
+
+  const percentScale = holdingPercentIsPercentScale(holdings);
+  const groups = new Map<
+    MarketCapCategory,
+    { total: number; holdings: { name: string; percent: number }[] }
+  >();
+  let classified = 0;
+
+  for (const holding of holdings) {
+    const percent = holdingPercent(holding, percentScale);
+    if (percent <= 0) continue;
+    const size = holdingSize(holding, prices, usdToInr);
+    if (!size) continue;
+
+    classified += percent;
+    const group = groups.get(size) ?? { total: 0, holdings: [] };
+    group.total += percent;
+    group.holdings.push({ name: holding.holdingName || holding.symbol, percent });
+    groups.set(size, group);
+  }
+
+  if (classified < 0.05) return null;
+
+  return [...groups.entries()].map(([size, group]) => ({
+    size,
+    weight: group.total / classified,
+    holdings: group.holdings,
+  }));
+}
+
+function allHoldings(data?: FundData | null): { name: string; percent: number }[] {
+  const holdings = data?.holdings ?? [];
+  const percentScale = holdingPercentIsPercentScale(holdings);
+  return holdings
+    .map((holding) => ({
+      name: holding.holdingName || holding.symbol,
+      percent: holdingPercent(holding, percentScale),
+    }))
+    .filter((holding) => holding.percent > 0);
+}
+
+/**
+ * One classifier feeds the market-cap chart, the sector × cap matrix and the
+ * allocation tree. Region and size are independent: a global fund can sit in
+ * Large Cap, while a domestic fund with no size data is Diversified.
+ */
+export function equityBucketsForAsset(
+  asset: Asset,
+  data: FundData | null | undefined,
+  prices: Record<string, PriceData>,
+  usdToInr: number,
+): AssetEquityProfile {
+  const region = resolveAssetRegion(asset, data);
+
+  if (!isFundAsset(asset)) {
+    const cap = capForAsset(asset, prices, usdToInr, data?.categoryName);
+    return {
+      region,
+      buckets: [{ size: isMarketCapCategory(cap) ? cap : 'Diversified', weight: 1 }],
+    };
+  }
+
+  const mandate = resolveFundSize(asset, data);
+  const providerWeights = resolveCapWeights(data, region, mandate);
+  if (providerWeights.length > 0) {
+    return { region, buckets: providerWeights };
+  }
+
+  if (mandate) {
+    return {
+      region,
+      buckets: [{ size: mandate, weight: 1, holdings: allHoldings(data) }],
+    };
+  }
+
+  const lookThrough = resolveHoldingsBuckets(data, prices, usdToInr);
+  if (lookThrough) return { region, buckets: lookThrough };
+
+  return {
+    region,
+    buckets: [{ size: 'Diversified', weight: 1, holdings: allHoldings(data) }],
+  };
 }
 
 /**
@@ -320,7 +475,7 @@ function resolveCapWeights(
 function inferFundSector(asset: Asset, data?: FundData | null): string | null {
   const description = `${asset.name ?? ''} ${data?.categoryName ?? ''}`.toLowerCase();
   if (/(debt|bond|liquid|fixed income|gilt|money market)/.test(description)) return null;
-  if (isGlobalFund(data?.categoryName, asset.name)) return 'Global Equity';
+  if (isGlobalFund(data?.categoryName, asset.name)) return 'Unclassified Equity';
   if (
     /(equity|index|flexi|multi|large|mid|small|elss|value|momentum|alpha|nifty|sensex|bees|etf)/.test(
       description,
@@ -457,11 +612,18 @@ interface ExposureAccumulator {
   total: number;
   direct: number;
   indirect: number;
+  regions: RegionSplit;
   constituents: ExposureConstituent[];
 }
 
 function emptyExposure(): ExposureAccumulator {
-  return { total: 0, direct: 0, indirect: 0, constituents: [] };
+  return {
+    total: 0,
+    direct: 0,
+    indirect: 0,
+    regions: { domestic: 0, global: 0 },
+    constituents: [],
+  };
 }
 
 export function analyzePortfolio(input: {
@@ -482,6 +644,17 @@ export function analyzePortfolio(input: {
     equityValues.set(asset, equityPortion(asset, value, fundHoldings));
   }
   const portfolioTotal = [...values.values()].reduce((sum, value) => sum + value, 0);
+
+  // One classification per asset, shared by the allocation tree, market-cap
+  // chart and sector × cap matrix. This is what keeps the tabs consistent.
+  const equityProfiles = new Map<Asset, AssetEquityProfile>();
+  for (const asset of assets) {
+    if ((equityValues.get(asset) ?? 0) <= 0) continue;
+    equityProfiles.set(
+      asset,
+      equityBucketsForAsset(asset, fundHoldings[asset.symbol], prices, usdToInr),
+    );
+  }
 
   // ---------------------------------------------------------------------------
   // Asset allocation analysis (current vs ideal, N-level tree)
@@ -516,6 +689,7 @@ export function analyzePortfolio(input: {
     const topCategory = normalizeCategory(asset.categoryPath?.[0] ?? asset.type);
     const data = fundHoldings[asset.symbol];
     const fund = isFundAsset(asset);
+    const profile = equityProfiles.get(asset);
 
     // Commodity funds are never equity, even if a provider reports a stock
     // position placeholder. Keep them in the commodity sleeve.
@@ -524,7 +698,7 @@ export function analyzePortfolio(input: {
       continue;
     }
 
-    if ((topCategory === 'Mutual Funds' || topCategory === 'ETFs' || fund) && data?.assetAllocation) {
+    if (fund && data?.assetAllocation) {
       const allocation = data.assetAllocation;
       const totalAlloc = allocationTotal(allocation);
       if (totalAlloc > 0) {
@@ -533,25 +707,10 @@ export function analyzePortfolio(input: {
         };
 
         const stock = num(allocation.stockPosition);
-        if (stock > 0) {
-          if (isGlobalFund(data.categoryName, asset.name)) {
-            addPercent(stock, 'Equities > Global Equity');
-          } else {
-            const weights = capWeights(data);
-            if (weights.total > 0) {
-              addPercent((stock * weights.large) / weights.total, 'Equities > Domestic Equity > Large Cap');
-              addPercent((stock * weights.mid) / weights.total, 'Equities > Domestic Equity > Mid Cap');
-              addPercent((stock * weights.small) / weights.total, 'Equities > Domestic Equity > Small Cap');
-              addPercent((stock * weights.others) / weights.total, 'Equities > Domestic Equity');
-            } else {
-              const cap = capForAsset(asset, prices, usdToInr, data.categoryName);
-              addPercent(
-                stock,
-                cap === 'Large Cap' || cap === 'Mid Cap' || cap === 'Small Cap'
-                  ? `Equities > Domestic Equity > ${cap}`
-                  : 'Equities > Domestic Equity',
-              );
-            }
+        if (stock > 0 && profile) {
+          for (const bucket of profile.buckets) {
+            if (bucket.weight <= 0) continue;
+            addPercent(stock * bucket.weight, allocationPathFor(profile.region, bucket.size));
           }
         }
 
@@ -567,34 +726,23 @@ export function analyzePortfolio(input: {
       }
     }
 
-    let finalCategory = topCategory;
-
-    if (finalCategory === 'Equities') {
-      if (isDomesticEquity(asset)) {
-        const cap = capForAsset(asset, prices, usdToInr);
-        finalCategory =
-          cap === 'Large Cap' || cap === 'Mid Cap' || cap === 'Small Cap'
-            ? `Equities > Domestic Equity > ${cap}`
-            : 'Equities > Domestic Equity';
-      } else {
-        finalCategory = 'Equities > Global Equity';
+    if (profile) {
+      for (const bucket of profile.buckets) {
+        if (bucket.weight <= 0) continue;
+        addAllocation(
+          allocationPathFor(profile.region, bucket.size),
+          totalValue * bucket.weight,
+          asset,
+        );
       }
+      continue;
     }
 
-    if (finalCategory === 'Mutual Funds' || finalCategory === 'ETFs') {
-      if (isDebtFund(data?.categoryName, asset.name)) {
-        finalCategory = 'Fixed Income';
-      } else if (isCommodityFund(data?.categoryName, asset.name)) {
-        finalCategory = `Commodities > ${getCommoditySubCategory(asset)}`;
-      } else if (isGlobalFund(data?.categoryName, asset.name)) {
-        finalCategory = 'Equities > Global Equity';
-      } else {
-        const cap = capForAsset(asset, prices, usdToInr, data?.categoryName);
-        finalCategory =
-          cap === 'Large Cap' || cap === 'Mid Cap' || cap === 'Small Cap'
-            ? `Equities > Domestic Equity > ${cap}`
-            : 'Equities > Domestic Equity';
-      }
+    // Non-equity fallbacks: debt funds, commodities and everything outside the
+    // equity sleeve keep their existing top-level treatment.
+    let finalCategory = topCategory;
+    if (fund && isDebtFund(data?.categoryName, asset.name)) {
+      finalCategory = 'Fixed Income';
     } else if (finalCategory === 'Commodities') {
       finalCategory = `Commodities > ${getCommoditySubCategory(asset)}`;
     }
@@ -713,16 +861,21 @@ export function analyzePortfolio(input: {
     isDirect: boolean,
     name: string,
     symbol: string,
+    region: EquityRegion,
     subHoldings?: { name: string; value: number }[],
     otherAllocations?: { name: string; value: number }[],
   ) => {
     const bucket =
       marketCapAllocation[cap] ?? (marketCapAllocation[cap] = emptyExposure());
     bucket.total += value;
+    if (region === 'Global') bucket.regions.global += value;
+    else bucket.regions.domestic += value;
     if (isDirect) bucket.direct += value;
     else bucket.indirect += value;
 
-    const existing = bucket.constituents.find((item) => item.symbol === symbol);
+    const existing = bucket.constituents.find(
+      (item) => item.symbol === symbol && item.region === region,
+    );
     if (existing) {
       existing.value += value;
       if (subHoldings) existing.subHoldings = [...(existing.subHoldings ?? []), ...subHoldings];
@@ -733,6 +886,7 @@ export function analyzePortfolio(input: {
         symbol,
         value,
         type: isDirect ? 'direct' : 'indirect',
+        region,
         subHoldings,
         otherAllocations,
       });
@@ -744,171 +898,42 @@ export function analyzePortfolio(input: {
     const equityValue = equityValues.get(asset) ?? 0;
     if (totalValue <= 0 || equityValue <= 0) continue;
 
-    const fund = isFundAsset(asset);
-    const data = fundHoldings[asset.symbol];
-    const holdings = data?.holdings ?? [];
-    const fundCap = fund ? resolveFundCap(asset, data) : null;
-    const resolvedWeights = fund ? resolveCapWeights(data, fundCap) : [];
+    const profile = equityProfiles.get(asset);
+    if (!profile) continue;
+
     const nonEquity = Math.max(0, totalValue - equityValue);
+    const isDirect = isDirectEquity(asset);
 
-    if (resolvedWeights.length > 0) {
-      for (const { cap, weight } of resolvedWeights) {
-        if (weight <= 0) continue;
-        const capValue = equityValue * weight;
-        const otherAllocations: { name: string; value: number }[] = resolvedWeights
-          .filter((other) => other.cap !== cap && other.weight > 0)
-          .map((other) => ({ name: other.cap, value: equityValue * other.weight }));
-        if (nonEquity > 0) {
-          otherAllocations.push({ name: 'Non-Equity / Debt', value: nonEquity });
-        }
-        addToMarketCap(
-          cap,
-          capValue,
-          false,
-          asset.name,
-          asset.symbol,
-          undefined,
-          otherAllocations,
-        );
-      }
-      continue;
-    }
+    for (const bucket of profile.buckets) {
+      if (bucket.weight <= 0) continue;
 
-    const categoryCap =
-      fund && isMarketCapCategory(fundCap) ? fundCap : null;
+      const cap = marketCapKey(profile.region, bucket.size);
+      const subHoldings = (bucket.holdings ?? [])
+        .map((holding) => ({ name: holding.name, value: totalValue * holding.percent }))
+        .filter((holding) => holding.value > 0)
+        .sort((a, b) => b.value - a.value);
 
-    // A fund whose mandate names one cap bucket is classified as a whole. This
-    // keeps NASDAQ-100 / S&P 500 ETFs and Nifty 50 index funds out of "Other"
-    // even when their cached holdings are only a top-10 sample.
-    if (categoryCap) {
-      const percentScale = holdingPercentIsPercentScale(holdings);
-      const subHoldings = holdings
-        .map((holding) => {
-          const rawPercent = num(holding.holdingPercent);
-          const percent = percentScale ? rawPercent / 100 : rawPercent;
-          return {
-            name: holding.holdingName || holding.symbol,
-            value: totalValue * percent,
-          };
-        })
-        .filter((holding) => holding.value > 0);
-      const otherAllocations: { name: string; value: number }[] = [];
+      const otherAllocations: { name: string; value: number }[] = profile.buckets
+        .filter((other) => other !== bucket && other.weight > 0)
+        .map((other) => ({
+          name: capDisplayLabel(marketCapKey(profile.region, other.size)),
+          value: equityValue * other.weight,
+        }));
       if (nonEquity > 0) {
         otherAllocations.push({ name: 'Non-Equity / Debt', value: nonEquity });
       }
+
       addToMarketCap(
-        categoryCap,
-        equityValue,
-        false,
+        cap,
+        equityValue * bucket.weight,
+        isDirect,
         asset.name,
         asset.symbol,
+        profile.region,
         subHoldings.length > 0 ? subHoldings : undefined,
         otherAllocations.length > 0 ? otherAllocations : undefined,
       );
-      continue;
     }
-
-    if (holdings.length > 0) {
-      const percentScale = holdingPercentIsPercentScale(holdings);
-      const groups: Record<string, { total: number; holdings: { name: string; value: number }[] }> =
-        {};
-      let mappedValue = 0;
-
-      for (const holding of holdings) {
-        const rawPercent = num(holding.holdingPercent);
-        const percent = percentScale ? rawPercent / 100 : rawPercent;
-        if (percent <= 0) continue;
-
-        const quote = prices[holding.symbol];
-        const holdingCap = isMarketCapCategory(quote?.capCategory)
-          ? quote.capCategory
-          : marketCapBand(quote?.marketCap, quote?.currency || 'INR', usdToInr);
-        const nameCap = getCapCategory(holding.holdingName);
-        const cap = holdingCap ?? (isMarketCapCategory(nameCap) ? nameCap : null);
-
-        // Leave unknown holdings for the fund-level fallback below.
-        if (!cap) continue;
-
-        const holdingValue = equityValue * percent;
-        const group = groups[cap] ?? (groups[cap] = { total: 0, holdings: [] });
-        group.total += holdingValue;
-        group.holdings.push({
-          name: holding.holdingName || holding.symbol,
-          value: totalValue * percent,
-        });
-        mappedValue += holdingValue;
-      }
-
-      // No individual holding is classifiable. Fall back to the fund's
-      // mandate before using the generic "Other" bucket; a top-10 sample of
-      // company names cannot be treated as an unknown mandate by itself.
-      if (mappedValue <= 0) {
-        const subHoldings = holdings
-          .map((holding) => {
-            const rawPercent = num(holding.holdingPercent);
-            const percent = percentScale ? rawPercent / 100 : rawPercent;
-            return {
-              name: holding.holdingName || holding.symbol,
-              value: totalValue * percent,
-            };
-          })
-          .filter((holding) => holding.value > 0);
-        const otherAllocations: { name: string; value: number }[] = [];
-        if (nonEquity > 0) {
-          otherAllocations.push({ name: 'Non-Equity / Debt', value: nonEquity });
-        }
-        addToMarketCap(
-          fund ? (fundCap ?? 'Diversified Equity') : 'Other / Uncategorized',
-          equityValue,
-          false,
-          asset.name,
-          asset.symbol,
-          subHoldings.length > 0 ? subHoldings : undefined,
-          otherAllocations.length > 0 ? otherAllocations : undefined,
-        );
-        continue;
-      }
-
-      const scale = mappedValue > equityValue ? equityValue / mappedValue : 1;
-      const mappedEquity = mappedValue * scale;
-      const unmappedEquity = Math.max(0, equityValue - mappedEquity);
-
-      for (const [cap, group] of Object.entries(groups)) {
-        const groupTotal = group.total * scale;
-        const share = unmappedEquity * (group.total / mappedValue);
-        const otherAllocations = Object.entries(groups)
-          .filter(([otherCap]) => otherCap !== cap)
-          .map(([otherCap, otherGroup]) => ({
-            name: otherCap,
-            value:
-              otherGroup.total * scale + unmappedEquity * (otherGroup.total / mappedValue),
-          }))
-          .filter((other) => other.value > 0);
-        if (nonEquity > 0) {
-          otherAllocations.push({ name: 'Non-Equity / Debt', value: nonEquity });
-        }
-        addToMarketCap(
-          cap,
-          groupTotal + share,
-          false,
-          asset.name,
-          asset.symbol,
-          group.holdings.map((holding) => ({ ...holding, value: holding.value * scale })),
-          otherAllocations,
-        );
-      }
-      continue;
-    }
-
-    // Direct stock, or a fund with neither weights nor holdings. A fund whose
-    // mandate is a single cap bucket was already handled above; style labels
-    // such as "Flexi Cap" become a descriptive bucket instead of leaking into
-    // "Other / Uncategorized".
-    const cap = fund
-      ? (fundCap ?? 'Diversified Equity')
-      : (capForAsset(asset, prices, usdToInr, data?.categoryName) ??
-        'Other / Uncategorized');
-    addToMarketCap(cap, equityValue, isDirectEquity(asset), asset.name, asset.symbol);
   }
 
   const marketCap: ExposureSlice[] = Object.entries(marketCapAllocation)
@@ -919,6 +944,7 @@ export function analyzePortfolio(input: {
       value: bucket.total,
       direct: bucket.direct,
       indirect: bucket.indirect,
+      regions: bucket.regions,
       constituents: bucket.constituents.sort((a, b) => b.value - a.value),
     }))
     .sort((a, b) => b.value - a.value);
@@ -967,27 +993,15 @@ export function analyzePortfolio(input: {
     const data = fundHoldings[asset.symbol];
     const sectors = fund ? normalizeSectorWeightings(data?.sectorWeightings) : [];
     const direct = isDirectEquity(asset);
-    const fundCap = fund ? resolveFundCap(asset, data) : null;
-    const resolvedWeights = fund ? resolveCapWeights(data, fundCap) : [];
-    const assetCap = capForAsset(asset, prices, usdToInr, data?.categoryName);
-    const defaultCap = fund
-      ? (fundCap ?? 'Diversified Equity')
-      : isMarketCapCategory(assetCap)
-        ? assetCap
-        : 'Other / Uncategorized';
+    const profile = equityProfiles.get(asset);
 
     const distributeToCaps = (sectorName: string, value: number) => {
-      const addToCap = (cap: string, amount: number) => {
+      if (!profile) return;
+      for (const bucket of profile.buckets) {
+        if (bucket.weight <= 0) continue;
+        const cap = marketCapKey(profile.region, bucket.size);
         sectorByCap[cap] = sectorByCap[cap] ?? {};
-        addToRecord(sectorByCap[cap], sectorName, amount);
-      };
-
-      if (!direct && resolvedWeights.length > 0) {
-        for (const entry of resolvedWeights) {
-          if (entry.weight > 0) addToCap(entry.cap, value * entry.weight);
-        }
-      } else {
-        addToCap(defaultCap, value);
+        addToRecord(sectorByCap[cap], sectorName, value * bucket.weight);
       }
     };
 
@@ -1079,6 +1093,7 @@ export function analyzePortfolio(input: {
     .map(([cap, bySector]) => ({
       cap,
       total: Object.values(bySector).reduce((sum, value) => sum + value, 0),
+      regions: marketCapAllocation[cap]?.regions ?? { domestic: 0, global: 0 },
       sectors: Object.entries(bySector)
         .filter(([, value]) => value > 0)
         .map(([sector, value]) => ({ sector, value }))

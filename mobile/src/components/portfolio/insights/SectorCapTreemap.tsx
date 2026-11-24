@@ -2,7 +2,7 @@ import { Feather } from '@expo/vector-icons';
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import type { CapSectorRow } from '@/src/features/portfolio/analytics';
+import { capDisplayLabel, type CapSectorRow } from '@/src/features/portfolio/analytics';
 import { formatCompactINR, formatPercent } from '@/src/lib/format/money';
 import { numeric, radius, space, type } from '@/src/lib/theme/tokens';
 import { useTheme } from '@/src/lib/theme/ThemeProvider';
@@ -54,6 +54,22 @@ export function SectorCapTreemap({ rows, sectorColors, capColors }: SectorCapTre
             const isOpen = Boolean(openCaps[row.cap]);
             const capColor =
               capColors[row.cap] ?? colors.textSecondary;
+            const label = capDisplayLabel(row.cap);
+            const regionTotal = row.regions.domestic + row.regions.global;
+            const regionParts: string[] = [];
+            if (regionTotal > 0) {
+              if (row.regions.domestic > 0) {
+                regionParts.push(
+                  `Domestic ${formatPercent((row.regions.domestic / regionTotal) * 100)}`,
+                );
+              }
+              if (row.regions.global > 0) {
+                regionParts.push(
+                  `Global ${formatPercent((row.regions.global / regionTotal) * 100)}`,
+                );
+              }
+            }
+            const regionLabel = regionParts.join(' · ');
 
             return (
               <View key={row.cap} style={styles.band}>
@@ -63,11 +79,11 @@ export function SectorCapTreemap({ rows, sectorColors, capColors }: SectorCapTre
                   }
                   accessibilityRole="button"
                   accessibilityState={{ expanded: isOpen }}
-                  accessibilityLabel={`${row.cap}, ${formatPercent(share)} of equity exposure`}
+                  accessibilityLabel={`${label}, ${formatPercent(share)} of equity exposure${regionLabel ? `, ${regionLabel}` : ''}`}
                   style={styles.bandHeader}
                 >
                   <View style={[styles.dot, { backgroundColor: capColor }]} />
-                  <Text style={[styles.bandName, { color: colors.text }]}>{row.cap}</Text>
+                  <Text style={[styles.bandName, { color: colors.text }]}>{label}</Text>
                   <Text style={[styles.bandValue, numeric, { color: colors.textSecondary }]}>
                     {formatCompactINR(row.total)}
                   </Text>
@@ -80,6 +96,10 @@ export function SectorCapTreemap({ rows, sectorColors, capColors }: SectorCapTre
                     color={colors.muted}
                   />
                 </Pressable>
+
+                {regionLabel ? (
+                  <Text style={[styles.regionText, { color: colors.muted }]}>{regionLabel}</Text>
+                ) : null}
 
                 <View style={[styles.tiles, { height }]}>
                   {row.sectors.map((sector) => {
@@ -100,7 +120,7 @@ export function SectorCapTreemap({ rows, sectorColors, capColors }: SectorCapTre
                         accessible
                         accessibilityLabel={`${sector.sector}, ${formatCompactINR(
                           sectorValue,
-                        )} in ${row.cap}`}
+                        )} in ${label}`}
                       >
                         {showLabel ? (
                           <>
@@ -163,6 +183,7 @@ const styles = StyleSheet.create({
   bandName: { flex: 1, fontSize: 12, fontWeight: '600' },
   bandValue: { fontSize: 11, fontWeight: '500' },
   bandPercent: { fontSize: 10, width: 48, textAlign: 'right' },
+  regionText: { fontSize: 10, marginLeft: 16 },
   tiles: { flexDirection: 'row', gap: 2, overflow: 'hidden', borderRadius: radius.sm },
   tile: {
     minWidth: 0,

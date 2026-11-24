@@ -137,4 +137,81 @@ describe('mergeFundData', () => {
 
     expect(merged.sectorWeightings).toEqual(fresh.sectorWeightings);
   });
+
+  it('keeps cached feeder holdings while adopting fresh Yahoo sectors', () => {
+    const cached: FundData = {
+      symbol: 'MF_140243',
+      source: 'Upvaly FinAPI',
+      categoryName: 'Global - Other',
+      holdings: [
+        {
+          symbol: 'JPM Greater China I2 acc USD',
+          holdingName: 'JPM Greater China I2 acc USD',
+          holdingPercent: 53.95,
+        },
+        {
+          symbol: 'JPM Greater China I acc USD',
+          holdingName: 'JPM Greater China I acc USD',
+          holdingPercent: 43.57,
+        },
+        {
+          symbol: 'Clearing Corporation Of India Ltd.',
+          holdingName: 'Clearing Corporation Of India Ltd.',
+          holdingPercent: 2.66,
+        },
+        {
+          symbol: 'Net Receivables/(Payables)',
+          holdingName: 'Net Receivables/(Payables)',
+          holdingPercent: 0.19,
+        },
+        {
+          symbol: 'Accrued Interest',
+          holdingName: 'Accrued Interest',
+          holdingPercent: 0,
+        },
+      ],
+      sectorWeightings: [],
+      assetAllocation: {
+        stockPosition: 97.1,
+        bondPosition: 0.66,
+        cashPosition: 2.24,
+        otherPosition: 0,
+        preferredPosition: 0,
+        convertiblePosition: 0,
+      },
+      marketCapWeightage: null,
+    };
+    const fresh: FundData = {
+      symbol: 'MF_140243',
+      source: 'Yahoo Finance',
+      holdings: [],
+      sectorWeightings: [
+        { sector: 'Technology', percentage: 47.64 },
+        { sector: 'Financial Services', percentage: 14.87 },
+        { sector: 'Consumer Cyclical', percentage: 12.2 },
+        { sector: 'Communication Services', percentage: 10.77 },
+        { sector: 'Industrials', percentage: 8.53 },
+        { sector: 'Healthcare', percentage: 2.03 },
+        { sector: 'Basic Materials', percentage: 1.91 },
+        { sector: 'Consumer Defensive', percentage: 1.4 },
+        { sector: 'Real Estate', percentage: 0.63 },
+      ],
+      assetAllocation: {
+        stockPosition: 98.02,
+        bondPosition: 1.13,
+        cashPosition: 0.85,
+        otherPosition: 0,
+        preferredPosition: 0,
+        convertiblePosition: 0,
+      },
+      marketCapWeightage: null,
+    };
+
+    const merged = mergeFundData(cached, fresh);
+
+    expect(merged.holdings).toEqual(cached.holdings);
+    expect(merged.sectorWeightings).toEqual(fresh.sectorWeightings);
+    expect(merged.assetAllocation).toEqual(fresh.assetAllocation);
+    expect(merged.marketCapWeightage).toBeNull();
+  });
 });

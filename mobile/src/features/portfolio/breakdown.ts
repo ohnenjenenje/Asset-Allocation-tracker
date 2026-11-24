@@ -56,7 +56,7 @@ export interface CompositionSuggestion {
 const STANDARD_SUGGESTIONS: Record<string, string[]> = {
   equities: ['Domestic Equity', 'Global Equity'],
   'domestic equity': ['Large Cap', 'Mid Cap', 'Small Cap'],
-  'global equity': ['Developed Markets', 'Emerging Markets'],
+  'global equity': ['Large Cap', 'Mid Cap', 'Small Cap', 'Diversified'],
   commodities: ['Gold', 'Silver', 'Other Commodities'],
   'fixed income': ['Sovereign', 'Corporate', 'Short Duration'],
   crypto: ['Bitcoin', 'Ethereum', 'Stablecoins'],

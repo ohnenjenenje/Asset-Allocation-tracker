@@ -192,10 +192,17 @@ describe('market-cap exposure', () => {
 
     const result = analyze([fund], prices, fundHoldings);
 
-    expect(
-      result.marketCap.find((slice) => slice.name === 'Large Cap')?.constituents[0]?.symbol,
-    ).toBe('QQQM');
+    const large = result.marketCap.find((slice) => slice.name === 'Large Cap');
+    expect(large?.constituents[0]?.symbol).toBe('QQQM');
+    expect(large?.regions).toEqual({ domestic: 0, global: 300 * 84 * 100 });
     expect(result.marketCap.find((slice) => slice.name === 'Other / Uncategorized')).toBeUndefined();
+
+    const global = result.allocationAnalysis
+      .find((node) => node.fullPath === 'Equities')
+      ?.subCategories.find((node) => node.fullPath === 'Equities > Global Equity');
+    expect(global?.subCategories.map((node) => node.fullPath)).toEqual([
+      'Equities > Global Equity > Large Cap',
+    ]);
   });
 
   it('does not force a large+mid blend fund into a single cap bucket', () => {
@@ -259,11 +266,77 @@ describe('market-cap exposure', () => {
     expect(result.marketCap.find((slice) => slice.name === 'Global Equity')?.value).toBe(
       100 * 10 * 100,
     );
-    expect(result.sectors.find((slice) => slice.name === 'Global Equity')?.value).toBe(
+    expect(result.marketCap.find((slice) => slice.name === 'Global Equity')?.regions).toEqual({
+      domestic: 0,
+      global: 100 * 10 * 100,
+    });
+    expect(result.sectors.find((slice) => slice.name === 'Unclassified Equity')?.value).toBe(
       100 * 10 * 100,
     );
     expect(result.marketCap.find((slice) => slice.name === 'Other / Uncategorized')).toBeUndefined();
     expect(result.sectors.find((slice) => slice.name === 'Other / Uncategorized')).toBeUndefined();
+
+    const global = result.allocationAnalysis
+      .find((node) => node.fullPath === 'Equities')
+      ?.subCategories.find((node) => node.fullPath === 'Equities > Global Equity');
+    expect(global?.subCategories.map((node) => node.fullPath)).toEqual([
+      'Equities > Global Equity > Diversified',
+    ]);
+    expect(global?.currentValue).toBe(100 * 10 * 100);
+  });
+
+  it('uses Yahoo sector weights for a global fund without cap weights', () => {
+    const fund = asset({
+      id: 'china-sectors',
+      symbol: 'MF_140243',
+      name: 'Edelweiss Greater China Equity Off-shore Fund - Direct Plan - Growth',
+      type: 'MUTUALFUND',
+      quantity: 100,
+      entryPrice: 10,
+    });
+    const prices = {
+      MF_140243: quote({ symbol: 'MF_140243', regularMarketPrice: 10 }),
+    };
+    const fundHoldings: Record<string, FundData> = {
+      MF_140243: {
+        assetAllocation: fundAllocation,
+        holdings: [
+          {
+            symbol: 'JPM Greater China I2 acc USD',
+            holdingName: 'JPM Greater China I2 acc USD',
+            holdingPercent: 0.5395,
+          },
+        ],
+        sectorWeightings: [
+          { sector: 'Technology', percentage: 47.64 },
+          { sector: 'Financial Services', percentage: 14.87 },
+          { sector: 'Consumer Cyclical', percentage: 12.2 },
+          { sector: 'Communication Services', percentage: 10.77 },
+          { sector: 'Industrials', percentage: 8.53 },
+          { sector: 'Healthcare', percentage: 2.03 },
+          { sector: 'Basic Materials', percentage: 1.91 },
+          { sector: 'Consumer Defensive', percentage: 1.4 },
+          { sector: 'Real Estate', percentage: 0.63 },
+        ],
+        marketCapWeightage: null,
+      },
+    };
+
+    const result = analyze([fund], prices, fundHoldings);
+    const equityValue = 100 * 10 * 100;
+
+    expect(result.marketCap.find((slice) => slice.name === 'Global Equity')?.value).toBe(
+      equityValue,
+    );
+    const technology = result.sectors.find((slice) => slice.name === 'Technology')?.value ?? 0;
+    expect(technology).toBeGreaterThan(equityValue * 0.476);
+    expect(technology).toBeLessThan(equityValue * 0.477);
+    expect(result.sectors.reduce((sum, slice) => sum + slice.value, 0)).toBeCloseTo(
+      equityValue,
+      0,
+    );
+    expect(result.sectors.find((slice) => slice.name === 'Other / Uncategorized')).toBeUndefined();
+    expect(result.sectors.find((slice) => slice.name === 'Unclassified Equity')).toBeUndefined();
   });
 
   it('folds provider "others" into known caps instead of charting Other', () => {
@@ -300,9 +373,16 @@ describe('market-cap exposure', () => {
       equityValue,
       0,
     );
-    expect(result.marketCap.find((slice) => slice.name === 'Small Cap')?.value).toBeCloseTo(
-      equityValue * 0.8138,
-      0,
+    const small = result.marketCap.find((slice) => slice.name === 'Small Cap');
+    expect(small?.value).toBeCloseTo(equityValue * 0.8138, 0);
+    expect(small?.regions?.global).toBe(0);
+    expect(small?.regions?.domestic).toBeCloseTo(equityValue * 0.8138, 0);
+
+    const domestic = result.allocationAnalysis
+      .find((node) => node.fullPath === 'Equities')
+      ?.subCategories.find((node) => node.fullPath === 'Equities > Domestic Equity');
+    expect(domestic?.subCategories.map((node) => node.fullPath)).toEqual(
+      expect.arrayContaining(['Equities > Domestic Equity > Small Cap']),
     );
   });
 
@@ -371,13 +451,20 @@ describe('market-cap exposure', () => {
 
     const result = analyze([fund], prices, fundHoldings);
 
-    expect(
-      result.marketCap.find((slice) => slice.name === 'Diversified Equity')?.value,
-    ).toBe(100 * 10 * 100);
+    const diversified = result.marketCap.find((slice) => slice.name === 'Diversified Equity');
+    expect(diversified?.value).toBe(100 * 10 * 100);
+    expect(diversified?.regions).toEqual({ domestic: 100 * 10 * 100, global: 0 });
     expect(result.marketCap.find((slice) => slice.name === 'Other / Uncategorized')).toBeUndefined();
     expect(result.capRows.find((row) => row.cap === 'Diversified Equity')?.total).toBe(
       100 * 10 * 100,
     );
+
+    const domestic = result.allocationAnalysis
+      .find((node) => node.fullPath === 'Equities')
+      ?.subCategories.find((node) => node.fullPath === 'Equities > Domestic Equity');
+    expect(domestic?.subCategories.map((node) => node.fullPath)).toEqual([
+      'Equities > Domestic Equity > Diversified',
+    ]);
   });
 
   it('folds provider sector aliases into one canonical slice', () => {
@@ -468,5 +555,220 @@ describe('market-cap exposure', () => {
       10 * 800 * 100,
     );
     expect(result.sectors.find((slice) => slice.name === 'Financials')).toBeUndefined();
+  });
+
+  it('keeps provider size weights inside Global Equity', () => {
+    const fund = asset({
+      id: 'global-weights',
+      symbol: 'MF_GLOBAL',
+      name: 'Global Equity Opportunities Fund',
+      type: 'MUTUALFUND',
+      quantity: 100,
+      entryPrice: 10,
+    });
+    const prices = {
+      MF_GLOBAL: quote({ symbol: 'MF_GLOBAL', regularMarketPrice: 10 }),
+    };
+    const fundHoldings: Record<string, FundData> = {
+      MF_GLOBAL: {
+        assetAllocation: fundAllocation,
+        marketCapWeightage: { largeCap: 60, midCap: 30, smallCap: 10, others: 0 },
+      },
+    };
+
+    const result = analyze([fund], prices, fundHoldings);
+    const equityValue = 100 * 10 * 100;
+
+    expect(result.marketCap.find((slice) => slice.name === 'Large Cap')?.regions).toEqual({
+      domestic: 0,
+      global: equityValue * 0.6,
+    });
+    expect(result.marketCap.find((slice) => slice.name === 'Mid Cap')?.regions).toEqual({
+      domestic: 0,
+      global: equityValue * 0.3,
+    });
+    expect(result.marketCap.find((slice) => slice.name === 'Small Cap')?.regions).toEqual({
+      domestic: 0,
+      global: equityValue * 0.1,
+    });
+    expect(result.marketCap.find((slice) => slice.name === 'Global Equity')).toBeUndefined();
+
+    const global = result.allocationAnalysis
+      .find((node) => node.fullPath === 'Equities')
+      ?.subCategories.find((node) => node.fullPath === 'Equities > Global Equity');
+    expect(global?.subCategories.map((node) => node.fullPath)).toEqual(
+      expect.arrayContaining([
+        'Equities > Global Equity > Large Cap',
+        'Equities > Global Equity > Mid Cap',
+        'Equities > Global Equity > Small Cap',
+      ]),
+    );
+    const domestic = result.allocationAnalysis
+      .find((node) => node.fullPath === 'Equities')
+      ?.subCategories.find((node) => node.fullPath === 'Equities > Domestic Equity');
+    expect(domestic).toBeUndefined();
+  });
+
+  it('keeps provider "others" as Global – Diversified when no size mandate exists', () => {
+    const fund = asset({
+      id: 'global-others',
+      symbol: 'MF_GLOBAL_OTHERS',
+      name: 'Global Equity Opportunities Fund',
+      type: 'MUTUALFUND',
+      quantity: 100,
+      entryPrice: 10,
+    });
+    const prices = {
+      MF_GLOBAL_OTHERS: quote({ symbol: 'MF_GLOBAL_OTHERS', regularMarketPrice: 10 }),
+    };
+    const fundHoldings: Record<string, FundData> = {
+      MF_GLOBAL_OTHERS: {
+        assetAllocation: fundAllocation,
+        marketCapWeightage: { largeCap: 50, midCap: 20, smallCap: 10, others: 20 },
+      },
+    };
+
+    const result = analyze([fund], prices, fundHoldings);
+    const equityValue = 100 * 10 * 100;
+
+    const diversified = result.marketCap.find((slice) => slice.name === 'Global Equity');
+    expect(diversified?.value).toBeCloseTo(equityValue * 0.2, 0);
+    expect(diversified?.regions).toEqual({ domestic: 0, global: equityValue * 0.2 });
+    expect(result.marketCap.reduce((sum, slice) => sum + slice.value, 0)).toBeCloseTo(
+      equityValue,
+      0,
+    );
+    expect(result.marketCap.find((slice) => slice.name === 'Other / Uncategorized')).toBeUndefined();
+
+    const global = result.allocationAnalysis
+      .find((node) => node.fullPath === 'Equities')
+      ?.subCategories.find((node) => node.fullPath === 'Equities > Global Equity');
+    expect(global?.subCategories.map((node) => node.fullPath)).toEqual(
+      expect.arrayContaining(['Equities > Global Equity > Diversified']),
+    );
+  });
+
+  it('does not extrapolate from a holdings sample below the 5% guard', () => {
+    const fund = asset({
+      id: 'tiny-sample',
+      symbol: 'MF_TINY',
+      name: 'ABC Equity Fund',
+      type: 'MUTUALFUND',
+      quantity: 100,
+      entryPrice: 10,
+    });
+    const prices = {
+      MF_TINY: quote({ symbol: 'MF_TINY', regularMarketPrice: 10 }),
+      'TINYCO.NS': quote({
+        symbol: 'TINYCO.NS',
+        capCategory: 'Large Cap',
+        sector: 'Technology',
+      }),
+    };
+    const fundHoldings: Record<string, FundData> = {
+      MF_TINY: {
+        assetAllocation: fundAllocation,
+        holdings: [
+          { symbol: 'TINYCO.NS', holdingName: 'Tiny Co', holdingPercent: 0.01 },
+          { symbol: 'UNKNOWN', holdingName: 'Unknown Holding', holdingPercent: 0.99 },
+        ],
+      },
+    };
+
+    const result = analyze([fund], prices, fundHoldings);
+
+    expect(result.marketCap.find((slice) => slice.name === 'Large Cap')).toBeUndefined();
+    expect(result.marketCap.find((slice) => slice.name === 'Diversified Equity')?.value).toBe(
+      100 * 10 * 100,
+    );
+  });
+
+  it('reconciles region splits across market cap and the sector matrix', () => {
+    const stock = asset({
+      id: 'hdfc',
+      symbol: 'HDFCBANK.NS',
+      name: 'HDFC Bank Ltd',
+      type: 'EQUITY',
+      quantity: 10,
+      entryPrice: 800,
+    });
+    const domesticFund = asset({
+      id: 'axis-small',
+      symbol: 'MF_125354',
+      name: 'Axis Small Cap Fund - Direct Plan - Growth',
+      type: 'MUTUALFUND',
+      quantity: 100,
+      entryPrice: 50,
+    });
+    const qqqm = asset({
+      id: 'qqqm',
+      symbol: 'QQQM',
+      name: 'Invesco NASDAQ 100 ETF',
+      type: 'ETF',
+      currency: 'USD',
+      quantity: 1,
+      entryPrice: 300,
+    });
+    const china = asset({
+      id: 'china',
+      symbol: 'MF_140243',
+      name: 'Edelweiss Greater China Equity Off-shore Fund',
+      type: 'MUTUALFUND',
+      quantity: 100,
+      entryPrice: 10,
+    });
+    const prices = {
+      'HDFCBANK.NS': quote({
+        symbol: 'HDFCBANK.NS',
+        regularMarketPrice: 800,
+        capCategory: 'Large Cap',
+        sector: 'Financial Services',
+      }),
+      MF_125354: quote({ symbol: 'MF_125354', regularMarketPrice: 50 }),
+      QQQM: quote({ symbol: 'QQQM', regularMarketPrice: 300, currency: 'USD' }),
+      MF_140243: quote({ symbol: 'MF_140243', regularMarketPrice: 10 }),
+    };
+    const fundHoldings: Record<string, FundData> = {
+      MF_125354: {
+        assetAllocation: fundAllocation,
+        marketCapWeightage: { largeCap: 5.37, midCap: 13.25, smallCap: 66.01, others: 15.37 },
+      },
+      QQQM: { assetAllocation: fundAllocation },
+      MF_140243: {
+        assetAllocation: fundAllocation,
+        holdings: [
+          {
+            symbol: 'JPM Greater China I2 acc USD',
+            holdingName: 'JPM Greater China I2 acc USD',
+            holdingPercent: 0.5395,
+          },
+        ],
+      },
+    };
+
+    const result = analyze([stock, domesticFund, qqqm, china], prices, fundHoldings);
+    const equity = result.totals.equity;
+
+    expect(result.marketCap.reduce((sum, slice) => sum + slice.value, 0)).toBeCloseTo(
+      equity,
+      0,
+    );
+    expect(result.capRows.reduce((sum, row) => sum + row.total, 0)).toBeCloseTo(equity, 0);
+    for (const slice of result.marketCap) {
+      expect((slice.regions?.domestic ?? 0) + (slice.regions?.global ?? 0)).toBeCloseTo(
+        slice.value,
+        0,
+      );
+    }
+    for (const row of result.capRows) {
+      expect(row.regions.domestic + row.regions.global).toBeCloseTo(row.total, 0);
+    }
+    expect(result.marketCap.find((slice) => slice.name === 'Other / Uncategorized')).toBeUndefined();
+
+    const qqqmValue = 300 * 84 * 100;
+    expect(result.marketCap.find((slice) => slice.name === 'Large Cap')?.regions?.global).toBeCloseTo(
+      qqqmValue,
+      0,
+    );
   });
 });

@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Donut } from '@/src/components/charts/Donut';
-import type { ExposureSlice } from '@/src/features/portfolio/analytics';
+import { capDisplayLabel, type ExposureSlice } from '@/src/features/portfolio/analytics';
 import { formatCompactINR, formatPercent } from '@/src/lib/format/money';
 import { numeric, radius, space, type } from '@/src/lib/theme/tokens';
 import { useTheme } from '@/src/lib/theme/ThemeProvider';
@@ -88,6 +88,23 @@ export function ExposureCard({
               const percent = total > 0 ? (slice.value / total) * 100 : 0;
               const directPercent = slice.value > 0 ? (slice.direct / slice.value) * 100 : 0;
               const indirectPercent = slice.value > 0 ? (slice.indirect / slice.value) * 100 : 0;
+              const regionTotal = slice.regions
+                ? slice.regions.domestic + slice.regions.global
+                : 0;
+              const regionParts: string[] = [];
+              if (slice.regions && regionTotal > 0) {
+                if (slice.regions.domestic > 0) {
+                  regionParts.push(
+                    `Domestic ${formatPercent((slice.regions.domestic / regionTotal) * 100)}`,
+                  );
+                }
+                if (slice.regions.global > 0) {
+                  regionParts.push(
+                    `Global ${formatPercent((slice.regions.global / regionTotal) * 100)}`,
+                  );
+                }
+              }
+              const regionLabel = regionParts.join(' · ');
               const isOpen = Boolean(openRows[slice.key]);
               const hasDetail = slice.constituents.length > 0;
               const color =
@@ -103,12 +120,12 @@ export function ExposureCard({
                     disabled={!hasDetail}
                     accessibilityRole={hasDetail ? 'button' : undefined}
                     accessibilityState={{ expanded: isOpen }}
-                    accessibilityLabel={`${slice.name}, ${formatPercent(percent)} of exposure`}
+                    accessibilityLabel={`${capDisplayLabel(slice.name)}, ${formatPercent(percent)} of exposure${regionLabel ? `, ${regionLabel}` : ''}`}
                     style={styles.rowHeader}
                   >
                     <View style={[styles.dot, { backgroundColor: color }]} />
                     <Text style={[styles.rowName, { color: theme.text }]} numberOfLines={1}>
-                      {slice.name}
+                      {capDisplayLabel(slice.name)}
                     </Text>
                     <View style={styles.rowValueWrap}>
                       <Text style={[styles.rowValue, numeric, { color: theme.text }]}>
@@ -164,6 +181,12 @@ export function ExposureCard({
                         </View>
                       </View>
                     </>
+                  ) : null}
+
+                  {regionLabel ? (
+                    <Text style={[styles.regionText, { color: theme.muted }]}>
+                      {regionLabel}
+                    </Text>
                   ) : null}
 
                   {isOpen && hasDetail ? (
@@ -315,6 +338,7 @@ const styles = StyleSheet.create({
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: space.xs },
   legendDot: { width: 5, height: 5, borderRadius: 2.5 },
   splitText: { fontSize: 10 },
+  regionText: { fontSize: 10, marginLeft: 17 },
   detail: { borderTopWidth: StyleSheet.hairlineWidth, paddingTop: space.sm, gap: space.md },
   detailGroup: { gap: space.xs },
   detailLabel: { ...type.label, fontSize: 9, letterSpacing: 0.5 },

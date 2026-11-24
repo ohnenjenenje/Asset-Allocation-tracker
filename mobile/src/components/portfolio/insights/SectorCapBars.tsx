@@ -2,7 +2,7 @@ import { Feather } from '@expo/vector-icons';
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import type { CapSectorRow } from '@/src/features/portfolio/analytics';
+import { capDisplayLabel, type CapSectorRow } from '@/src/features/portfolio/analytics';
 import { formatCompactINR, formatPercent } from '@/src/lib/format/money';
 import { numeric, space, type } from '@/src/lib/theme/tokens';
 import { useTheme } from '@/src/lib/theme/ThemeProvider';
@@ -95,7 +95,7 @@ export function SectorCapBars({
                   ]}
                 />
                 <Text style={[styles.legendText, { color: colors.muted }]} numberOfLines={1}>
-                  {row.cap}
+                  {capDisplayLabel(row.cap)}
                 </Text>
               </View>
             ))}
@@ -154,7 +154,7 @@ export function SectorCapBars({
                           ]}
                         />
                         <Text style={[styles.capText, { color: colors.muted }]} numberOfLines={1}>
-                          {cap.cap.replace(' / Uncategorized', '')}{' '}
+                          {capDisplayLabel(cap.cap)}{' '}
                           {formatPercent(
                             entry.total > 0 ? (cap.value / entry.total) * 100 : 0,
                           )}

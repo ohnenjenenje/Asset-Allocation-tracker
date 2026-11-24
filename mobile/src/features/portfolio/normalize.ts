@@ -225,6 +225,7 @@ const KNOWN_CASINGS: Record<string, string> = {
   'large cap': 'Large Cap',
   'mid cap': 'Mid Cap',
   'small cap': 'Small Cap',
+  diversified: 'Diversified',
   'mutual funds': 'Mutual Funds',
   etfs: 'ETFs',
   'other / uncategorized': 'Other / Uncategorized',
@@ -453,6 +454,10 @@ export function isGlobalFund(categoryName?: string | null, name?: string | null)
     'nasdaq',
     's&p',
     'us equity',
+    'world',
+    'hong kong',
+    'developed markets',
+    'emerging markets',
   ].some((keyword) => text.includes(keyword));
 }
 

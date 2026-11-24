@@ -122,7 +122,7 @@ export default function InsightsScreen() {
               <View style={styles.cards}>
                 <ExposureCard
                   title="Market Cap Exposure"
-                  subtitle="Direct vs fund exposure"
+                  subtitle="Size first · domestic vs global inside each band"
                   icon="bar-chart"
                   slices={analytics.marketCap}
                   colors={analytics.capColors}
