@@ -35,6 +35,8 @@ import {
   indexAllocationNodes,
   isChildPath,
   mergeCompositionTargets,
+  portfolioTargetFromRelative,
+  relativeTargetFromPortfolio,
   targetRangeError,
   validateComposition,
   type CompositionNode,
@@ -57,6 +59,9 @@ import { numeric, radius, space, type } from '@/src/lib/theme/tokens';
 import { useTheme } from '@/src/lib/theme/ThemeProvider';
 
 const round2 = (value: number) => Math.round(value * 100) / 100;
+const round4 = (value: number) => Math.round(value * 1e4) / 1e4;
+
+type TargetBasis = 'parent' | 'portfolio';
 
 const LEVELS: { key: PolicyDecisionLevel; label: string; hint: string }[] = [
   { key: 'composition', label: 'Composition', hint: 'Informational only' },
@@ -107,6 +112,7 @@ function MiniField({
   label,
   value,
   onChangeText,
+  onBlur,
   suffix,
   decimal = true,
   disabled = false,
@@ -115,11 +121,15 @@ function MiniField({
   autoCapitalize,
   accessibilityLabel,
   align = 'left',
+  onLabelPress,
+  labelActionDisabled = false,
+  labelActionAccessibilityLabel,
   style,
 }: {
   label: string;
   value: string;
   onChangeText: (value: string) => void;
+  onBlur?: () => void;
   suffix?: string;
   decimal?: boolean;
   disabled?: boolean;
@@ -128,19 +138,51 @@ function MiniField({
   autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
   accessibilityLabel?: string;
   align?: 'left' | 'right';
+  onLabelPress?: () => void;
+  labelActionDisabled?: boolean;
+  labelActionAccessibilityLabel?: string;
   style?: StyleProp<ViewStyle>;
 }) {
   const { colors } = useTheme();
   const [focused, setFocused] = useState(false);
 
+  const labelColor = error
+    ? colors.negative
+    : onLabelPress && !labelActionDisabled
+      ? colors.accent
+      : colors.muted;
+
   return (
     <View style={[styles.field, style]}>
-      <Text
-        style={[styles.fieldLabel, { color: error ? colors.negative : colors.muted }]}
-        numberOfLines={1}
-      >
-        {label}
-      </Text>
+      {onLabelPress ? (
+        <Pressable
+          onPress={onLabelPress}
+          disabled={labelActionDisabled}
+          hitSlop={6}
+          accessibilityRole="button"
+          accessibilityLabel={labelActionAccessibilityLabel ?? label}
+          accessibilityState={{ disabled: labelActionDisabled }}
+          style={styles.fieldLabelAction}
+        >
+          <Text
+            style={[
+              styles.fieldLabel,
+              { color: labelColor },
+              !labelActionDisabled ? styles.fieldLabelActionText : null,
+            ]}
+            numberOfLines={1}
+          >
+            {label}
+          </Text>
+        </Pressable>
+      ) : (
+        <Text
+          style={[styles.fieldLabel, { color: labelColor }]}
+          numberOfLines={1}
+        >
+          {label}
+        </Text>
+      )}
       <View
         style={[
           styles.fieldBox,
@@ -161,7 +203,10 @@ function MiniField({
           selectTextOnFocus={decimal}
           autoCapitalize={autoCapitalize}
           onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
+          onBlur={() => {
+            setFocused(false);
+            onBlur?.();
+          }}
           accessibilityLabel={accessibilityLabel ?? label}
           style={[
             styles.fieldInput,
@@ -338,7 +383,7 @@ export default function BreakdownScreen() {
         <ScreenHeader
           eyebrow="Portfolio policy"
           title="Sleeve composition"
-          subtitle="Sub-targets are % of parent; ranges are % of portfolio."
+          subtitle="Tap a target label to enter % of parent or % of portfolio; ranges stay % of portfolio."
           action={
             <IconButton
               icon="x"
@@ -406,8 +451,11 @@ function BreakdownEditor({
   const [levelMenuPath, setLevelMenuPath] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
   const [newTarget, setNewTarget] = useState('');
+  const [newTargetBasis, setNewTargetBasis] = useState<TargetBasis>('parent');
   const [newLevel, setNewLevel] = useState<PolicyDecisionLevel>('composition');
   const [addError, setAddError] = useState<string | null>(null);
+  const [targetBasis, setTargetBasis] = useState<Record<string, TargetBasis>>({});
+  const [targetDrafts, setTargetDrafts] = useState<Record<string, string>>({});
 
   const index = useMemo(() => indexAllocationNodes(nodes), [nodes]);
 
@@ -577,6 +625,7 @@ function BreakdownEditor({
     setLevelMenuPath(null);
     setNewName('');
     setNewTarget('');
+    setNewTargetBasis('parent');
     setNewLevel('composition');
     setAddError(null);
   };
@@ -586,6 +635,7 @@ function BreakdownEditor({
     setLevelMenuPath(null);
     setNewName('');
     setNewTarget('');
+    setNewTargetBasis('parent');
     setAddError(null);
   };
 
@@ -609,25 +659,45 @@ function BreakdownEditor({
       return;
     }
 
-    const value = Number(newTarget);
-    if (newTarget.trim() === '' || !Number.isFinite(value)) {
+    const typed = Number(newTarget);
+    if (newTarget.trim() === '' || !Number.isFinite(typed)) {
       setAddError('Enter a target percentage.');
-      return;
-    }
-    if (value <= 0 || value > 100) {
-      setAddError('Use a target above 0 and at most 100.');
       return;
     }
 
     const parentEffective =
       effective[parentPath] ?? config.rootTargets[parentPath] ?? 0;
-    const effectiveTarget = (parentEffective * value) / 100;
+    const usePortfolioBasis =
+      newTargetBasis === 'portfolio' && parentEffective > 0;
+    const relative = usePortfolioBasis
+      ? relativeTargetFromPortfolio(typed, parentEffective)
+      : typed;
+    if (relative === null) {
+      setAddError('Set the parent target before using % of portfolio.');
+      return;
+    }
+    if (relative <= 0) {
+      setAddError('Use a target above 0.');
+      return;
+    }
+    if (relative > 100) {
+      setAddError(
+        usePortfolioBasis
+          ? `The parent target is only ${formatPercent(parentEffective, {
+              precision: 1,
+            })}.`
+          : 'Use a target at most 100%.',
+      );
+      return;
+    }
+
+    const effectiveTarget = (parentEffective * relative) / 100;
     const band = DEFAULT_POLICY_BANDS[path.split(' > ').pop() ?? ''] ?? 3;
 
     setEntries((current) => ({
       ...current,
       [path]: {
-        target: String(round2(value)),
+        target: String(round4(relative)),
         min: String(round2(Math.max(0, effectiveTarget - band))),
         max: String(round2(Math.min(100, effectiveTarget + band))),
         level: newLevel,
@@ -1074,14 +1144,71 @@ function BreakdownEditor({
     const sum = validation.sumByParent[node.path];
     const unallocated = validation.unallocatedByParent[node.path];
     const rangeIssue = rangeIssues[node.path];
-    const childError =
-      entry.target.trim() === '' ? 'Required' : validation.childErrors[node.path];
     const effectiveValue = effective[node.path] ?? node.effectiveTarget;
+    const parentPath = node.path.split(' > ').slice(0, -1).join(' > ');
+    const parentEffectiveTarget = effective[parentPath] ?? 0;
+    const basis: TargetBasis =
+      (targetBasis[node.path] ?? 'parent') === 'portfolio' &&
+      parentEffectiveTarget > 0
+        ? 'portfolio'
+        : 'parent';
+    const targetDraft = targetDrafts[node.path];
+    const targetValue =
+      basis === 'portfolio'
+        ? (targetDraft ??
+          (entry.target.trim() === '' ? '' : String(round4(effectiveValue))))
+        : entry.target;
+    const childError =
+      entry.target.trim() === ''
+        ? 'Required'
+        : basis === 'portfolio' &&
+            validation.childErrors[node.path] === 'Cannot exceed 100%'
+          ? `Cannot exceed the parent target (${formatPercent(
+              parentEffectiveTarget,
+              { precision: 1 },
+            )})`
+          : validation.childErrors[node.path];
     const sumColor = parentError
       ? colors.negative
       : unallocated
         ? colors.warning
         : colors.positive;
+
+    const clearTargetDraft = () => {
+      setTargetDrafts((current) => {
+        if (current[node.path] === undefined) return current;
+        const next = { ...current };
+        delete next[node.path];
+        return next;
+      });
+    };
+
+    const changeTarget = (value: string) => {
+      if (basis === 'parent') {
+        updateEntry(node.path, { target: value });
+        return;
+      }
+
+      setTargetDrafts((current) => ({ ...current, [node.path]: value }));
+      if (value.trim() === '') {
+        updateEntry(node.path, { target: '' });
+        return;
+      }
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed)) return;
+      const relative = relativeTargetFromPortfolio(parsed, parentEffectiveTarget);
+      if (relative === null) return;
+      updateEntry(node.path, { target: String(relative) });
+    };
+
+    const toggleTargetBasis = () => {
+      if (parentEffectiveTarget <= 0) return;
+      clearTargetDraft();
+      setTargetBasis((current) => ({
+        ...current,
+        [node.path]: basis === 'portfolio' ? 'parent' : 'portfolio',
+      }));
+    };
 
     return (
       <View key={node.path} style={styles.node}>
@@ -1147,13 +1274,23 @@ function BreakdownEditor({
 
         <View style={styles.controlsRow}>
           <MiniField
-            label="Target %"
-            value={entry.target}
-            onChangeText={(value) => updateEntry(node.path, { target: value })}
+            label={basis === 'portfolio' ? '% of portfolio' : '% of parent'}
+            value={targetValue}
+            onChangeText={changeTarget}
+            onBlur={basis === 'portfolio' ? clearTargetDraft : undefined}
+            onLabelPress={isDemo ? undefined : toggleTargetBasis}
+            labelActionDisabled={parentEffectiveTarget <= 0}
+            labelActionAccessibilityLabel={
+              basis === 'portfolio'
+                ? `Switch ${node.label} target input to percent of parent`
+                : `Switch ${node.label} target input to percent of portfolio`
+            }
             suffix="%"
             disabled={isDemo}
             error={Boolean(childError)}
-            accessibilityLabel={`${node.label} target percentage of parent`}
+            accessibilityLabel={`${node.label} target percentage of ${
+              basis === 'portfolio' ? 'portfolio' : 'parent'
+            }`}
             align="right"
             style={styles.targetField}
           />
@@ -1275,6 +1412,27 @@ function BreakdownEditor({
 
   function renderAddForm(parentPath: string) {
     const suggestions = compositionSuggestions(nodes, parentPath, draftTargets).slice(0, 6);
+    const parentEffective =
+      effective[parentPath] ?? config.rootTargets[parentPath] ?? 0;
+    const addBasis: TargetBasis =
+      newTargetBasis === 'portfolio' && parentEffective > 0
+        ? 'portfolio'
+        : 'parent';
+
+    const toggleNewTargetBasis = () => {
+      if (parentEffective <= 0) return;
+      const typed = Number(newTarget);
+      if (newTarget.trim() !== '' && Number.isFinite(typed)) {
+        const converted =
+          addBasis === 'portfolio'
+            ? relativeTargetFromPortfolio(typed, parentEffective)
+            : portfolioTargetFromRelative(typed, parentEffective);
+        if (converted !== null) setNewTarget(String(round4(converted)));
+      }
+      setNewTargetBasis(addBasis === 'portfolio' ? 'parent' : 'portfolio');
+      setAddError(null);
+    };
+
     return (
       <View
         style={[
@@ -1331,13 +1489,20 @@ function BreakdownEditor({
 
         <View style={styles.addFields}>
           <MiniField
-            label="Target %"
+            label={addBasis === 'portfolio' ? '% of portfolio' : '% of parent'}
             placeholder="0"
             value={newTarget}
             onChangeText={(value) => {
               setNewTarget(value);
               setAddError(null);
             }}
+            onLabelPress={isDemo ? undefined : toggleNewTargetBasis}
+            labelActionDisabled={parentEffective <= 0}
+            labelActionAccessibilityLabel={
+              addBasis === 'portfolio'
+                ? 'Switch new target input to percent of parent'
+                : 'Switch new target input to percent of portfolio'
+            }
             suffix="%"
             disabled={isDemo}
             align="right"
@@ -1525,6 +1690,8 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
     textTransform: 'uppercase',
   },
+  fieldLabelAction: { alignSelf: 'flex-start' },
+  fieldLabelActionText: { textDecorationLine: 'underline' },
   fieldBox: {
     flexDirection: 'row',
     alignItems: 'center',

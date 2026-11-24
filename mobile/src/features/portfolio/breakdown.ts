@@ -67,6 +67,40 @@ export function compositionPath(parentPath: string, name: string): string {
   return normalizeGroup(`${parentPath} > ${name.trim()}`);
 }
 
+/**
+ * Convert a target typed as a percentage of the whole portfolio into the
+ * parent-relative percentage stored by the policy. Returns null when the parent
+ * has no target, because the conversion is undefined.
+ */
+export function relativeTargetFromPortfolio(
+  portfolioTarget: number,
+  parentEffectiveTarget: number,
+): number | null {
+  if (
+    !Number.isFinite(portfolioTarget) ||
+    !Number.isFinite(parentEffectiveTarget) ||
+    parentEffectiveTarget <= 0
+  ) {
+    return null;
+  }
+  return Math.round((portfolioTarget / parentEffectiveTarget) * 100 * 1e4) / 1e4;
+}
+
+/** Convert a parent-relative target into its percentage of the portfolio. */
+export function portfolioTargetFromRelative(
+  relativeTarget: number,
+  parentEffectiveTarget: number,
+): number | null {
+  if (
+    !Number.isFinite(relativeTarget) ||
+    !Number.isFinite(parentEffectiveTarget) ||
+    parentEffectiveTarget <= 0
+  ) {
+    return null;
+  }
+  return Math.round(((relativeTarget * parentEffectiveTarget) / 100) * 1e4) / 1e4;
+}
+
 export function parentPathOf(path: string): string {
   const parts = normalizeGroup(path).split(' > ');
   return parts.length > 1 ? parts.slice(0, -1).join(' > ') : '';

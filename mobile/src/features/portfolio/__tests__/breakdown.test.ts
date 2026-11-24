@@ -11,7 +11,9 @@ import {
   effectiveTargetOfTotal,
   indexAllocationNodes,
   mergeCompositionTargets,
+  portfolioTargetFromRelative,
   rangeForNode,
+  relativeTargetFromPortfolio,
   removeSubtree,
   validateComposition,
 } from '../breakdown';
@@ -151,6 +153,36 @@ describe('composition validation', () => {
     expect(result.childErrors['Commodities > Gold']).toBeDefined();
     expect(result.childErrors['Commodities > Silver']).toBeDefined();
     expect(result.childErrors['Commodities > Other']).toBeDefined();
+  });
+});
+
+describe('target input basis', () => {
+  it('converts portfolio-level inputs into parent-relative targets', () => {
+    expect(relativeTargetFromPortfolio(4, 7)).toBeCloseTo(57.1429, 4);
+    expect(relativeTargetFromPortfolio(2, 7)).toBeCloseTo(28.5714, 4);
+    expect(relativeTargetFromPortfolio(1, 7)).toBeCloseTo(14.2857, 4);
+    expect(
+      relativeTargetFromPortfolio(4, 7)! +
+        relativeTargetFromPortfolio(2, 7)! +
+        relativeTargetFromPortfolio(1, 7)!,
+    ).toBeCloseTo(100, 4);
+  });
+
+  it('converts parent-relative targets back into portfolio percentages', () => {
+    expect(portfolioTargetFromRelative(57.1429, 7)).toBeCloseTo(4, 4);
+    expect(portfolioTargetFromRelative(28.5714, 7)).toBeCloseTo(2, 4);
+    expect(portfolioTargetFromRelative(14.2857, 7)).toBeCloseTo(1, 4);
+  });
+
+  it('returns null instead of guessing when the parent has no target', () => {
+    expect(relativeTargetFromPortfolio(4, 0)).toBeNull();
+    expect(relativeTargetFromPortfolio(Number.NaN, 7)).toBeNull();
+    expect(portfolioTargetFromRelative(50, 0)).toBeNull();
+    expect(portfolioTargetFromRelative(Number.NaN, 7)).toBeNull();
+  });
+
+  it('keeps an over-parent input visible so validation can flag it', () => {
+    expect(relativeTargetFromPortfolio(10, 7)).toBeCloseTo(142.8571, 4);
   });
 });
 
