@@ -21,6 +21,7 @@ import {
   savePortfolio,
 } from './api';
 import { demoAssets, demoFundHoldings, demoPrices, screenDemoStocks } from './demo';
+import { mergeFundData } from './merge';
 import { isFundAsset, readCachedExchange } from './normalize';
 import {
   buildPolicyHistory,
@@ -196,8 +197,21 @@ export function useFundHoldings(
   const queries = useQueries({
     queries: unique.map((fund) => ({
       queryKey: portfolioKeys.fund(fund.symbol),
-      queryFn: async ({ signal }: { signal: AbortSignal }) =>
-        fetchFundData(fund.symbol, fund.name, { signal, token: await getToken() }),
+      queryFn: async ({ signal, client, queryKey }: {
+        signal: AbortSignal;
+        client: QueryClient;
+        queryKey: readonly unknown[];
+      }) => {
+        const fresh = await fetchFundData(fund.symbol, fund.name, {
+          signal,
+          token: await getToken(),
+        });
+        // Keep the richer seed/previous response when a fallback provider
+        // returns only a top-10 list or omits market-cap weights.
+        const previous =
+          client.getQueryData<FundData>(queryKey) ?? seeds?.[fund.symbol];
+        return mergeFundData(previous, fresh);
+      },
       enabled: status === 'signedIn' && !isDemo,
       // Seeds render instantly. Their stored refresh time lets a recent web
       // fetch suppress redundant work while older data refreshes in the
@@ -213,7 +227,12 @@ export function useFundHoldings(
   const data = useMemo(() => {
     const merged: Record<string, FundData> = { ...(seeds ?? {}) };
     queries.forEach((query, index) => {
-      if (query.data) merged[unique[index].symbol] = query.data;
+      if (query.data) {
+        merged[unique[index].symbol] = mergeFundData(
+          seeds?.[unique[index].symbol],
+          query.data,
+        );
+      }
     });
     return merged;
   }, [queries, seeds, unique]);

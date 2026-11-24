@@ -2,6 +2,7 @@ import { toPaise } from '@/src/lib/format/money';
 
 import { flattenAssets, priceFor } from './aggregate';
 import {
+  canonicalSectorLabel,
   getCapCategory,
   getCommoditySubCategory,
   isCommodityFund,
@@ -13,6 +14,7 @@ import {
   isMarketCapCategory,
   normalizeCategory,
   normalizeGroup,
+  normalizeSectorWeightings,
   resolveAssetCurrency,
   toINR,
 } from './normalize';
@@ -963,7 +965,7 @@ export function analyzePortfolio(input: {
 
     const fund = isFundAsset(asset);
     const data = fundHoldings[asset.symbol];
-    const sectors = data?.sectorWeightings ?? [];
+    const sectors = fund ? normalizeSectorWeightings(data?.sectorWeightings) : [];
     const direct = isDirectEquity(asset);
     const fundCap = fund ? resolveFundCap(asset, data) : null;
     const resolvedWeights = fund ? resolveCapWeights(data, fundCap) : [];
@@ -1054,7 +1056,7 @@ export function analyzePortfolio(input: {
       const sectorName =
         asset.manualSector ||
         (fund ? inferFundSector(asset, data) : null) ||
-        prices[asset.symbol]?.sector ||
+        canonicalSectorLabel(prices[asset.symbol]?.sector ?? '') ||
         'Other / Uncategorized';
       addToSector(sectorName, equityValue, direct, asset.name, asset.symbol);
       distributeToCaps(sectorName, equityValue);
@@ -1142,7 +1144,7 @@ export function analyzePortfolio(input: {
         value: totalValue,
         subHoldings,
         assetAllocation: data?.assetAllocation,
-        sectorWeightings: data?.sectorWeightings,
+        sectorWeightings: normalizeSectorWeightings(data?.sectorWeightings),
       });
     } else {
       fundMap.set(asset.name, {
@@ -1156,7 +1158,7 @@ export function analyzePortfolio(input: {
             value: totalValue,
             subHoldings,
             assetAllocation: data?.assetAllocation,
-            sectorWeightings: data?.sectorWeightings,
+            sectorWeightings: normalizeSectorWeightings(data?.sectorWeightings),
           },
         ],
       });

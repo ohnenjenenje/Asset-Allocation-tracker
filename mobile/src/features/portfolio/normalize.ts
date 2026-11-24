@@ -1,4 +1,9 @@
-import type { Asset, MarketCapCategory, PriceData } from './types';
+import type {
+  Asset,
+  FundSectorWeighting,
+  MarketCapCategory,
+  PriceData,
+} from './types';
 
 export const CATEGORY_COLORS = [
   '#2563EB',
@@ -16,6 +21,113 @@ export const CATEGORY_COLORS = [
 /** Type guard for the three cap buckets used by the exposure analytics. */
 export function isMarketCapCategory(value: unknown): value is MarketCapCategory {
   return value === 'Large Cap' || value === 'Mid Cap' || value === 'Small Cap';
+}
+
+/**
+ * Providers use different taxonomies for the same sector: Tickertape says
+ * "Financials" / "Information Technology", Upvaly says "Financial Services" /
+ * "Technology". Without folding aliases the sector chart shows parallel slices
+ * for the same exposure.
+ */
+const SECTOR_ALIASES: Record<string, string> = {
+  financial: 'Financial Services',
+  financials: 'Financial Services',
+  'financial services': 'Financial Services',
+  'information technology': 'Technology',
+  technology: 'Technology',
+  'technology services': 'Technology',
+  'electronic technology': 'Technology',
+  'consumer discretionary': 'Consumer Cyclical',
+  'consumer cyclical': 'Consumer Cyclical',
+  'consumer staples': 'Consumer Defensive',
+  'consumer defensive': 'Consumer Defensive',
+  'consumer non-durables': 'Consumer Defensive',
+  'consumer durables': 'Consumer Cyclical',
+  materials: 'Basic Materials',
+  'basic materials': 'Basic Materials',
+  'process industries': 'Basic Materials',
+  'non-energy minerals': 'Basic Materials',
+  'health care': 'Healthcare',
+  healthcare: 'Healthcare',
+  'health technology': 'Healthcare',
+  'aerospace & defense': 'Industrials',
+  'aerospace and defense': 'Industrials',
+  industrials: 'Industrials',
+  'producer manufacturing': 'Industrials',
+  'commercial services': 'Industrials',
+  'industrial services': 'Industrials',
+  transportation: 'Industrials',
+  'communication services': 'Communication Services',
+  'telecommunication services': 'Communication Services',
+  telecom: 'Communication Services',
+  energy: 'Energy',
+  'energy minerals': 'Energy',
+  utilities: 'Utilities',
+  'real estate': 'Real Estate',
+};
+
+export function canonicalSectorLabel(label: string): string {
+  const trimmed = (label || '').trim();
+  if (!trimmed) return '';
+  return SECTOR_ALIASES[trimmed.toLowerCase()] || trimmed;
+}
+
+/**
+ * Normalize the two sector payload shapes into canonical percentage weights:
+ *   - arrays: `{ sector: "Financials", percentage: 39.5 }`
+ *   - keyed:  `{ financials: 0.395 }`
+ * Fractions are scaled to percentages, aliases are folded together, and
+ * invalid entries are dropped so they cannot become phantom "Other" slices.
+ */
+export function normalizeSectorWeightings(raw: unknown): FundSectorWeighting[] {
+  if (!Array.isArray(raw)) return [];
+
+  const explicit: FundSectorWeighting[] = [];
+  const keyed: FundSectorWeighting[] = [];
+
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+
+    if (typeof (entry as FundSectorWeighting).sector === 'string') {
+      const sector = canonicalSectorLabel((entry as FundSectorWeighting).sector);
+      const percentage = Number((entry as FundSectorWeighting).percentage);
+      if (sector && Number.isFinite(percentage) && percentage > 0) {
+        explicit.push({ sector, percentage });
+      }
+      continue;
+    }
+
+    for (const [key, value] of Object.entries(entry)) {
+      const weight = Number(value);
+      const sector = canonicalSectorLabel(
+        key.replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase()),
+      );
+      if (!sector || !Number.isFinite(weight) || weight <= 0) continue;
+      keyed.push({ sector, percentage: weight });
+    }
+  }
+
+  // Fractions total near 1; percentages total near 100.
+  const explicitSum = explicit.reduce((sum, item) => sum + item.percentage, 0);
+  const keyedSum = keyed.reduce((sum, item) => sum + item.percentage, 0);
+  const explicitScale = explicitSum > 0 && explicitSum <= 1.5 ? 100 : 1;
+  const keyedScale = keyedSum > 0 && keyedSum <= 1.5 ? 100 : 1;
+
+  const merged = new Map<string, number>();
+  for (const item of explicit) {
+    merged.set(item.sector, (merged.get(item.sector) || 0) + item.percentage * explicitScale);
+  }
+  for (const item of keyed) {
+    merged.set(item.sector, (merged.get(item.sector) || 0) + item.percentage * keyedScale);
+  }
+
+  return Array.from(merged.entries())
+    .map(([sector, percentage]) => ({
+      sector,
+      percentage: Number(percentage.toFixed(2)),
+    }))
+    .filter((item) => item.percentage > 0)
+    .sort((a, b) => b.percentage - a.percentage);
 }
 
 export function guessCurrency(symbol: string): string {

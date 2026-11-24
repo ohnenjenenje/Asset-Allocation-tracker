@@ -379,4 +379,94 @@ describe('market-cap exposure', () => {
       100 * 10 * 100,
     );
   });
+
+  it('folds provider sector aliases into one canonical slice', () => {
+    const fund = asset({
+      id: 'nifty-bees',
+      symbol: 'MF_140084',
+      name: 'Nippon India ETF Nifty 50 BeES',
+      type: 'ETF',
+      quantity: 10,
+      entryPrice: 200,
+    });
+    const prices = {
+      MF_140084: quote({ symbol: 'MF_140084', regularMarketPrice: 200 }),
+    };
+    const fundHoldings: Record<string, FundData> = {
+      MF_140084: {
+        assetAllocation: fundAllocation,
+        sectorWeightings: [
+          { sector: 'Financials', percentage: 39.5 },
+          { sector: 'Information Technology', percentage: 7.6 },
+          { sector: 'Consumer Discretionary', percentage: 8 },
+          { sector: 'Materials', percentage: 7.3 },
+          { sector: 'Consumer Staples', percentage: 5.4 },
+          { sector: 'Health Care', percentage: 4.6 },
+          { sector: 'Aerospace & Defense', percentage: 1.2 },
+          { sector: 'Energy', percentage: 8.4 },
+          { sector: 'Industrials', percentage: 8.1 },
+          { sector: 'Communication Services', percentage: 7.6 },
+          { sector: 'Utilities', percentage: 2.2 },
+        ],
+      },
+    };
+
+    const result = analyze([fund], prices, fundHoldings);
+    const equityValue = 10 * 200 * 100;
+    const names = result.sectors.map((slice) => slice.name);
+
+    expect(names).toEqual(
+      expect.arrayContaining([
+        'Financial Services',
+        'Technology',
+        'Consumer Cyclical',
+        'Basic Materials',
+        'Consumer Defensive',
+        'Healthcare',
+        'Industrials',
+      ]),
+    );
+    for (const raw of [
+      'Financials',
+      'Information Technology',
+      'Consumer Discretionary',
+      'Materials',
+      'Consumer Staples',
+      'Health Care',
+      'Aerospace & Defense',
+    ]) {
+      expect(names).not.toContain(raw);
+    }
+    const financialServices = result.sectors.find(
+      (slice) => slice.name === 'Financial Services',
+    )?.value;
+    expect(financialServices).toBeGreaterThan(equityValue * 0.394);
+    expect(financialServices).toBeLessThan(equityValue * 0.396);
+  });
+
+  it('canonicalizes direct quote sector aliases', () => {
+    const stock = asset({
+      id: 'hdfc',
+      symbol: 'HDFCBANK.NS',
+      name: 'HDFC Bank Ltd',
+      type: 'EQUITY',
+      quantity: 10,
+      entryPrice: 800,
+    });
+    const prices = {
+      'HDFCBANK.NS': quote({
+        symbol: 'HDFCBANK.NS',
+        regularMarketPrice: 800,
+        capCategory: 'Large Cap',
+        sector: 'Financials',
+      }),
+    };
+
+    const result = analyze([stock], prices);
+
+    expect(result.sectors.find((slice) => slice.name === 'Financial Services')?.value).toBe(
+      10 * 800 * 100,
+    );
+    expect(result.sectors.find((slice) => slice.name === 'Financials')).toBeUndefined();
+  });
 });
