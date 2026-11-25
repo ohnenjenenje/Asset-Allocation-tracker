@@ -114,13 +114,47 @@ export function usePortfolioData(
       );
     };
 
+    const cleanUpdates = removeUndefined(updates);
+
+    // MongoDB is the source of truth for the mobile app. Write it first so a
+    // Firestore outage (or a missing Firestore database) cannot block saving.
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000); // 8s timeout
+
+      fetch('/api/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          uid: user.uid,
+          email: user.email,
+          displayName: user.displayName,
+          data: cleanUpdates
+        }),
+        signal: controller.signal
+      }).then(res => {
+        clearTimeout(timeoutId);
+        if (!res.ok && res.status !== 503) { // 503 means purposefully disabled
+          console.warn('MongoDB sync returned status:', res.status);
+        }
+      }).catch(err => {
+        clearTimeout(timeoutId);
+        // Only log the error if it's not a deliberate abort or common network issue when starting up
+        if (err.name !== 'AbortError') {
+          console.debug('MongoDB sync skipped:', err.message);
+        }
+      });
+    } catch (e) {
+      // Ignore errors in the synchronous part of the sync setup
+    }
+
+    // Mirror to Firestore for the legacy web client when it is available.
     try {
       const userRef = doc(db, 'users', user.uid);
       const docSnap = await getDoc(userRef);
-      
+
       const firestoreUpdates: any = {};
-      const cleanUpdates = removeUndefined(updates);
-      
+
       if (cleanUpdates.assets !== undefined) firestoreUpdates.assets = cleanUpdates.assets;
       if (cleanUpdates.fundHoldings !== undefined) firestoreUpdates.fundHoldings = cleanUpdates.fundHoldings;
       if (cleanUpdates.settings) {
@@ -156,37 +190,6 @@ export function usePortfolioData(
           };
           await setDoc(userRef, initialData);
         }
-      }
-
-      // Sync to MongoDB backup
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 8000); // 8s timeout for backup sync
-
-        fetch('/api/sync', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            uid: user.uid,
-            email: user.email,
-            displayName: user.displayName,
-            data: updates
-          }),
-          signal: controller.signal
-        }).then(res => {
-          clearTimeout(timeoutId);
-          if (!res.ok && res.status !== 503) { // 503 means purposefully disabled
-            console.warn('MongoDB backup sync returned status:', res.status);
-          }
-        }).catch(err => {
-          clearTimeout(timeoutId);
-          // Only log the error if it's not a deliberate abort or common network issue when starting up
-          if (err.name !== 'AbortError') {
-            console.debug('Optional MongoDB backup sync skipped:', err.message);
-          }
-        });
-      } catch (e) {
-        // Ignore errors in the synchronous part of the backup sync setup
       }
     } catch (e) {
       handleFirestoreError(e, OperationType.WRITE, `users/${user?.uid}`);

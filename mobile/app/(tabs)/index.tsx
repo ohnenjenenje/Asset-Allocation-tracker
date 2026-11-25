@@ -58,6 +58,7 @@ export default function AllocationHomeScreen() {
     quotesAsOf,
     staleQuoteCount,
     exchangeIsCached,
+    cachedExchangeNames,
     exchangeLastSyncedAt,
     exchangeIssues,
     isLoading,
@@ -165,6 +166,7 @@ export default function AllocationHomeScreen() {
         <QuoteFreshnessBanner
           staleQuoteCount={staleQuoteCount}
           exchangeIsCached={exchangeIsCached}
+          cachedExchangeNames={cachedExchangeNames}
           exchangeLastSyncedAt={exchangeLastSyncedAt}
           exchangeIssues={exchangeIssues}
           onRefresh={isDemo ? undefined : refetch}

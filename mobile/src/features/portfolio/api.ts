@@ -101,6 +101,41 @@ export async function savePortfolio(input: SavePortfolioInput): Promise<void> {
   });
 }
 
+export interface SaveExchangeCacheInput {
+  uid: string;
+  email?: string | null;
+  displayName?: string | null;
+  exchange: 'binance' | 'coindcx';
+  assets: Asset[];
+  token?: string | null;
+}
+
+/**
+ * Persist the last successful exchange snapshot. The mobile app is a first-class
+ * reader of this cache: if Render is waking up or an exchange is down, the
+ * dashboard can show a labelled fallback instead of an empty or stale screen.
+ */
+export async function saveExchangeCache(
+  input: SaveExchangeCacheInput,
+): Promise<void> {
+  const { uid, email, displayName, exchange, assets, token } = input;
+  await apiFetch<{ success: boolean }>('/api/sync', {
+    method: 'POST',
+    token,
+    body: {
+      uid,
+      email,
+      displayName,
+      data: {
+        [`cachedCrypto.${exchange}`]: {
+          lastSynced: Date.now(),
+          assets,
+        },
+      },
+    },
+  });
+}
+
 export interface SavePolicyInput {
   uid: string;
   email?: string | null;

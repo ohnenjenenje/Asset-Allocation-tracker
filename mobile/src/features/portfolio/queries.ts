@@ -17,6 +17,7 @@ import {
   fetchPrices,
   fetchScreener,
   fetchSnapshot,
+  saveExchangeCache,
   savePolicy,
   savePortfolio,
 } from './api';
@@ -106,13 +107,40 @@ export function usePrices(symbols: readonly string[]) {
  * snapshot cache (with its age visible) when an exchange is unavailable.
  */
 function useExchangeBalances() {
-  const { status, isDemo, getToken } = useAuth();
+  const { status, isDemo, getToken, uid, user } = useAuth();
   const enabled = status === 'signedIn' && !isDemo;
+
+  // The web dashboard used to be the only writer of `cachedCrypto`. Persisting
+  // from mobile too keeps the fallback fresh when the app is the main client.
+  const persistCache = async (
+    exchange: 'binance' | 'coindcx',
+    assets: Asset[],
+  ) => {
+    if (!uid) return;
+    try {
+      await saveExchangeCache({
+        uid,
+        email: user?.email ?? null,
+        displayName: user?.displayName ?? null,
+        exchange,
+        assets,
+        token: await getToken(),
+      });
+    } catch {
+      // Best-effort: a failed cache write must never fail the live refresh.
+    }
+  };
 
   const binance = useQuery({
     queryKey: portfolioKeys.exchange('binance'),
-    queryFn: async ({ signal }) =>
-      fetchExchangeBalances('binance', { signal, token: await getToken() }),
+    queryFn: async ({ signal }) => {
+      const assets = await fetchExchangeBalances('binance', {
+        signal,
+        token: await getToken(),
+      });
+      void persistCache('binance', assets);
+      return assets;
+    },
     enabled,
     staleTime: 5 * 60_000,
     gcTime: 60 * 60_000,
@@ -122,8 +150,14 @@ function useExchangeBalances() {
 
   const coindcx = useQuery({
     queryKey: portfolioKeys.exchange('coindcx'),
-    queryFn: async ({ signal }) =>
-      fetchExchangeBalances('coindcx', { signal, token: await getToken() }),
+    queryFn: async ({ signal }) => {
+      const assets = await fetchExchangeBalances('coindcx', {
+        signal,
+        token: await getToken(),
+      });
+      void persistCache('coindcx', assets);
+      return assets;
+    },
     enabled,
     staleTime: 5 * 60_000,
     gcTime: 60 * 60_000,
@@ -330,6 +364,7 @@ export function usePortfolioData() {
         assets: [] as Asset[],
         prices: {} as Record<string, PriceData>,
         isCached: false,
+        cachedExchangeNames: [] as string[],
         lastSyncedAt: null as number | null,
       };
     }
@@ -365,7 +400,7 @@ export function usePortfolioData() {
 
     const liveAssets: Asset[] = [];
     const livePrices: Record<string, PriceData> = {};
-    const syncedAt: number[] = [];
+    const liveSyncedAt: number[] = [];
 
     for (const source of sources) {
       if (!source.success || !source.assets) continue;
@@ -374,19 +409,31 @@ export function usePortfolioData() {
         livePrices,
         exchangePrices(source.assets, source.updatedAt, `${source.name} API`, false),
       );
-      syncedAt.push(source.updatedAt);
+      liveSyncedAt.push(source.updatedAt);
     }
 
+    const staleSyncedAt: number[] = [];
+    const cachedExchangeNames = new Set<string>();
     for (const asset of staleAssets) {
       const asOf = Number(cached.prices[asset.symbol]?.asOf);
-      if (Number.isFinite(asOf) && asOf > 0) syncedAt.push(asOf);
+      if (Number.isFinite(asOf) && asOf > 0) staleSyncedAt.push(asOf);
+      if (asset.exchange) cachedExchangeNames.add(asset.exchange);
     }
 
     return {
       assets: [...staleAssets, ...liveAssets],
       prices: { ...stalePrices, ...livePrices },
       isCached: staleAssets.length > 0,
-      lastSyncedAt: syncedAt.length > 0 ? Math.max(...syncedAt) : null,
+      cachedExchangeNames: [...cachedExchangeNames],
+      // Show the oldest cached snapshot when anything is stale. Using the
+      // newest timestamp would claim a fresh age just because another
+      // exchange answered live.
+      lastSyncedAt:
+        staleSyncedAt.length > 0
+          ? Math.min(...staleSyncedAt)
+          : liveSyncedAt.length > 0
+            ? Math.max(...liveSyncedAt)
+            : null,
     };
   }, [
     isDemo,
@@ -538,6 +585,7 @@ export function usePortfolioData() {
     quotesAsOf: quoteFreshness.quotesAsOf,
     staleQuoteCount: quoteFreshness.staleQuoteCount,
     exchangeIsCached: exchange.isCached,
+    cachedExchangeNames: exchange.cachedExchangeNames,
     exchangeLastSyncedAt: exchange.lastSyncedAt,
     exchangeIssues,
     isLoading: isDemo ? false : snapshotQuery.isLoading,

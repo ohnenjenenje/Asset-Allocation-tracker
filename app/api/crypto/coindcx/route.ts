@@ -130,11 +130,35 @@ export async function GET() {
   } catch (error: any) {
     console.error('CoinDCX API Error:', error?.message || error);
     const detail = String(error?.message || 'CoinDCX request failed');
-    const hint = /401|invalid credentials|expired|unauthori[sz]ed/i.test(detail)
-      ? ' Generate new CoinDCX API keys and update COINDCX_API_KEY and COINDCX_SECRET in Render.'
-      : '';
+    const authFailure = /401|invalid credentials|expired|unauthori[sz]ed/i.test(detail);
+    let egressIp = '';
+    let hint = '';
+
+    if (authFailure) {
+      // CoinDCX made API-key IP binding mandatory in October 2026. The key is
+      // only valid from the bound address, so tell the operator which address
+      // this server actually calls from. Best-effort: the credential hint is
+      // still useful when the lookup fails.
+      try {
+        const ipRes = await fetch('https://api.ipify.org?format=json', {
+          cache: 'no-store',
+          signal: AbortSignal.timeout(4_000),
+        });
+        if (ipRes.ok) {
+          const body = await ipRes.json().catch(() => null);
+          if (body && typeof body.ip === 'string') egressIp = body.ip;
+        }
+      } catch {
+        // Ignore: the IP is a diagnostic aid, not required for the response.
+      }
+
+      hint = ` CoinDCX requires API keys to be IP-bound. ${
+        egressIp ? `This server calls out from ${egressIp}. ` : ''
+      }Create a new key bound to that IP, then update COINDCX_API_KEY and COINDCX_SECRET in Render.`;
+    }
+
     return NextResponse.json(
-      { error: `${detail}${hint}` },
+      { error: `${detail}${hint}`, egressIp: egressIp || undefined },
       { status: 502 },
     );
   }

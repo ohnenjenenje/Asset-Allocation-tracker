@@ -5,6 +5,8 @@ import { formatRelativeTime } from '@/src/lib/format/time';
 interface QuoteFreshnessBannerProps {
   staleQuoteCount: number;
   exchangeIsCached: boolean;
+  /** Exchanges whose balances came from the cache, e.g. `['CoinDCX']`. */
+  cachedExchangeNames?: string[];
   exchangeLastSyncedAt: number | null;
   exchangeIssues?: ExchangeSyncIssue[];
   onRefresh?: () => void;
@@ -12,8 +14,12 @@ interface QuoteFreshnessBannerProps {
 
 function friendlyExchangeError(message: string): string {
   const lower = message.toLowerCase();
+  const ip = message.match(/\b\d{1,3}(?:\.\d{1,3}){3}\b/)?.[0];
+  if (ip && (lower.includes('invalid credentials') || lower.includes('api key'))) {
+    return `API key rejected — bind server IP ${ip} to the key.`;
+  }
   if (lower.includes('api key expired') || lower.includes('invalid credentials')) {
-    return 'API key expired or rejected — generate new keys.';
+    return 'API key expired or rejected — bind the server IP when creating a new key.';
   }
   if (lower.includes('invalid character') || lower.includes('malformed')) {
     return 'API key format is invalid on the server.';
@@ -35,6 +41,7 @@ function issueSummary(issues: ExchangeSyncIssue[] | undefined): string {
 export function QuoteFreshnessBanner({
   staleQuoteCount,
   exchangeIsCached,
+  cachedExchangeNames,
   exchangeLastSyncedAt,
   exchangeIssues,
   onRefresh,
@@ -43,14 +50,20 @@ export function QuoteFreshnessBanner({
 
   if (exchangeIsCached) {
     const age = exchangeLastSyncedAt ? formatRelativeTime(exchangeLastSyncedAt) : '';
+    // Name the exchange(s) that actually fell back so a CoinDCX failure does
+    // not make live Binance balances look cached.
+    const cachedLabel =
+      cachedExchangeNames && cachedExchangeNames.length > 0
+        ? cachedExchangeNames.join(' and ')
+        : 'Crypto';
     return (
       <Banner
         tone="warning"
         icon="clock"
         message={
           issueText
-            ? `Crypto balances are cached${age ? ` from ${age}` : ''}. Refresh failed — ${issueText}`
-            : `Crypto balances are using cached exchange data${age ? ` from ${age}` : ''}. Refresh to fetch the latest balances.`
+            ? `${cachedLabel} balances are cached${age ? ` from ${age}` : ''}. Refresh failed — ${issueText}`
+            : `${cachedLabel} balances are using cached exchange data${age ? ` from ${age}` : ''}. Refresh to fetch the latest balances.`
         }
         actionLabel={onRefresh ? 'Refresh' : undefined}
         onAction={onRefresh}
