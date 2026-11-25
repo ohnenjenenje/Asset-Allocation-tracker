@@ -6,6 +6,8 @@ coverage/
 .env*
 !.env.example
 !.env.logs.example
+# Per-project Better Stack / log credentials — never commit
+.env.logs
 
 # Build artifacts
 tsconfig.tsbuildinfo
