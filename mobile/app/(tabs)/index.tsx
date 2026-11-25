@@ -1,5 +1,6 @@
 import { Feather } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import { useMemo } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { HoldingRow } from '@/src/components/portfolio/HoldingRow';
@@ -20,6 +21,10 @@ import type {
   Holding,
   PortfolioSummary,
 } from '@/src/features/portfolio/aggregate';
+import {
+  analyzeStockConcentration,
+  equitySleeveValue,
+} from '@/src/features/portfolio/concentration';
 import type { PolicyUnmanagedSlice } from '@/src/features/portfolio/policy';
 import { useAuth } from '@/src/features/auth/AuthProvider';
 import { usePortfolioData } from '@/src/features/portfolio/queries';
@@ -67,6 +72,29 @@ export default function AllocationHomeScreen() {
   const greetingLabel = user ? `${greeting()}, ${firstName}` : greeting();
 
   const { unmanaged } = policyEvaluation;
+
+  const concentration = useMemo(
+    () =>
+      analyzeStockConcentration({
+        holdings: summary.holdings,
+        funds: analytics.funds,
+        equityValue: equitySleeveValue(
+          policyEvaluation.sleeves,
+          analytics.totals.equity,
+        ),
+        portfolioValue: analytics.totals.portfolio,
+      }),
+    [
+      analytics.funds,
+      analytics.totals.equity,
+      analytics.totals.portfolio,
+      policyEvaluation.sleeves,
+      summary.holdings,
+    ],
+  );
+  const topStockBreach = concentration.rows.find(
+    (row) => row.status === 'breach',
+  );
 
   const syncedLabel = lastSyncedAt ? formatRelativeTime(lastSyncedAt) : null;
   const quotesLabel = quotesAsOf ? formatRelativeTime(quotesAsOf) : null;
@@ -183,6 +211,30 @@ export default function AllocationHomeScreen() {
               onManageTargets={() => router.push('/policy')}
               onPlanRebalance={() => router.push('/rebalance')}
             />
+
+            {topStockBreach ? (
+              <Banner
+                tone="warning"
+                icon="alert-triangle"
+                message={
+                  concentration.breachCount > 1
+                    ? `${topStockBreach.name} is ${formatPercent(
+                        topStockBreach.equityPercentage,
+                        { precision: 1 },
+                      )} of equity. ${concentration.breachCount} stocks exceed the ${
+                        concentration.limitPct
+                      }% single-stock cap.`
+                    : `${topStockBreach.name} is ${formatPercent(
+                        topStockBreach.equityPercentage,
+                        { precision: 1 },
+                      )} of equity, above the ${
+                        concentration.limitPct
+                      }% single-stock cap.`
+                }
+                actionLabel="Review"
+                onAction={() => router.push('/compliance')}
+              />
+            ) : null}
 
             {priceError ? (
               <Banner

@@ -1,3 +1,5 @@
+import { formatCompactINR } from '@/src/lib/format/money';
+
 import type { AllocationNode, ExposureSlice } from './analytics';
 import { normalizeGroup } from './normalize';
 import { colorForSleeve, type PolicyConfig } from './policy';
@@ -52,6 +54,22 @@ export interface ComplianceCheck {
   limit?: number;
 }
 
+/**
+ * Shared concentration output. Compliance accepts the same rows the Insights
+ * card renders, so the cap can never disagree between the two surfaces.
+ */
+export interface StockConcentrationCheckInput {
+  rows: {
+    name: string;
+    totalValue: number;
+    fundValue: number;
+    equityPercentage: number;
+    status: ComplianceSeverity;
+  }[];
+  equityValue: number;
+  limitPct: number;
+}
+
 export interface ComplianceReport {
   ranges: PolicyRangeRow[];
   sectorRows: SectorPolicyRow[];
@@ -79,6 +97,8 @@ export interface ComplianceInput {
   now?: Date;
   concentrationLimitPct?: number;
   sectorConcentrationLimitPct?: number;
+  /** Direct + fund look-through stock exposure, measured against the Equities sleeve. */
+  stockConcentration?: StockConcentrationCheckInput;
 }
 
 const WATCH_BAND = 0.15;
@@ -321,12 +341,55 @@ export function evaluateCompliance(input: ComplianceInput): ComplianceReport {
   }
 
   const concentrationLimit = input.concentrationLimitPct ?? 10;
+
+  const stockConcentration = input.stockConcentration;
+  if (
+    stockConcentration &&
+    stockConcentration.equityValue > 0 &&
+    stockConcentration.rows.length > 0
+  ) {
+    const limit =
+      stockConcentration.limitPct > 0
+        ? stockConcentration.limitPct
+        : concentrationLimit;
+    const stockRows = [...stockConcentration.rows]
+      .filter((row) => row.totalValue > 0)
+      .sort((a, b) => b.equityPercentage - a.equityPercentage);
+    const topStock = stockRows[0];
+    if (topStock) {
+      const breaches = stockRows.filter((row) => row.status === 'breach');
+      const watches = stockRows.filter((row) => row.status === 'watch');
+      const severity: ComplianceSeverity =
+        breaches.length > 0 ? 'breach' : watches.length > 0 ? 'watch' : 'ok';
+      const fundNote =
+        topStock.fundValue > 0
+          ? `, including ${formatCompactINR(topStock.fundValue)} via funds`
+          : '';
+      const detail =
+        breaches.length > 1
+          ? `${breaches.length} stocks exceed the ${limit}% equity cap. ${topStock.name} is ${topStock.equityPercentage.toFixed(2)}% of equity${fundNote}.`
+          : severity === 'breach'
+            ? `${topStock.name} is ${topStock.equityPercentage.toFixed(2)}% of equity${fundNote} (limit ${limit}%).`
+            : severity === 'watch'
+              ? `${topStock.name} is ${topStock.equityPercentage.toFixed(2)}% of equity${fundNote}, close to the ${limit}% cap.`
+              : `Largest stock, ${topStock.name}, is ${topStock.equityPercentage.toFixed(2)}% of equity${fundNote} (limit ${limit}%).`;
+      checks.push({
+        id: 'single-stock-equity',
+        label: 'Single-stock concentration (equity)',
+        severity,
+        detail,
+        value: topStock.equityPercentage,
+        limit,
+      });
+    }
+  }
+
   const topHolding = [...holdings].sort((a, b) => b.value - a.value)[0];
   if (topHolding && totalValue > 0) {
     const percentage = (topHolding.value / totalValue) * 100;
     checks.push({
       id: 'single-holding',
-      label: 'Single-holding concentration',
+      label: 'Single-holding concentration (portfolio)',
       severity:
         percentage > concentrationLimit * 1.5
           ? 'breach'
@@ -335,7 +398,7 @@ export function evaluateCompliance(input: ComplianceInput): ComplianceReport {
             : 'ok',
       detail: `${topHolding.name} is ${percentage.toFixed(
         2,
-      )}% of the portfolio (limit ${concentrationLimit}%).`,
+      )}% of the total portfolio (limit ${concentrationLimit}%).`,
       value: percentage,
       limit: concentrationLimit,
     });

@@ -194,3 +194,109 @@ describe('compliance report', () => {
     expect(report.checks.some((check) => check.id === 'sector-policy-sum' && check.severity === 'breach')).toBe(true);
   });
 });
+
+describe('single-stock equity cap', () => {
+  const base = {
+    config: makeConfig(),
+    nodes,
+    totalValue: 1000,
+    fundCoverage: { withData: 4, total: 4 },
+    unmanagedPercentage: 0,
+    sectors,
+    equityTotal: 600,
+    reviewDue: null,
+    sectorConcentrationLimitPct: 60,
+  };
+
+  it('flags stocks above 10% of the equity sleeve, including fund look-through', () => {
+    const report = evaluateCompliance({
+      ...base,
+      holdings: [
+        { name: 'HDFC Bank', symbol: 'HDFCBANK.NS', value: 80 },
+        { name: 'Infosys', symbol: 'INFY.NS', value: 70 },
+      ],
+      stockConcentration: {
+        rows: [
+          {
+            name: 'HDFC Bank',
+            totalValue: 8_000,
+            fundValue: 2_000,
+            equityPercentage: 13.33,
+            status: 'breach',
+          },
+          {
+            name: 'Infosys',
+            totalValue: 70,
+            fundValue: 0,
+            equityPercentage: 11.67,
+            status: 'breach',
+          },
+        ],
+        equityValue: 600,
+        limitPct: 10,
+      },
+    });
+
+    const check = report.checks.find((item) => item.id === 'single-stock-equity');
+    expect(check?.severity).toBe('breach');
+    expect(check?.label).toBe('Single-stock concentration (equity)');
+    expect(check?.detail).toContain('2 stocks exceed the 10% equity cap');
+    expect(check?.detail).toContain('including ₹20 via funds');
+    expect(check?.value).toBeCloseTo(13.33, 2);
+    expect(check?.limit).toBe(10);
+    expect(report.status).toBe('breach');
+
+    const portfolioCheck = report.checks.find((item) => item.id === 'single-holding');
+    expect(portfolioCheck?.label).toBe('Single-holding concentration (portfolio)');
+  });
+
+  it('watches a stock just below the cap', () => {
+    const report = evaluateCompliance({
+      ...base,
+      holdings: [],
+      stockConcentration: {
+        rows: [
+          {
+            name: 'HDFC Bank',
+            totalValue: 57,
+            fundValue: 0,
+            equityPercentage: 9.5,
+            status: 'watch',
+          },
+        ],
+        equityValue: 600,
+        limitPct: 10,
+      },
+    });
+
+    const check = report.checks.find((item) => item.id === 'single-stock-equity');
+    expect(check?.severity).toBe('watch');
+    expect(check?.detail).toContain('close to the 10% cap');
+    expect(report.status).toBe('watch');
+  });
+
+  it('passes when every stock is inside the cap', () => {
+    const report = evaluateCompliance({
+      ...base,
+      holdings: [],
+      stockConcentration: {
+        rows: [
+          {
+            name: 'HDFC Bank',
+            totalValue: 30,
+            fundValue: 0,
+            equityPercentage: 5,
+            status: 'ok',
+          },
+        ],
+        equityValue: 600,
+        limitPct: 10,
+      },
+    });
+
+    const check = report.checks.find((item) => item.id === 'single-stock-equity');
+    expect(check?.severity).toBe('ok');
+    expect(check?.detail).toContain('Largest stock, HDFC Bank');
+    expect(report.status).toBe('compliant');
+  });
+});

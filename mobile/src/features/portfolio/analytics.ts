@@ -126,7 +126,7 @@ export interface FundConstituent {
   name: string;
   symbol: string;
   value: number;
-  subHoldings: { name: string; value: number }[];
+  subHoldings: { name: string; symbol?: string; value: number }[];
   assetAllocation?: FundAssetAllocation | null;
   sectorWeightings?: FundSectorWeighting[];
 }
@@ -1178,6 +1178,7 @@ export function analyzePortfolio(input: {
         const percent = percentScale ? rawPercent / 100 : rawPercent;
         return {
           name: holding.holdingName || holding.symbol,
+          symbol: holding.symbol || undefined,
           value: totalValue * percent,
         };
       })

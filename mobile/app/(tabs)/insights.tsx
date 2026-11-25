@@ -1,8 +1,9 @@
 import { Feather } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import type { ComponentProps } from 'react';
+import { useMemo, type ComponentProps } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
+import { ConcentrationCard } from '@/src/components/portfolio/insights/ConcentrationCard';
 import { ExposureCard } from '@/src/components/portfolio/insights/ExposureCard';
 import { FundAllocationCard } from '@/src/components/portfolio/insights/FundAllocationCard';
 import { SectorCapBars } from '@/src/components/portfolio/insights/SectorCapBars';
@@ -16,6 +17,10 @@ import { ScreenHeader } from '@/src/components/ui/ScreenHeader';
 import { SectionHeader } from '@/src/components/ui/SectionHeader';
 import { Skeleton } from '@/src/components/ui/Skeleton';
 import { EmptyState, ErrorState } from '@/src/components/ui/States';
+import {
+  analyzeStockConcentration,
+  equitySleeveValue,
+} from '@/src/features/portfolio/concentration';
 import { usePortfolioData } from '@/src/features/portfolio/queries';
 import { formatCompactINR, formatPercent } from '@/src/lib/format/money';
 import { numeric, space, type } from '@/src/lib/theme/tokens';
@@ -26,6 +31,7 @@ export default function InsightsScreen() {
   const {
     summary,
     analytics,
+    policyEvaluation,
     fundCoverage,
     isDemo,
     progress,
@@ -38,6 +44,26 @@ export default function InsightsScreen() {
     refetch,
     refetchFunds,
   } = usePortfolioData();
+
+  const concentration = useMemo(
+    () =>
+      analyzeStockConcentration({
+        holdings: summary.holdings,
+        funds: analytics.funds,
+        equityValue: equitySleeveValue(
+          policyEvaluation.sleeves,
+          analytics.totals.equity,
+        ),
+        portfolioValue: analytics.totals.portfolio,
+      }),
+    [
+      analytics.funds,
+      analytics.totals.equity,
+      analytics.totals.portfolio,
+      policyEvaluation.sleeves,
+      summary.holdings,
+    ],
+  );
 
   return (
     <Screen refreshing={isRefreshing} onRefresh={refetch}>
@@ -154,6 +180,21 @@ export default function InsightsScreen() {
                   isLoading={isFundLoading}
                   error={fundError}
                   onRetry={refetchFunds}
+                />
+              </View>
+            </View>
+
+            <View>
+              <SectionHeader
+                title="Concentration"
+                subtitle={`Single-stock exposure against the ${concentration.limitPct}% equity cap`}
+              />
+              <View style={styles.cards}>
+                <ConcentrationCard
+                  report={concentration}
+                  onSelect={(row) => {
+                    if (row.assetId) router.push(`/asset/${row.assetId}`);
+                  }}
                 />
               </View>
             </View>

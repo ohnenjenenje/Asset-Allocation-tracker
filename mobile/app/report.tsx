@@ -32,6 +32,10 @@ import {
   type ComplianceReport,
 } from '@/src/features/portfolio/compliance';
 import {
+  analyzeStockConcentration,
+  equitySleeveValue,
+} from '@/src/features/portfolio/concentration';
+import {
   colorForSleeve,
   reviewDueDate,
   rootTargetsFromMap,
@@ -127,6 +131,26 @@ export default function ReportScreen() {
     refetch,
   } = usePortfolioData();
 
+  const concentration = useMemo(
+    () =>
+      analyzeStockConcentration({
+        holdings: summary.holdings,
+        funds: analytics.funds,
+        equityValue: equitySleeveValue(
+          policyEvaluation.sleeves,
+          analytics.totals.equity,
+        ),
+        portfolioValue: analytics.totals.portfolio,
+      }),
+    [
+      analytics.funds,
+      analytics.totals.equity,
+      analytics.totals.portfolio,
+      policyEvaluation.sleeves,
+      summary.holdings,
+    ],
+  );
+
   const compliance = useMemo(
     () =>
       evaluateCompliance({
@@ -143,12 +167,14 @@ export default function ReportScreen() {
         sectors: analytics.sectors,
         equityTotal: analytics.totals.equity,
         reviewDue: reviewDueDate(policyConfig.policy),
+        stockConcentration: concentration,
       }),
     [
       analytics.allocationAnalysis,
       analytics.sectors,
       analytics.totals.equity,
       analytics.totals.portfolio,
+      concentration,
       fundCoverage,
       policyConfig,
       policyEvaluation.unmanagedPercentage,

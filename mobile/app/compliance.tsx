@@ -29,6 +29,10 @@ import {
   type PolicyRangeRow,
   type RangeStatus,
 } from '@/src/features/portfolio/compliance';
+import {
+  analyzeStockConcentration,
+  equitySleeveValue,
+} from '@/src/features/portfolio/concentration';
 import { reviewDueDate, type PolicyConfig } from '@/src/features/portfolio/policy';
 import { usePortfolioData, useSavePolicy } from '@/src/features/portfolio/queries';
 import type { PolicyRange } from '@/src/features/portfolio/types';
@@ -125,6 +129,26 @@ export default function ComplianceScreen() {
     refetch,
   } = usePortfolioData();
 
+  const concentration = useMemo(
+    () =>
+      analyzeStockConcentration({
+        holdings: summary.holdings,
+        funds: analytics.funds,
+        equityValue: equitySleeveValue(
+          policyEvaluation.sleeves,
+          analytics.totals.equity,
+        ),
+        portfolioValue: analytics.totals.portfolio,
+      }),
+    [
+      analytics.funds,
+      analytics.totals.equity,
+      analytics.totals.portfolio,
+      policyEvaluation.sleeves,
+      summary.holdings,
+    ],
+  );
+
   const report = useMemo(
     () =>
       evaluateCompliance({
@@ -141,12 +165,14 @@ export default function ComplianceScreen() {
         sectors: analytics.sectors,
         equityTotal: analytics.totals.equity,
         reviewDue: reviewDueDate(policyConfig.policy),
+        stockConcentration: concentration,
       }),
     [
       analytics.allocationAnalysis,
       analytics.sectors,
       analytics.totals.equity,
       analytics.totals.portfolio,
+      concentration,
       fundCoverage,
       policyConfig,
       policyEvaluation.unmanagedPercentage,
