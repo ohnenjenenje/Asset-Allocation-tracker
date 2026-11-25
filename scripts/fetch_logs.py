@@ -3,11 +3,13 @@
 Fetch production logs for AI debugging — per-project, per-account.
 
 Supports:
-  1. BetterStack (Logtail) via SQL API (live runtime logs via Log Streams) — preferred, free tier
-  2. Render.com API via RENDER_API_KEY + RENDER_SERVICE_ID — deploy/build logs
+  1. BetterStack Telemetry API v2 — preferred, no SQL setup required
+  2. BetterStack SQL API (ClickHouse) — works with an existing SQL connection
+  3. Render.com API via RENDER_API_KEY + RENDER_SERVICE_ID — deploy/build logs
 
 Config: .env.logs in project root (gitignored) — copy per project folder with its own account.
   BETTERSTACK_API_TOKEN=<your-team-token>
+  BETTERSTACK_SOURCE_ID=2733159
   BETTERSTACK_SQL_HOST=eu-nbg-2-connect.betterstackdata.com
   BETTERSTACK_SQL_USER=...
   BETTERSTACK_SQL_PASSWORD=...
@@ -16,9 +18,10 @@ Config: .env.logs in project root (gitignored) — copy per project folder with 
   RENDER_SERVICE_ID=srv-xxx
 
 Usage:
-  python scripts/fetch_logs.py                # auto: BetterStack if SQL creds, else Render, else help
+  python scripts/fetch_logs.py                # auto: BetterStack if configured, else Render, else help
   python scripts/fetch_logs.py --errors       # filter + deduplicate tracebacks
   python scripts/fetch_logs.py --tail 100     # last 100 rows
+  python scripts/fetch_logs.py --since now-7d # widen the time range
   python scripts/fetch_logs.py --source render --tail 50
   python scripts/fetch_logs.py --source betterstack --query "ERROR" --tail 200
   python scripts/fetch_logs.py --list-sources # list BetterStack sources via Telemetry API
@@ -142,10 +145,45 @@ def betterstack_query_sql(host: str, user: str, pwd: str, table: str, query_filt
         print(f"[BetterStack SQL] error: {e}", file=sys.stderr)
         return None
 
+def betterstack_query_v2(token: str, source_id: str, query_filter: str = "", limit: int = 100, start_time: str = "now-24h"):
+    """Query logs through Telemetry API v2 — no SQL connection required."""
+    sql = "SELECT dt, raw FROM {{source}} WHERE dt >= {{start_time}} AND dt < {{end_time}}"
+    if query_filter:
+        q = query_filter.replace("'", "\\'")
+        sql += f" AND raw LIKE '%{q}%'"
+    sql += " ORDER BY dt DESC"
+
+    payload = {
+        "source_id": int(source_id),
+        "source_type": "logs",
+        "query": sql,
+        "start_time": start_time,
+        "limit": limit,
+    }
+    req = urllib.request.Request(
+        "https://telemetry.betterstack.com/api/v2/query",
+        data=json.dumps(payload).encode(),
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            data = json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()[:2000]
+        print(f"[BetterStack v2] query failed: {e.code} {e.reason}\n{body}", file=sys.stderr)
+        return None
+    except Exception as e:
+        print(f"[BetterStack v2] error: {e}", file=sys.stderr)
+        return None
+    return data.get("data", {}).get("attributes", {}).get("rows", [])
+
 def betterstack_fetch_via_telemetry_fallback(token: str, limit: int):
-    # No direct log fetch via Telemetry JSON:API — guide user to create SQL connection
-    print("[BetterStack] BETTERSTACK_API_TOKEN set but SQL credentials missing.")
-    print("  To enable AI log fetching (free):")
+    # No SQL connection: guide the user to the v2 Query API or SQL credentials.
+    print("[BetterStack] BETTERSTACK_API_TOKEN set but no source/SQL credentials.")
+    print("  Add the source ID (preferred, no SQL setup needed):")
+    print("     BETTERSTACK_SOURCE_ID=2733159")
+    print("  Or create an SQL API connection:")
     print("  1. Go to https://telemetry.betterstack.com/team/0/dashboards/connections?tab=sql-api")
     print("  2. Click 'Connect ClickHouse HTTP client' -> select your team -> Create connection")
     print("  3. Copy Username / Password / Host (eu-nbg-2-...) and Source table (t123...)")
@@ -231,10 +269,13 @@ def main():
     ap.add_argument("--tail", type=int, default=100, help="number of log lines")
     ap.add_argument("--query", type=str, default="", help="filter substring (BetterStack LIKE)")
     ap.add_argument("--errors", action="store_true", help="filter to ERROR/Traceback only")
+    ap.add_argument("--since", type=str, default="now-24h", help="start time, e.g. now-1h or now-7d")
+    ap.add_argument("--source-id", type=str, default="", help="BetterStack source ID override")
     ap.add_argument("--list-sources", action="store_true", help="list BetterStack sources")
     args=ap.parse_args()
 
     bt_token=os.environ.get("BETTERSTACK_API_TOKEN","").strip()
+    bt_source_id=(args.source_id or os.environ.get("BETTERSTACK_SOURCE_ID","")).strip()
     bt_host=os.environ.get("BETTERSTACK_SQL_HOST","").strip()
     bt_user=os.environ.get("BETTERSTACK_SQL_USER","").strip()
     bt_pwd=os.environ.get("BETTERSTACK_SQL_PASSWORD","").strip()
@@ -250,13 +291,15 @@ def main():
         if data: print(json.dumps(data, indent=2))
         return
 
-    # Auto selection
+    # Auto selection: v2 API > SQL API > Render API
     src=args.source
     if src=="auto":
-        if bt_host and bt_user and bt_pwd and bt_table:
+        if bt_token and bt_source_id:
             src="betterstack"
-        elif bt_token and not (bt_host and bt_user):
-            # has token but no SQL -> will guide
+        elif bt_host and bt_user and bt_pwd and bt_table:
+            src="betterstack"
+        elif bt_token:
+            # has token but no source/SQL -> will guide
             src="betterstack"
         elif rnd_key and (rnd_sid or rnd_sids):
             src="render"
@@ -264,11 +307,24 @@ def main():
             src="help"
 
     if src=="betterstack":
-        if bt_host and bt_user and bt_pwd and bt_table:
-            q=args.query
-            if args.errors and not q:
-                q="ERROR"  # generic; post-filter with regex for precision
-            rows=betterstack_query_sql(bt_host, bt_user, bt_pwd, bt_table, query_filter=q, limit=args.tail*2 if args.errors else args.tail)
+        q=args.query
+        fetch_limit=args.tail*4 if args.errors else args.tail
+        if bt_token and bt_source_id:
+            rows=betterstack_query_v2(
+                bt_token,
+                bt_source_id,
+                query_filter=q,
+                limit=fetch_limit,
+                start_time=args.since,
+            )
+            if rows is None: sys.exit(1)
+            if args.errors:
+                rows=filter_errors(rows)
+                rows=rows[:args.tail]
+            render_rows(rows)
+            print(f"\n[done] {len(rows)} log(s) from BetterStack source {bt_source_id} ({args.since})", file=sys.stderr)
+        elif bt_host and bt_user and bt_pwd and bt_table:
+            rows=betterstack_query_sql(bt_host, bt_user, bt_pwd, bt_table, query_filter=q, limit=fetch_limit)
             if rows is None: sys.exit(1)
             if args.errors:
                 rows=filter_errors(rows)
