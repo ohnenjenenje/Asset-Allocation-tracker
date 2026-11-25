@@ -11,6 +11,8 @@
  * before sharing a deployment publicly.
  */
 
+import { isYahooCoolingDown, yahooChartQuote } from './yahoo';
+
 export interface MarketQuote {
   symbol: string;
   regularMarketPrice: number;
@@ -620,36 +622,37 @@ async function fetchUsdInrQuote(): Promise<MarketQuote | null> {
 /**
  * Yahoo's chart endpoint is lighter than its quote endpoint and does not need a
  * crumb. It is used only when the non-Yahoo providers cannot resolve a symbol.
- * The public CORS proxy is a last resort for hosts that block Render's IPs.
+ * Requests go through the shared Yahoo client so the whole app obeys one
+ * cooldown/cache. The public CORS proxy is a last resort for hosts that block
+ * Render's IPs.
  */
 export async function fetchYahooChartQuote(
   symbol: string,
 ): Promise<MarketQuote | null> {
-  const chartPath = `/v8/finance/chart/${encodeURIComponent(symbol)}?range=5d&interval=1d&includePrePost=false`;
-  const urls = [
-    `https://query2.finance.yahoo.com${chartPath}`,
-    `https://query1.finance.yahoo.com${chartPath}`,
-  ];
-
-  for (const url of urls) {
-    const data = await getJson(url);
-    const meta = data?.chart?.result?.[0]?.meta;
-    const price = toNumber(meta?.regularMarketPrice);
-    if (price == null || price <= 0) continue;
-
+  const quote = await yahooChartQuote(symbol);
+  if (quote) {
     return {
       symbol,
-      regularMarketPrice: price,
-      currency: meta?.currency || 'USD',
-      shortName: meta?.shortName || meta?.longName || null,
-      quoteType: meta?.instrumentType || null,
+      regularMarketPrice: quote.regularMarketPrice,
+      currency: quote.currency || 'USD',
+      shortName: quote.shortName || quote.longName || null,
+      quoteType: quote.quoteType || null,
       marketCap: null,
-      regularMarketTime: toDateFromSeconds(meta?.regularMarketTime),
+      regularMarketTime: quote.regularMarketTime,
       source: 'Yahoo Finance',
     };
   }
 
-  const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(urls[0])}`;
+  // Do not spend a slow proxy round-trip while Yahoo is explicitly cooling
+  // down; the caller already has provider/sheet fallbacks.
+  if (isYahooCoolingDown()) return null;
+
+  const chartPath = `/v8/finance/chart/${encodeURIComponent(
+    symbol,
+  )}?range=5d&interval=1d&includePrePost=false`;
+  const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(
+    `https://query2.finance.yahoo.com${chartPath}`,
+  )}`;
   const proxied = await getJson(proxyUrl, {}, 12_000);
   const proxiedMeta = proxied?.chart?.result?.[0]?.meta;
   const proxiedPrice = toNumber(proxiedMeta?.regularMarketPrice);

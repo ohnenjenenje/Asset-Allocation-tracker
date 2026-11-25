@@ -1,36 +1,12 @@
 import { NextResponse } from 'next/server';
-import YahooFinance from 'yahoo-finance2';
 import { GoogleAuth } from 'google-auth-library';
 import { normalizeSectorWeightings } from '@/lib/portfolio-utils';
-
-const yahoo = new YahooFinance();
-
-const safeQuote = async (symbol: string) => {
-  try {
-    return await yahoo.quote(symbol);
-  } catch (e) {
-    console.error(`Error in yahoo.quote for ${symbol}:`, e);
-    return null;
-  }
-};
-
-const safeQuoteSummary = async (symbol: string, options: any) => {
-  try {
-    return await yahoo.quoteSummary(symbol, options);
-  } catch (e) {
-    console.error(`Error in yahoo.quoteSummary for ${symbol}:`, e);
-    return null;
-  }
-};
-
-const safeSearch = async (query: string, options: any) => {
-  try {
-    return await yahoo.search(query, options);
-  } catch (e) {
-    console.error(`Error in yahoo.search for ${query}:`, e);
-    return { quotes: [] };
-  }
-};
+import {
+  yahooChartQuote,
+  yahooQuoteSummary,
+  yahooQuotes,
+  yahooSearch,
+} from '@/lib/market/yahoo';
 
 const getAuthToken = async () => {
   if (!process.env.GOOGLE_CLIENT_EMAIL || !process.env.GOOGLE_PRIVATE_KEY || !process.env.GOOGLE_SHEET_ID) {
@@ -401,11 +377,8 @@ async function pickBestYahooFund(symbols: string[], requestedName?: string | nul
   const wantIdcw = /idcw|dividend|\bdiv/i.test(requestedName || '');
   const wantGrowth = !wantIdcw && /growth|\bgr/i.test(requestedName || '');
 
-  let quotes: any[] = [];
-  try {
-    const result = await yahoo.quote(candidates);
-    quotes = Array.isArray(result) ? result : [result];
-  } catch {
+  const quotes = await yahooQuotes(candidates);
+  if (quotes.length === 0) {
     return isEtfLikeName(requestedName) ? null : candidates[0];
   }
 
@@ -568,17 +541,19 @@ export async function GET(request: Request) {
           const sheetYahooSymbol = await getYahooSymbolFromSheet(symbol);
           let useSheetSymbol = false;
           if (sheetYahooSymbol) {
-            try {
-              const quote: any = await yahoo.quote(sheetYahooSymbol);
-              const label = `${quote?.longName || ''} ${quote?.shortName || ''}`;
+            const quote = await yahooChartQuote(sheetYahooSymbol);
+            if (!quote) {
+              // Yahoo is unavailable; trust the sheet mapping rather than
+              // dropping a known-good symbol.
+              useSheetSymbol = true;
+            } else {
+              const label = `${quote.longName || ''} ${quote.shortName || ''}`;
               useSheetSymbol = planMatches(label, name) && fundNameMatchesEtf(label, name);
               if (!useSheetSymbol) {
                 console.log(
                   `Sheet mapping ${sheetYahooSymbol} ("${label.trim()}") does not match the requested plan/fund; searching by name`,
                 );
               }
-            } catch {
-              useSheetSymbol = true;
             }
           }
 
@@ -588,10 +563,10 @@ export async function GET(request: Request) {
           } else if (name) {
             console.log(`Target symbol is a mutual fund (${symbol}), searching Yahoo Finance by name: ${name}`);
             const cleanName = name.replace(/Direct Plan|Retail Plan|Regular Plan|Direct|Regular|Growth|IDCW|Dividend|Option|Plan|Scheme|Index Fund|Fund|Index/gi, '').replace(/-/g, ' ').replace(/\s+/g, ' ').trim();
-            const ySearch = await yahoo.search(cleanName, { quotesCount: 8, newsCount: 0 }) as any;
-            const candidates = (ySearch.quotes || [])
-              .filter((q: any) => q.quoteType === 'MUTUALFUND' || q.quoteType === 'ETF')
-              .map((q: any) => q.symbol)
+            const ySearch = await yahooSearch(cleanName, 8);
+            const candidates = ySearch
+              .filter((q) => q.quoteType === 'MUTUALFUND' || q.quoteType === 'ETF')
+              .map((q) => q.symbol)
               .filter(Boolean);
             const best = await pickBestYahooFund(candidates, name);
             if (best) {
@@ -608,7 +583,7 @@ export async function GET(request: Request) {
 
         if (!skipYahoo && !yfSymbol.startsWith('MF_')) {
           console.log(`Fetching holdings for target symbol: ${yfSymbol}`);
-          const result = await safeQuoteSummary(yfSymbol, { modules: ['topHoldings', 'fundProfile'] });
+          const result = await yahooQuoteSummary(yfSymbol, ['topHoldings', 'fundProfile']);
           
           if (result) {
             const holdings = (result.topHoldings?.holdings || []).map((h: any) => ({

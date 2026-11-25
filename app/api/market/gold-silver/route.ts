@@ -1,18 +1,10 @@
 import { NextResponse } from 'next/server';
+import { yahooChartQuote } from '@/lib/market/yahoo';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const XAUS_URL = 'https://xaus.com/api/v1/spot';
-// Yahoo's v7 quote endpoint now requires a crumb/cookie handshake that is
-// frequently rejected for cloud-hosted IPs. The chart endpoint is public and
-// returns the same regularMarketPrice/regularMarketTime fields we need.
-const YAHOO_CHART_HOSTS = [
-  'https://query1.finance.yahoo.com',
-  'https://query2.finance.yahoo.com',
-] as const;
-const YAHOO_USER_AGENT =
-  'Mozilla/5.0 (compatible; AssetTracker/0.1; +https://github.com/ohnenjenenje/Asset-Allocation-tracker)';
 const CACHE_MS = 10 * 60_000;
 const SHORT_CACHE_MS = 2 * 60_000;
 const UPSTREAM_TIMEOUT_MS = 6_000;
@@ -72,50 +64,13 @@ function computeRatio(goldUsd: number | null, silverUsd: number | null): number 
   return goldUsd / silverUsd;
 }
 
-interface YahooChartMeta {
-  regularMarketPrice?: unknown;
-  regularMarketTime?: unknown;
-}
-
-async function fetchYahooChartMeta(symbol: string): Promise<YahooChartMeta> {
-  let lastError: unknown = null;
-
-  for (const host of YAHOO_CHART_HOSTS) {
-    try {
-      const url = `${host}/v8/finance/chart/${encodeURIComponent(symbol)}?range=1d&interval=1m`;
-      const response = await fetch(url, {
-        headers: {
-          Accept: 'application/json',
-          'User-Agent': YAHOO_USER_AGENT,
-        },
-        signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-        cache: 'no-store',
-      });
-      if (!response.ok) {
-        throw new Error(`${host} responded with ${response.status} for ${symbol}`);
-      }
-
-      const payload = (await response.json()) as any;
-      const meta = payload?.chart?.result?.[0]?.meta as YahooChartMeta | undefined;
-      if (!meta) {
-        throw new Error(`${host} returned no chart metadata for ${symbol}`);
-      }
-      return meta;
-    } catch (error) {
-      lastError = error;
-    }
-  }
-
-  throw lastError instanceof Error
-    ? lastError
-    : new Error(`Yahoo chart request failed for ${symbol}`);
-}
-
 async function fetchYahooQuote(): Promise<MetalQuote | null> {
   try {
+    // Use the shared Yahoo client so chart requests share its cache and
+    // 429 cooldown instead of hammering the same hosts independently.
     const [gold, silver] = await Promise.all([
-      fetchYahooChartMeta('GC=F'),
-      fetchYahooChartMeta('SI=F'),
+      yahooChartQuote('GC=F'),
+      yahooChartQuote('SI=F'),
     ]);
 
     const goldUsd = positiveNumber(gold?.regularMarketPrice);
@@ -124,7 +79,7 @@ async function fetchYahooQuote(): Promise<MetalQuote | null> {
     if (!ratio) return null;
 
     const timestamps = [gold, silver]
-      .map((meta) => timestampToIso(meta?.regularMarketTime))
+      .map((quote) => timestampToIso(quote?.regularMarketTime))
       .filter((value): value is string => Boolean(value))
       .sort();
 

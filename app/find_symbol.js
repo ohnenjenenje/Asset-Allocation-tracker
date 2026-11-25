@@ -1,16 +1,15 @@
+const query = 'Edelweiss Liquid Fund Retail Growth';
+const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(
+  query,
+)}&quotesCount=10&newsCount=0`;
 
-const YahooFinance = require('yahoo-finance2').default;
-const yahoo = new YahooFinance();
-
-async function findSymbol() {
-  const query = "Edelweiss Liquid Fund Retail Growth";
-  console.log(`Searching for: ${query}`);
-  try {
-    const results = await yahoo.search(query);
-    console.log(JSON.stringify(results.quotes, null, 2));
-  } catch (e) {
-    console.error(e);
-  }
-}
-
-findSymbol();
+fetch(url, {
+  headers: {
+    'User-Agent':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    Accept: 'application/json',
+  },
+})
+  .then((response) => response.json())
+  .then((data) => console.log(JSON.stringify(data.quotes, null, 2)))
+  .catch((error) => console.error(error));

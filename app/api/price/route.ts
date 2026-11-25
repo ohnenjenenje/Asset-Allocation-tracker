@@ -1,16 +1,18 @@
 import { setDefaultResultOrder } from 'node:dns';
 import { NextResponse } from 'next/server';
 import { GoogleAuth } from 'google-auth-library';
-import YahooFinance from 'yahoo-finance2';
 import { fetchFallbackQuote, fetchYahooChartQuote } from '@/lib/market/quotes';
 import { getNseCapCategories } from '@/lib/market/nseCapCategories';
+import {
+  isYahooCoolingDown,
+  yahooQuoteSummary,
+  yahooSearch,
+} from '@/lib/market/yahoo';
 
 // Prefer IPv4 for the remaining market-data hosts that publish AAAA records
 // Render cannot route. Yahoo itself is rate-limited regardless of address
 // family, which is why live quotes no longer depend on it.
 setDefaultResultOrder('ipv4first');
-
-const yahoo = new YahooFinance();
 
 // A very short cache coalesces the stock/FX/futures lookups made by concurrent
 // chunks without making a quote meaningfully stale. The quote's own
@@ -106,7 +108,7 @@ const safeQuote = async (symbol: string) => {
   // symbols the direct providers cannot resolve.
   let quote = await fetchFallbackQuote(symbol);
 
-  if (!quote && yahooAllowed()) {
+  if (!quote && yahooAllowed() && !isYahooCoolingDown()) {
     quote = await fetchYahooChartQuote(symbol);
     if (quote) resetYahooFailures();
     else markYahooFailure();
@@ -133,29 +135,19 @@ const parseNavDate = (value?: string | null): number | null => {
 };
 
 const safeQuoteSummary = async (symbol: string, options: any) => {
-  if (!yahooAllowed()) return null;
-  try {
-    const result = await yahoo.quoteSummary(symbol, options);
-    resetYahooFailures();
-    return result;
-  } catch (e) {
-    markYahooFailure();
-    console.error(`Error in Yahoo summary for ${symbol}:`, e);
-    return null;
-  }
+  if (!yahooAllowed() || isYahooCoolingDown()) return null;
+  const result = await yahooQuoteSummary(symbol, options?.modules || []);
+  if (result) resetYahooFailures();
+  else markYahooFailure();
+  return result;
 };
 
 const safeSearch = async (query: string, options: any) => {
-  if (!yahooAllowed()) return { quotes: [] };
-  try {
-    const result = await yahoo.search(query, options);
-    resetYahooFailures();
-    return result;
-  } catch (e) {
-    markYahooFailure();
-    console.error(`Error in Yahoo search for ${query}:`, e);
-    return { quotes: [] };
-  }
+  if (!yahooAllowed() || isYahooCoolingDown()) return { quotes: [] };
+  const quotes = await yahooSearch(query, options?.quotesCount ?? 10);
+  if (quotes.length > 0) resetYahooFailures();
+  else markYahooFailure();
+  return { quotes };
 };
 
 export const dynamic = 'force-dynamic';

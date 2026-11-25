@@ -1,8 +1,6 @@
 import { NextResponse } from 'next/server';
-import YahooFinance from 'yahoo-finance2';
 import { recordIndianApiRequest } from '@/lib/indianapi-usage';
-
-const yahoo = new YahooFinance();
+import { yahooSearch } from '@/lib/market/yahoo';
 
 // Configuration for API endpoints
 const STOCK_APIS = (process.env.INDIAN_API_ENDPOINTS || 'https://stock.indianapi.in/search').split(',').map(s => {
@@ -140,70 +138,6 @@ async function fetchWithTimeout(
   } finally {
     clearTimeout(timer);
   }
-}
-
-/** Resolves to null instead of hanging when a promise has no timeout option. */
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => resolve(null), timeoutMs);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      () => {
-        clearTimeout(timer);
-        resolve(null);
-      },
-    );
-  });
-}
-
-/**
- * Raw Yahoo search. yahoo-finance2's search parser can throw a schema
- * validation error on newer quote payloads, which made production search
- * return an empty list even though the price endpoint could reach Yahoo.
- * The raw endpoint needs no crumb/cookie and gives us the same quotes.
- */
-async function searchYahooDirect(query: string): Promise<any[]> {
-  const searchQ =
-    query.replace(/\b(nse|bse)\s*:?\s*/gi, '').replace(/\s+/g, ' ').trim() || query;
-  const hosts = ['query1.finance.yahoo.com', 'query2.finance.yahoo.com'];
-
-  for (const host of hosts) {
-    const url = `https://${host}/v1/finance/search?q=${encodeURIComponent(
-      searchQ,
-    )}&quotesCount=10&newsCount=0`;
-
-    try {
-      const res = await fetchWithTimeout(url, {
-        headers: { ...SEARCH_HEADERS, Referer: 'https://finance.yahoo.com/' },
-      });
-      if (!res.ok) {
-        console.error(`Yahoo search failed on ${host}: ${res.status}`);
-        continue;
-      }
-
-      const data = await res.json();
-      const quotes = Array.isArray(data?.quotes) ? data.quotes : [];
-      const mapped = quotes
-        .filter((quote: any) => typeof quote?.symbol === 'string' && quote.symbol)
-        .map((quote: any) => ({
-          symbol: quote.symbol,
-          shortname: quote.shortname,
-          longname: quote.longname,
-          quoteType: quote.quoteType,
-          source: 'Yahoo Finance',
-        }));
-      if (mapped.length > 0) {
-        return mapped;
-      }
-    } catch (e: any) {
-      console.error(`Yahoo search error on ${host}:`, e.message || e);
-    }
-  }
-
-  return [];
 }
 
 /**
@@ -447,28 +381,13 @@ export async function GET(request: Request) {
     // 4. Search Yahoo Finance (primary for Auto, fallback for IndianAPI)
     if (stockQuotes.length === 0 || effectiveSource === 'yahoo') {
       console.log('Searching Yahoo Finance for:', q);
-      stockQuotes = await searchYahooDirect(q);
-
-      // Raw Yahoo is the primary path because it does not depend on
-      // yahoo-finance2's schema. Keep the client as a second attempt in case
-      // Yahoo changes the raw endpoint, then use keyless Indian sources.
-      if (stockQuotes.length === 0) {
-        try {
-          const yahooData = await withTimeout(
-            yahoo.search(q, { quotesCount: 10, newsCount: 0 }),
-            4000,
-          );
-          stockQuotes = (yahooData?.quotes || []).map((quote: any) => ({
-            symbol: quote.symbol,
-            shortname: quote.shortname,
-            longname: quote.longname,
-            quoteType: quote.quoteType,
-            source: 'Yahoo Finance',
-          }));
-        } catch (e: any) {
-          console.error('Yahoo Finance client search error:', e.message || e);
-        }
-      }
+      // Raw Yahoo does not depend on yahoo-finance2's schema or crumb, so it
+      // is the only Yahoo path. Empty results fall through to keyless Indian
+      // sources instead of retrying Yahoo with a stricter parser.
+      stockQuotes = (await yahooSearch(q, 10)).map((quote) => ({
+        ...quote,
+        source: 'Yahoo Finance',
+      }));
 
       if (stockQuotes.length === 0) {
         console.log('Yahoo returned no quotes; trying Tickertape.');
