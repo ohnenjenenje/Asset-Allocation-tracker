@@ -3,7 +3,6 @@ import type { ComponentProps } from 'react';
 import { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { Badge, type BadgeTone } from '@/src/components/ui/Badge';
 import { Button } from '@/src/components/ui/Button';
 import { Card } from '@/src/components/ui/Card';
 import type { AllocationNode } from '@/src/features/portfolio/analytics';
@@ -347,9 +346,6 @@ export function TargetVsActualCard({
               <>
                 <Text style={[styles.colLabel, styles.phoneActual]}>Actual</Text>
                 <Text style={[styles.colLabel, styles.phoneTarget]}>Target</Text>
-                <Text style={[styles.colLabel, styles.phoneGap, styles.colNumber]}>
-                  Gap
-                </Text>
               </>
             )}
           </View>
@@ -377,7 +373,7 @@ export function TargetVsActualCard({
         <Text style={[styles.footerText, { color: colors.muted }]}>
           {needsTargets
             ? 'Targets come from the default template until you confirm a policy.'
-            : 'The tick marks each target. Bands apply to each sleeve independently. Tap a row to inspect its holdings.'}
+            : 'The tick marks each target and the shaded zone is its tolerance band. Tap a row to inspect its holdings.'}
         </Text>
         {actionable && onPlanRebalance ? (
           <Button
@@ -437,16 +433,11 @@ function AllocationRow({
   const indent = row.depth * (isTablet ? space.xl : space.lg);
   const childScale = Math.max(row.currentPercentage, row.targetPercentage ?? 0, 5);
   const action = rowAction(row, actionable, Boolean(onAction), colors);
-  const gapTone = gapToneFor(row, actionable);
   const accessibilityLabel = rowAccessibilityLabel(row, open, hasChildren);
 
-  const gap =
+  const drift =
     row.driftPp != null ? (
-      <Badge
-        label={formatDriftPp(row.driftPp, { signed: true })}
-        tone={gapTone}
-        style={styles.gapBadge}
-      />
+      <DriftIndicator row={row} actionable={actionable} />
     ) : (
       <Text style={[styles.dash, { color: colors.muted }]}>—</Text>
     );
@@ -459,6 +450,7 @@ function AllocationRow({
         actionable={actionable}
         indent={indent}
         isTablet={isTablet}
+        showDrift={!isTablet}
       />
     ) : null;
 
@@ -517,7 +509,7 @@ function AllocationRow({
               >
                 {row.targetValue != null ? formatCompactINR(row.targetValue) : '—'}
               </Text>
-              <View style={[styles.gapCell, styles.tabletGap]}>{gap}</View>
+              <View style={[styles.gapCell, styles.tabletGap]}>{drift}</View>
               <View style={[styles.actionCell, styles.tabletAction]}>
                 {action && onAction ? (
                   <ActionButton
@@ -549,7 +541,12 @@ function AllocationRow({
                 accessibilityLabel={accessibilityLabel}
               />
               <Text
-                style={[styles.numCell, styles.phoneActual, { color: colors.text }]}
+                style={[
+                  styles.numCell,
+                  styles.phoneActual,
+                  styles.phoneActualValue,
+                  { color: colors.text },
+                ]}
                 numberOfLines={1}
               >
                 {formatPercent(row.currentPercentage, { precision: 1 })}
@@ -558,6 +555,7 @@ function AllocationRow({
                 style={[
                   styles.numCell,
                   styles.phoneTarget,
+                  styles.phoneTargetValue,
                   { color: colors.textSecondary },
                 ]}
                 numberOfLines={1}
@@ -566,7 +564,6 @@ function AllocationRow({
                   ? formatPercent(row.targetPercentage, { precision: 1 })
                   : '—'}
               </Text>
-              <View style={[styles.gapCell, styles.phoneGap]}>{gap}</View>
             </View>
 
             {bar}
@@ -619,12 +616,14 @@ interface AllocationBarProps {
   actionable: boolean;
   indent: number;
   isTablet: boolean;
+  showDrift: boolean;
 }
 
 /**
- * Per-sleeve current-vs-target bar. The fill is status-coloured for root
- * sleeves and brand-coloured for sub-sleeves; the tick marks the target on the
- * same local scale as the fill.
+ * Per-sleeve bullet chart: the filled bar is the current weight, the tick is
+ * the target, and the shaded zone is the tolerance band. The drift sits beside
+ * the bar on phones so the number stays attached to the visual instead of
+ * taking a fourth table column.
  */
 function AllocationBar({
   row,
@@ -632,6 +631,7 @@ function AllocationBar({
   actionable,
   indent,
   isTablet,
+  showDrift,
 }: AllocationBarProps) {
   const { colors } = useTheme();
   if (row.targetPercentage == null) return null;
@@ -646,10 +646,35 @@ function AllocationBar({
           ? colors.warning
           : colors.negative
       : colors.accent;
+  const bandStart =
+    row.bandPp != null
+      ? Math.max(0, row.targetPercentage - row.bandPp)
+      : null;
+  const bandEnd =
+    row.bandPp != null
+      ? Math.min(scale, row.targetPercentage + row.bandPp)
+      : null;
+  const bandLeft = bandStart != null ? barWidth(bandStart, scale) : 0;
+  const bandWidth =
+    bandStart != null && bandEnd != null
+      ? Math.max(0, barWidth(bandEnd, scale) - bandLeft)
+      : 0;
 
   return (
     <View style={[styles.sleeveBarRow, { paddingLeft: indent + (isTablet ? 19 : 34) }]}>
-      <View style={[styles.sleeveBarTrack, { backgroundColor: colors.border }]}>
+      <View style={[styles.sleeveBarTrack, { backgroundColor: colors.cardMuted }]}>
+        {bandWidth > 0 ? (
+          <View
+            style={[
+              styles.sleeveBarBandZone,
+              {
+                left: `${bandLeft}%`,
+                width: `${bandWidth}%`,
+                backgroundColor: colors.border,
+              },
+            ]}
+          />
+        ) : null}
         <View
           style={[
             styles.sleeveBarFill,
@@ -663,11 +688,48 @@ function AllocationBar({
           ]}
         />
       </View>
-      {row.bandPp != null ? (
-        <Text style={[styles.sleeveBarBand, { color: colors.textSecondary }]}>
-          Band ±{row.bandPp} pp
-        </Text>
+      {showDrift && row.driftPp != null ? (
+        <DriftIndicator row={row} actionable={actionable} />
       ) : null}
+    </View>
+  );
+}
+
+interface DriftIndicatorProps {
+  row: AllocationTableRow;
+  actionable: boolean;
+}
+
+/**
+ * Compact, borderless drift label. Direction is carried by the arrow and the
+ * colour; the exact percentage stays available without a heavy pill on every
+ * row.
+ */
+function DriftIndicator({ row, actionable }: DriftIndicatorProps) {
+  const { colors } = useTheme();
+  if (row.driftPp == null) return null;
+
+  const tone =
+    !actionable || row.status == null
+      ? colors.muted
+      : row.status === 'within'
+        ? colors.positive
+        : row.status === 'watch'
+          ? colors.warning
+          : colors.negative;
+  const icon: ComponentProps<typeof Feather>['name'] =
+    row.status === 'within'
+      ? 'check'
+      : row.driftPp >= 0
+        ? 'arrow-up-right'
+        : 'arrow-down-right';
+
+  return (
+    <View style={styles.drift}>
+      <Feather name={icon} size={11} color={tone} />
+      <Text style={[styles.driftText, { color: tone }]} numberOfLines={1}>
+        {formatDriftPp(row.driftPp, { signed: true })}
+      </Text>
     </View>
   );
 }
@@ -835,13 +897,6 @@ function phoneDetail(row: AllocationTableRow): string {
   return value;
 }
 
-function gapToneFor(row: AllocationTableRow, actionable: boolean): BadgeTone {
-  if (!actionable || row.status == null) return 'neutral';
-  if (row.status === 'within') return 'positive';
-  if (row.status === 'watch') return 'warning';
-  return 'negative';
-}
-
 function rowAction(
   row: AllocationTableRow,
   actionable: boolean,
@@ -997,9 +1052,10 @@ const styles = StyleSheet.create({
     gap: 5,
     minWidth: 0,
   },
-  phoneActual: { width: 46, textAlign: 'right' },
-  phoneTarget: { width: 46, textAlign: 'right' },
-  phoneGap: { width: 64 },
+  phoneActual: { width: 52, textAlign: 'right' },
+  phoneActualValue: { fontSize: 12.5, fontWeight: '600' },
+  phoneTarget: { width: 50, textAlign: 'right' },
+  phoneTargetValue: { fontSize: 11.5 },
   tabletActual: { width: 64, textAlign: 'right' },
   tabletCurVal: { width: 100, textAlign: 'right' },
   tabletTarget: { width: 64, textAlign: 'right' },
@@ -1023,18 +1079,32 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: space.sm,
-    marginTop: 1,
+    marginTop: 2,
   },
   sleeveBarTrack: {
     flex: 1,
-    height: 5,
+    height: 6,
     borderRadius: radius.full,
     overflow: 'hidden',
     position: 'relative',
   },
+  sleeveBarBandZone: { position: 'absolute', top: 0, bottom: 0 },
   sleeveBarFill: { height: '100%', borderRadius: radius.full },
-  sleeveBarTarget: { position: 'absolute', top: 0, bottom: 0, width: 2 },
-  sleeveBarBand: { fontSize: 9.5, fontWeight: '600' },
+  sleeveBarTarget: {
+    position: 'absolute',
+    top: -1,
+    bottom: -1,
+    width: 2,
+    borderRadius: 1,
+  },
+  drift: {
+    width: 64,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 1,
+  },
+  driftText: { ...numeric, fontSize: 10.5, fontWeight: '600' },
   chevronSlot: { width: 14, alignItems: 'center' },
   dot: { width: 8, height: 8, borderRadius: radius.full },
   holdingDot: { width: 5, height: 5, opacity: 0.5 },
@@ -1045,7 +1115,6 @@ const styles = StyleSheet.create({
   numCell: { ...numeric, fontSize: 11.5, fontWeight: '500' },
   valueCell: { ...numeric, fontSize: 11 },
   gapCell: { alignItems: 'flex-end' },
-  gapBadge: { alignSelf: 'flex-end' },
   dash: { fontSize: 11 },
   actionCell: { alignItems: 'flex-end' },
   actionText: { fontSize: 11, fontWeight: '600' },
