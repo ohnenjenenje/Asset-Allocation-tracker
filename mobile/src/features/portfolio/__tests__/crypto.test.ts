@@ -148,6 +148,40 @@ describe('crypto allocation paths', () => {
   });
 });
 
+describe('coin-specific crypto sleeves', () => {
+  it('links a coin to a user-defined sleeve by base symbol', () => {
+    expect(
+      cryptoAllocationPath(cryptoAsset({ symbol: 'XRP-USD', name: 'XRP' }), {
+        sleeveLabels: ['XRP'],
+      }),
+    ).toBe('Crypto > XRP');
+  });
+
+  it('links a coin by name, ignoring case and extra whitespace', () => {
+    expect(
+      cryptoAllocationPath(cryptoAsset({ symbol: 'DOGE-USD', name: 'Dogecoin' }), {
+        sleeveLabels: ['  dogecoin '],
+      }),
+    ).toBe('Crypto > dogecoin');
+  });
+
+  it('keeps canonical subtypes ahead of a custom sleeve', () => {
+    expect(
+      cryptoAllocationPath(cryptoAsset({ symbol: 'BTC-USD', name: 'Bitcoin' }), {
+        sleeveLabels: ['BTC'],
+      }),
+    ).toBe('Crypto > Bitcoin');
+  });
+
+  it('does not capture a different coin', () => {
+    expect(
+      cryptoAllocationPath(cryptoAsset({ symbol: 'XRP-USD', name: 'XRP' }), {
+        sleeveLabels: ['SOL'],
+      }),
+    ).toBe('Crypto');
+  });
+});
+
 describe('crypto cost basis and display', () => {
   it('distinguishes a real cost basis from an exchange placeholder', () => {
     expect(hasKnownCostBasis(cryptoAsset({ entryPrice: 50_000 }))).toBe(true);

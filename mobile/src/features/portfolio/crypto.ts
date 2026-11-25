@@ -141,12 +141,30 @@ export function isCryptoAllocationPath(path: string): boolean {
   return normalized === 'crypto' || normalized.startsWith('crypto > ');
 }
 
+function normaliseSleeveLabel(value: string): string {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+
 /**
- * Allocation path for a crypto asset. Canonical subtypes are used when known;
- * an existing custom crypto path is preserved when there is no subtype.
+ * Allocation path for a crypto asset.
+ *
+ * Order of preference:
+ * 1. A canonical subtype (explicit, legacy path, or symbol inference).
+ * 2. A custom category path already stored on the asset.
+ * 3. A coin-specific sleeve the user created under Crypto (`Crypto > XRP`),
+ *    matched by base symbol or coin name. This lets a new venue lot land in
+ *    the same sleeve without being tagged individually.
+ * 4. The Crypto root for anything still unclassified.
  */
 export function cryptoAllocationPath(
-  asset: Pick<Asset, 'symbol' | 'type' | 'categoryPath' | 'cryptoSubtype'>,
+  asset: Pick<
+    Asset,
+    'symbol' | 'name' | 'type' | 'categoryPath' | 'cryptoSubtype'
+  >,
+  options: { sleeveLabels?: readonly string[] } = {},
 ): string | null {
   if (!isCryptoAsset(asset)) return null;
 
@@ -155,6 +173,20 @@ export function cryptoAllocationPath(
 
   const existing = asset.categoryPath?.join(' > ').trim();
   if (existing && existing.toLowerCase() !== 'crypto') return existing;
+
+  // Canonical sleeve labels are already handled above. Only user-defined
+  // coin sleeves take part in this match, so a stray asset name like
+  // "Bitcoin" cannot pull a wrapped token into the canonical Bitcoin sleeve.
+  const customSleeves = (options.sleeveLabels ?? []).filter(
+    (label) => normalizeCryptoSubtype(label) === null,
+  );
+  const base = normaliseSleeveLabel(cryptoBaseSymbol(asset.symbol));
+  const name = normaliseSleeveLabel(asset.name);
+  const sleeve =
+    customSleeves.find((label) => normaliseSleeveLabel(label) === base) ??
+    customSleeves.find((label) => normaliseSleeveLabel(label) === name);
+  if (sleeve) return `Crypto > ${sleeve.trim()}`;
+
   return 'Crypto';
 }
 

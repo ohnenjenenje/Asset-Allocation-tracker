@@ -642,6 +642,19 @@ export function analyzePortfolio(input: {
   const { prices, fundHoldings, idealAllocation, usdToInr } = input;
   const assets = flattenAssets(input.assets);
 
+  // User-defined coin sleeves (`Crypto > XRP`) live in the policy targets.
+  // Pull their labels once so every lot of that coin can be matched by base
+  // symbol or name, including balances that arrive later from an exchange.
+  const cryptoSleeveLabels = [
+    ...new Set(
+      Object.keys(idealAllocation)
+        .map((path) => normalizeGroup(path))
+        .filter((path) => path.toLowerCase().startsWith('crypto > '))
+        .map((path) => path.split(' > ')[1]?.trim())
+        .filter((label): label is string => Boolean(label)),
+    ),
+  ];
+
   const values = new Map<Asset, number>();
   const equityValues = new Map<Asset, number>();
   for (const asset of assets) {
@@ -758,7 +771,9 @@ export function analyzePortfolio(input: {
     // Non-equity fallbacks: debt funds, commodities and everything outside the
     // equity sleeve keep their existing top-level treatment. Crypto gets its
     // canonical subtype child when one can be inferred or was chosen.
-    const cryptoPath = cryptoAllocationPath(asset);
+    const cryptoPath = cryptoAllocationPath(asset, {
+      sleeveLabels: cryptoSleeveLabels,
+    });
     let finalCategory = cryptoPath ? normalizeGroup(cryptoPath) : topCategory;
     if (fund && isDebtFund(data?.categoryName, asset.name)) {
       finalCategory = 'Fixed Income';

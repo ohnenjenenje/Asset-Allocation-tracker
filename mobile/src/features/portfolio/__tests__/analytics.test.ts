@@ -24,12 +24,13 @@ function analyze(
   assets: Asset[],
   prices: Record<string, PriceData>,
   fundHoldings: Record<string, FundData> = {},
+  idealAllocation: Record<string, number> = {},
 ) {
   return analyzePortfolio({
     assets,
     prices,
     fundHoldings,
-    idealAllocation: {},
+    idealAllocation,
     usdToInr: 84,
   });
 }
@@ -945,5 +946,43 @@ describe('crypto subtype allocation', () => {
         (node) => node.fullPath === 'Crypto > Other Crypto',
       )?.currentValue,
     ).toBe(Math.round(70_000 * 84 * 100));
+  });
+
+  it('links a coin to a user-defined sleeve from the policy targets', () => {
+    const xrp = asset({
+      id: 'xrp',
+      symbol: 'XRP-USD',
+      name: 'XRP',
+      type: 'CRYPTO',
+      currency: 'USD',
+      quantity: 1_000,
+      entryPrice: 0.5,
+    });
+    const xrpPrices = {
+      'XRP-USD': quote({
+        symbol: 'XRP-USD',
+        currency: 'USD',
+        regularMarketPrice: 2,
+      }),
+    };
+
+    const result = analyze([xrp], xrpPrices, {}, {
+      Crypto: 7,
+      'Crypto > XRP': 2,
+    });
+    const crypto = result.allocationAnalysis.find(
+      (node) => node.fullPath === 'Crypto',
+    );
+    const sleeve = crypto?.subCategories.find(
+      (node) => node.fullPath === 'Crypto > XRP',
+    );
+
+    expect(sleeve?.currentValue).toBe(1_000 * 2 * 84 * 100);
+    expect(sleeve?.constituents).toEqual([
+      { name: 'XRP', symbol: 'XRP', value: 1_000 * 2 * 84 * 100 },
+    ]);
+    // Once the coin has its own sleeve it is no longer an uncovered
+    // constituent sitting directly on the Crypto root.
+    expect(crypto?.constituents).toHaveLength(0);
   });
 });
