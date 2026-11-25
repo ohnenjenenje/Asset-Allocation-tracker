@@ -125,6 +125,8 @@ export interface ExposureSlice {
 export interface FundConstituent {
   name: string;
   symbol: string;
+  /** Asset to open from stock-level fund breakdowns, when available. */
+  assetId?: string;
   value: number;
   subHoldings: { name: string; symbol?: string; value: number }[];
   assetAllocation?: FundAssetAllocation | null;
@@ -1191,6 +1193,7 @@ export function analyzePortfolio(input: {
       existing.constituents.push({
         name: asset.name,
         symbol: asset.symbol,
+        assetId: asset.id,
         value: totalValue,
         subHoldings,
         assetAllocation: data?.assetAllocation,
@@ -1205,6 +1208,7 @@ export function analyzePortfolio(input: {
           {
             name: asset.name,
             symbol: asset.symbol,
+            assetId: asset.id,
             value: totalValue,
             subHoldings,
             assetAllocation: data?.assetAllocation,

@@ -223,6 +223,10 @@ describe('single-stock equity cap', () => {
             fundValue: 2_000,
             equityPercentage: 13.33,
             status: 'breach',
+            funds: [
+              { name: 'Banking Fund', value: 500 },
+              { name: 'Flexi Cap Fund', value: 1_500 },
+            ],
           },
           {
             name: 'Infosys',
@@ -242,6 +246,7 @@ describe('single-stock equity cap', () => {
     expect(check?.label).toBe('Single-stock concentration (equity)');
     expect(check?.detail).toContain('2 stocks exceed the 10% equity cap');
     expect(check?.detail).toContain('including ₹20 via funds');
+    expect(check?.detail).toContain('largest: Flexi Cap Fund ₹15');
     expect(check?.value).toBeCloseTo(13.33, 2);
     expect(check?.limit).toBe(10);
     expect(report.status).toBe('breach');
@@ -297,6 +302,7 @@ describe('single-stock equity cap', () => {
     const check = report.checks.find((item) => item.id === 'single-stock-equity');
     expect(check?.severity).toBe('ok');
     expect(check?.detail).toContain('Largest stock, HDFC Bank');
+    expect(check?.detail).not.toContain('largest:');
     expect(report.status).toBe('compliant');
   });
 });

@@ -187,6 +187,10 @@ describe('stock concentration', () => {
     expect(hdfc?.equityPercentage).toBeCloseTo(20, 6);
     expect(hdfc?.portfolioPercentage).toBeCloseTo(10, 6);
     expect(hdfc?.status).toBe('breach');
+    expect(hdfc?.funds).toEqual([]);
+    expect(report.directValue).toBe(25_000);
+    expect(report.fundValue).toBe(0);
+    expect(report.otherEquityValue).toBe(75_000);
     expect(report.breachCount).toBe(1);
     expect(report.largest?.name).toBe('HDFC Bank');
   });
@@ -215,6 +219,16 @@ describe('stock concentration', () => {
     expect(hdfc?.fundValue).toBe(15_000);
     expect(hdfc?.equityPercentage).toBeCloseTo(15, 6);
     expect(hdfc?.status).toBe('breach');
+    expect(hdfc?.funds).toHaveLength(1);
+    expect(hdfc?.funds[0]).toMatchObject({
+      key: 'Flexi Cap Fund',
+      name: 'Flexi Cap Fund',
+      value: 15_000,
+      fundValue: 100_000,
+    });
+    expect(report.directValue).toBe(0);
+    expect(report.fundValue).toBe(23_000);
+    expect(report.otherEquityValue).toBe(77_000);
     expect(report.coverage).toEqual({
       withData: 1,
       total: 1,
@@ -275,8 +289,80 @@ describe('stock concentration', () => {
     expect(report.rows[0].directValue).toBe(0);
     expect(report.rows[0].fundValue).toBe(7_000);
     expect(report.rows[0].totalValue).toBe(7_000);
+    expect(report.rows[0].funds.map((item) => item.name)).toEqual([
+      'Fund A',
+      'Fund B',
+    ]);
+    expect(report.rows[0].funds.map((item) => item.value)).toEqual([4_000, 3_000]);
+    expect(report.directValue).toBe(0);
+    expect(report.fundValue).toBe(7_000);
+    expect(report.otherEquityValue).toBe(93_000);
     expect(report.coverage.withData).toBe(2);
     expect(report.coverage.total).toBe(2);
+  });
+
+  it('merges one fund across multiple constituents into a single source line', () => {
+    const report = analyzeStockConcentration({
+      holdings: [],
+      funds: [
+        {
+          key: 'Flexi Cap Fund',
+          name: 'Flexi Cap Fund',
+          value: 100_000,
+          constituents: [
+            {
+              name: 'Flexi Cap Fund',
+              symbol: 'FLEXI-A',
+              assetId: 'fund-a',
+              value: 60_000,
+              subHoldings: [
+                { name: 'HDFC Bank', symbol: 'HDFCBANK.NS', value: 4_000 },
+              ],
+              assetAllocation: allocation,
+            },
+            {
+              name: 'Flexi Cap Fund',
+              symbol: 'FLEXI-B',
+              assetId: 'fund-b',
+              value: 40_000,
+              subHoldings: [{ name: 'HDFC Bank', value: 2_000 }],
+              assetAllocation: allocation,
+            },
+          ],
+        },
+      ],
+      equityValue: 100_000,
+    });
+
+    expect(report.rows).toHaveLength(1);
+    expect(report.rows[0].fundValue).toBe(6_000);
+    expect(report.rows[0].funds).toHaveLength(1);
+    expect(report.rows[0].funds[0]).toMatchObject({
+      key: 'Flexi Cap Fund',
+      name: 'Flexi Cap Fund',
+      value: 6_000,
+      fundValue: 100_000,
+      assetId: 'fund-a',
+    });
+  });
+
+  it('clamps other equity when disclosed stocks exceed the sleeve', () => {
+    const report = analyzeStockConcentration({
+      holdings: [
+        holding({
+          id: 'hdfc',
+          name: 'HDFC Bank',
+          symbol: 'HDFCBANK.NS',
+          value: 12_000,
+        }),
+      ],
+      funds: [],
+      equityValue: 10_000,
+    });
+
+    expect(report.directValue).toBe(12_000);
+    expect(report.fundValue).toBe(0);
+    expect(report.otherEquityValue).toBe(0);
   });
 
   it('skips debt-only schemes and still counts equity-fund coverage', () => {

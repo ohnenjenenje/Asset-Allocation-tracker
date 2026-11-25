@@ -65,6 +65,8 @@ export interface StockConcentrationCheckInput {
     fundValue: number;
     equityPercentage: number;
     status: ComplianceSeverity;
+    /** Fund-level contributions, largest first, when available. */
+    funds?: { name: string; value: number }[];
   }[];
   equityValue: number;
   limitPct: number;
@@ -361,9 +363,21 @@ export function evaluateCompliance(input: ComplianceInput): ComplianceReport {
       const watches = stockRows.filter((row) => row.status === 'watch');
       const severity: ComplianceSeverity =
         breaches.length > 0 ? 'breach' : watches.length > 0 ? 'watch' : 'ok';
+      const topFund = (topStock.funds ?? []).reduce<{
+        name: string;
+        value: number;
+      } | null>(
+        (best, fund) =>
+          fund.value > 0 && (!best || fund.value > best.value) ? fund : best,
+        null,
+      );
       const fundNote =
         topStock.fundValue > 0
-          ? `, including ${formatCompactINR(topStock.fundValue)} via funds`
+          ? `, including ${formatCompactINR(topStock.fundValue)} via funds${
+              topFund
+                ? ` · largest: ${topFund.name} ${formatCompactINR(topFund.value)}`
+                : ''
+            }`
           : '';
       const detail =
         breaches.length > 1

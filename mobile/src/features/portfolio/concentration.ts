@@ -8,8 +8,10 @@ import { isFundAsset, normalizeGroup } from './normalize';
  * other equity assets, so it is the right denominator for a stock-level cap.
  *
  * Direct stock lots and fund look-through are merged into one exposure line per
- * stock. Fund look-through is best-effort: only disclosed holdings contribute,
- * and the report carries coverage so the UI can warn about the blind spot.
+ * stock. Each row also retains the funds that contribute to it, so the UI can
+ * show which scheme to trim. Fund look-through is best-effort: only disclosed
+ * holdings contribute, and the report carries coverage so the UI can warn about
+ * the blind spot.
  */
 export const DEFAULT_STOCK_CONCENTRATION_LIMIT = 10;
 
@@ -17,6 +19,18 @@ export const DEFAULT_STOCK_CONCENTRATION_LIMIT = 10;
 export const STOCK_CONCENTRATION_WATCH_BAND_PCT = 1;
 
 export type StockConcentrationStatus = 'ok' | 'watch' | 'breach';
+
+/** A fund's look-through contribution to one stock row. */
+export interface StockConcentrationFund {
+  key: string;
+  name: string;
+  /** Value of this stock held inside the fund, in paise. */
+  value: number;
+  /** Total value of the fund, in paise, used to show the stock's fund weight. */
+  fundValue: number;
+  /** Fund asset to open from the card, when one exists. */
+  assetId?: string;
+}
 
 export interface StockConcentrationRow {
   key: string;
@@ -35,6 +49,8 @@ export interface StockConcentrationRow {
   status: StockConcentrationStatus;
   /** Direct asset to open from the card, when one exists. */
   assetId?: string;
+  /** Fund-level contributions to this stock, largest first. */
+  funds: StockConcentrationFund[];
 }
 
 export interface StockConcentrationCoverage {
@@ -53,6 +69,12 @@ export interface StockConcentrationReport {
   /** Equities sleeve value used as the denominator, in paise. */
   equityValue: number;
   portfolioValue: number;
+  /** Direct stock value across every row, in paise. */
+  directValue: number;
+  /** Disclosed fund look-through value across every row, in paise. */
+  fundValue: number;
+  /** Equity sleeve value not attributed to a disclosed single stock, in paise. */
+  otherEquityValue: number;
   limitPct: number;
   breachCount: number;
   watchCount: number;
@@ -81,6 +103,10 @@ interface StockSource {
   value: number;
   kind: SourceKind;
   assetId?: string;
+  /** Fund identity for fund look-through sources. */
+  fundKey?: string;
+  fundName?: string;
+  fundValue?: number;
 }
 
 interface RowBuilder {
@@ -90,6 +116,7 @@ interface RowBuilder {
   fundName?: string;
   symbol?: string;
   assetId?: string;
+  funds: Map<string, StockConcentrationFund>;
 }
 
 const RESIDUAL_NAMES = new Set([
@@ -304,6 +331,10 @@ export function analyzeStockConcentration(
           symbol: holding.symbol,
           value: holding.value,
           kind: 'fund',
+          fundKey: fund.key,
+          fundName: fund.name,
+          fundValue: fund.value,
+          assetId: constituent.assetId,
         });
       }
     }
@@ -351,6 +382,7 @@ export function analyzeStockConcentration(
     const builder = builders.get(root) ?? {
       directValue: 0,
       fundValue: 0,
+      funds: new Map<string, StockConcentrationFund>(),
     };
     builders.set(root, builder);
 
@@ -361,6 +393,22 @@ export function analyzeStockConcentration(
     } else {
       builder.fundValue += source.value;
       builder.fundName = shorterName(builder.fundName, source.name);
+      if (source.fundKey && source.fundName) {
+        const existing = builder.funds.get(source.fundKey);
+        if (existing) {
+          existing.value += source.value;
+          existing.fundValue = Math.max(existing.fundValue, source.fundValue ?? 0);
+          existing.assetId = existing.assetId ?? source.assetId;
+        } else {
+          builder.funds.set(source.fundKey, {
+            key: source.fundKey,
+            name: source.fundName,
+            value: source.value,
+            fundValue: source.fundValue ?? 0,
+            assetId: source.assetId,
+          });
+        }
+      }
     }
     builder.symbol = builder.symbol ?? source.symbol;
   });
@@ -376,6 +424,9 @@ export function analyzeStockConcentration(
         : `name:${normalizeStockName(name)}`;
       const equityPercentage =
         equityValue > 0 ? (totalValue / equityValue) * 100 : 0;
+      const funds = [...builder.funds.values()]
+        .filter((fund) => fund.value > 0)
+        .sort((a, b) => b.value - a.value || a.name.localeCompare(b.name));
       return {
         key,
         name,
@@ -388,6 +439,7 @@ export function analyzeStockConcentration(
           portfolioValue > 0 ? (totalValue / portfolioValue) * 100 : 0,
         status: stockConcentrationStatus(equityPercentage, limitPct),
         assetId: builder.assetId,
+        funds,
       };
     })
     .filter((row) => row.totalValue > 0)
@@ -398,12 +450,17 @@ export function analyzeStockConcentration(
         a.name.localeCompare(b.name),
     );
 
-  const coveredValue = rows.reduce((sum, row) => sum + row.fundValue, 0);
+  const directValue = rows.reduce((sum, row) => sum + row.directValue, 0);
+  const fundValue = rows.reduce((sum, row) => sum + row.fundValue, 0);
+  const otherEquityValue = Math.max(0, equityValue - directValue - fundValue);
 
   return {
     rows,
     equityValue,
     portfolioValue,
+    directValue,
+    fundValue,
+    otherEquityValue,
     limitPct,
     breachCount: rows.filter((row) => row.status === 'breach').length,
     watchCount: rows.filter((row) => row.status === 'watch').length,
@@ -411,7 +468,7 @@ export function analyzeStockConcentration(
     coverage: {
       withData: equityFundsWithData,
       total: equityFunds,
-      coveredValue,
+      coveredValue: fundValue,
       fundValue: equityFundValue,
     },
   };

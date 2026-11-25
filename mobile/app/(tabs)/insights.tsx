@@ -195,6 +195,7 @@ export default function InsightsScreen() {
                   onSelect={(row) => {
                     if (row.assetId) router.push(`/asset/${row.assetId}`);
                   }}
+                  onSelectFund={(assetId) => router.push(`/asset/${assetId}`)}
                 />
               </View>
             </View>
