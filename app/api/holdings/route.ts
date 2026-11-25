@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { GoogleAuth } from 'google-auth-library';
 import { normalizeSectorWeightings } from '@/lib/portfolio-utils';
+import { cleanFundNameForSearch, getGrowwFundPortfolio } from '@/lib/market/groww';
 import {
   yahooChartQuote,
   yahooQuoteSummary,
@@ -562,7 +563,7 @@ export async function GET(request: Request) {
             console.log(`Found Yahoo symbol in sheet: ${symbol} -> ${yfSymbol}`);
           } else if (name) {
             console.log(`Target symbol is a mutual fund (${symbol}), searching Yahoo Finance by name: ${name}`);
-            const cleanName = name.replace(/Direct Plan|Retail Plan|Regular Plan|Direct|Regular|Growth|IDCW|Dividend|Option|Plan|Scheme|Index Fund|Fund|Index/gi, '').replace(/-/g, ' ').replace(/\s+/g, ' ').trim();
+            const cleanName = cleanFundNameForSearch(name);
             const ySearch = await yahooSearch(cleanName, 8);
             const candidates = ySearch
               .filter((q) => q.quoteType === 'MUTUALFUND' || q.quoteType === 'ETF')
@@ -634,6 +635,18 @@ export async function GET(request: Request) {
         }
       } catch (e: any) {
         console.error(`Yahoo Finance fetch failed for ${lookupSymbol}`, e);
+      }
+    }
+
+    // Yahoo is rate-limited on shared cloud IPs and sometimes returns only a
+    // sector split. Groww publishes the exact mutual-fund portfolio, so use it
+    // whenever Yahoo has no individual holdings.
+    const hasYahooHoldings =
+      Array.isArray(tickertapeData?.holdings) && tickertapeData.holdings.length > 0;
+    if (!hasYahooHoldings) {
+      const growwData = await getGrowwFundPortfolio(symbol, name);
+      if (growwData) {
+        tickertapeData = { ...(tickertapeData || {}), ...growwData };
       }
     }
 
