@@ -215,9 +215,9 @@ export function AssetForm({
               Crypto subtype
             </Text>
             <Text style={[type.caption, { color: colors.muted }]}>
-              BTC, ETH and the known stablecoins are detected automatically.
-              Memecoins and other coins need an explicit choice so nothing is
-              guessed from the name.
+              BTC, ETH, known stablecoins and major memecoins are detected
+              automatically. Every other coin falls back to Other Crypto, so
+              exchange balances need no manual tagging.
             </Text>
             <View style={styles.chips}>
               <Chip
@@ -247,7 +247,7 @@ export function AssetForm({
                 ? `Explicit override: ${values.cryptoSubtype}`
                 : cryptoSubtypeFromSymbol(values.symbol)
                   ? `Auto: ${cryptoSubtypeFromSymbol(values.symbol)}`
-                  : 'Auto: no subtype detected — this holding stays directly under Crypto.'}
+                  : 'Auto: Other Crypto'}
             </Text>
           </>
         ) : null}

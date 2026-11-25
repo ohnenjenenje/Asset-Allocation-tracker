@@ -7,8 +7,10 @@ import type { Asset, CryptoSubtype } from './types';
  * coin identity used by both the allocation tree and the consolidated holdings
  * view.
  *
- * Unknown coins deliberately return no subtype: they stay directly under
- * `Crypto` instead of being guessed into Memecoins or Other Crypto.
+ * Exchange syncs can bring in hundreds of small balances, so classification is
+ * automatic: BTC/ETH, known stablecoins and known memecoins get their own
+ * sleeve, and every other coin falls back to Other Crypto. An explicit subtype
+ * or a user-defined coin sleeve always wins.
  */
 export const CRYPTO_SUBTYPES: readonly CryptoSubtype[] = [
   'Bitcoin',
@@ -30,6 +32,14 @@ export const STABLECOIN_BASES = new Set([
   'PYUSD',
   'USDD',
   'GUSD',
+  'USDE',
+  'USDS',
+  'FRAX',
+  'LUSD',
+  'GHO',
+  'CRVUSD',
+  'SUSD',
+  'EURC',
 ]);
 
 const STABLECOIN_NAMES: Record<string, string> = {
@@ -43,7 +53,64 @@ const STABLECOIN_NAMES: Record<string, string> = {
   PYUSD: 'PayPal USD',
   USDD: 'USDD',
   GUSD: 'Gemini Dollar',
+  USDE: 'Ethena USDe',
+  USDS: 'Sky Dollar',
+  FRAX: 'Frax',
+  LUSD: 'Liquity USD',
+  GHO: 'GHO',
+  CRVUSD: 'Curve USD',
+  SUSD: 'Synthetix USD',
+  EURC: 'Euro Coin',
 };
+
+/**
+ * Well-known meme coins, kept intentionally conservative. Anything missing
+ * still ends up in Other Crypto automatically, and an explicit subtype can
+ * override this list.
+ */
+const MEMECOIN_BASES = new Set([
+  'DOGE',
+  'SHIB',
+  'PEPE',
+  'FLOKI',
+  'BONK',
+  'WIF',
+  'BOME',
+  'MOG',
+  'BRETT',
+  'POPCAT',
+  'TURBO',
+  'NEIRO',
+  'SLERF',
+  'MYRO',
+  'WEN',
+  'PENGU',
+  'FARTCOIN',
+  'PNUT',
+  'TRUMP',
+  'MELANIA',
+  'CHILLGUY',
+  'MOODENG',
+  'BABYDOGE',
+  'SAFEMOON',
+  'AKITA',
+  'SAMO',
+  'MEW',
+  'PONKE',
+  'DEGEN',
+  'MUMU',
+  'BILLY',
+  'GIGA',
+  'TROLL',
+  'LADYS',
+]);
+
+/** Exchange contracts sometimes prefix meme coins with 1000 or 1M. */
+function memecoinBase(base: string): string {
+  if (base.startsWith('1000')) return base.slice(4);
+  if (base.startsWith('1M')) return base.slice(2);
+  return base;
+}
 
 const FIAT_BASES = new Set(['USD', 'INR', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY']);
 
@@ -87,12 +154,19 @@ export function cryptoBaseSymbol(symbol: string): string {
   return normalized;
 }
 
-/** Subtype inferred from the symbol alone. Never guesses a meme coin. */
+/**
+ * Subtype inferred from the symbol alone: BTC, ETH, known stablecoins and
+ * known memecoins. Every other coin returns null and falls back to Other
+ * Crypto at the allocation layer.
+ */
 export function cryptoSubtypeFromSymbol(symbol: string): CryptoSubtype | null {
   const base = cryptoBaseSymbol(symbol);
   if (base === 'BTC') return 'Bitcoin';
   if (base === 'ETH') return 'Ethereum';
   if (STABLECOIN_BASES.has(base)) return 'Stablecoins';
+  if (MEMECOIN_BASES.has(base) || MEMECOIN_BASES.has(memecoinBase(base))) {
+    return 'Memecoins';
+  }
   return null;
 }
 
@@ -113,7 +187,8 @@ export function normalizeCryptoSubtype(
 
 /**
  * Explicit subtype wins, then the legacy `categoryPath[1]` label, then symbol
- * inference. Assets without any of those stay directly under `Crypto`.
+ * inference. Assets without any of those fall back to Other Crypto when they
+ * are allocated.
  */
 export function cryptoSubtypeForAsset(
   asset: Pick<Asset, 'symbol' | 'cryptoSubtype' | 'categoryPath'>,
@@ -157,7 +232,8 @@ function normaliseSleeveLabel(value: string): string {
  * 3. A coin-specific sleeve the user created under Crypto (`Crypto > XRP`),
  *    matched by base symbol or coin name. This lets a new venue lot land in
  *    the same sleeve without being tagged individually.
- * 4. The Crypto root for anything still unclassified.
+ * 4. Other Crypto as the automatic catch-all, so exchange dust never needs
+ *    to be tagged by hand.
  */
 export function cryptoAllocationPath(
   asset: Pick<
@@ -187,7 +263,7 @@ export function cryptoAllocationPath(
     customSleeves.find((label) => normaliseSleeveLabel(label) === name);
   if (sleeve) return `Crypto > ${sleeve.trim()}`;
 
-  return 'Crypto';
+  return 'Crypto > Other Crypto';
 }
 
 /** Stable display name for a consolidated coin position. */

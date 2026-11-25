@@ -53,13 +53,16 @@ describe('crypto base symbols', () => {
 });
 
 describe('crypto subtype inference', () => {
-  it('auto-detects only BTC, ETH and the known stablecoin list', () => {
+  it('auto-detects BTC, ETH, known stablecoins and known memecoins', () => {
     expect(cryptoSubtypeFromSymbol('BTC-USD')).toBe('Bitcoin');
     expect(cryptoSubtypeFromSymbol('ETH-INR')).toBe('Ethereum');
     expect(cryptoSubtypeFromSymbol('USDT')).toBe('Stablecoins');
     expect(cryptoSubtypeFromSymbol('USDC-USD')).toBe('Stablecoins');
-    expect(cryptoSubtypeFromSymbol('DOGE-USD')).toBeNull();
-    expect(cryptoSubtypeFromSymbol('SHIB-USD')).toBeNull();
+    expect(cryptoSubtypeFromSymbol('DOGE-USD')).toBe('Memecoins');
+    expect(cryptoSubtypeFromSymbol('SHIB-USD')).toBe('Memecoins');
+    expect(cryptoSubtypeFromSymbol('PENGU-USD')).toBe('Memecoins');
+    expect(cryptoSubtypeFromSymbol('1000PEPE-USD')).toBe('Memecoins');
+    expect(cryptoSubtypeFromSymbol('XRP-USD')).toBeNull();
   });
 
   it('lets an explicit subtype override symbol inference', () => {
@@ -70,7 +73,12 @@ describe('crypto subtype inference', () => {
     ).toBe('Other Crypto');
     expect(
       cryptoSubtypeForAsset(
-        cryptoAsset({ symbol: 'DOGE-USD', cryptoSubtype: 'Memecoins' }),
+        cryptoAsset({ symbol: 'DOGE-USD', cryptoSubtype: 'Other Crypto' }),
+      ),
+    ).toBe('Other Crypto');
+    expect(
+      cryptoSubtypeForAsset(
+        cryptoAsset({ symbol: 'XRP-USD', cryptoSubtype: 'Memecoins' }),
       ),
     ).toBe('Memecoins');
   });
@@ -102,12 +110,25 @@ describe('crypto allocation paths', () => {
     ).toBe('Crypto > Stablecoins');
   });
 
-  it('leaves unknown coins directly under Crypto instead of guessing', () => {
+  it('detects known memecoins without an explicit choice', () => {
     expect(
       cryptoAllocationPath(
-        cryptoAsset({ symbol: 'DOGE-USD', name: 'Dogecoin' }),
+        cryptoAsset({ symbol: 'SHIB-USD', name: 'Shiba Inu' }),
       ),
-    ).toBe('Crypto');
+    ).toBe('Crypto > Memecoins');
+  });
+
+  it('uses Other Crypto automatically for every other coin', () => {
+    expect(
+      cryptoAllocationPath(
+        cryptoAsset({ symbol: 'XRP-USD', name: 'XRP' }),
+      ),
+    ).toBe('Crypto > Other Crypto');
+    expect(
+      cryptoAllocationPath(
+        cryptoAsset({ symbol: 'MYSTERY-USD', name: 'Mystery Coin' }),
+      ),
+    ).toBe('Crypto > Other Crypto');
   });
 
   it('honours an explicit memecoin or other-crypto choice', () => {
@@ -159,10 +180,10 @@ describe('coin-specific crypto sleeves', () => {
 
   it('links a coin by name, ignoring case and extra whitespace', () => {
     expect(
-      cryptoAllocationPath(cryptoAsset({ symbol: 'DOGE-USD', name: 'Dogecoin' }), {
-        sleeveLabels: ['  dogecoin '],
+      cryptoAllocationPath(cryptoAsset({ symbol: 'XRP-USD', name: 'Ripple' }), {
+        sleeveLabels: ['  ripple '],
       }),
-    ).toBe('Crypto > dogecoin');
+    ).toBe('Crypto > ripple');
   });
 
   it('keeps canonical subtypes ahead of a custom sleeve', () => {
@@ -178,7 +199,7 @@ describe('coin-specific crypto sleeves', () => {
       cryptoAllocationPath(cryptoAsset({ symbol: 'XRP-USD', name: 'XRP' }), {
         sleeveLabels: ['SOL'],
       }),
-    ).toBe('Crypto');
+    ).toBe('Crypto > Other Crypto');
   });
 });
 

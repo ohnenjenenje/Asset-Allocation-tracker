@@ -823,7 +823,6 @@ describe('crypto subtype allocation', () => {
     currency: 'USD',
     quantity: 1_000,
     entryPrice: 0.08,
-    cryptoSubtype: 'Memecoins',
   });
   const unknown = asset({
     id: 'mystery',
@@ -863,7 +862,7 @@ describe('crypto subtype allocation', () => {
     }),
   };
 
-  it('splits crypto into canonical subtypes and leaves unknown coins at the root', () => {
+  it('splits crypto into canonical subtypes and sends unknowns to Other Crypto', () => {
     const result = analyze(
       [btcBinance, btcCoindcx, ethereum, tether, dogecoin, unknown],
       prices,
@@ -902,13 +901,12 @@ describe('crypto subtype allocation', () => {
     expect(
       crypto?.subCategories.find(
         (node) => node.fullPath === 'Crypto > Other Crypto',
-      ),
-    ).toBeUndefined();
+      )?.currentValue,
+    ).toBe(Math.round(10 * 2 * 84 * 100));
 
-    expect(crypto?.constituents.map((item) => item.symbol)).toEqual([
-      'MYSTERY',
-    ]);
-    expect(crypto?.constituents[0]?.value).toBe(Math.round(10 * 2 * 84 * 100));
+    // Every crypto lot now belongs to a child sleeve; nothing is left as an
+    // unclassified constituent on the Crypto root.
+    expect(crypto?.constituents).toHaveLength(0);
     expect(crypto?.currentValue).toBeCloseTo(
       Math.round(0.5 * 70_000 * 84 * 100 * 2) +
         Math.round(3_000 * 84 * 100) +
