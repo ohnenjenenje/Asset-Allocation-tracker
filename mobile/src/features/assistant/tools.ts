@@ -201,7 +201,7 @@ function findAsset(item: any, assets: Asset[]): Asset | null {
 export function buildAssetProposal(
   raw: any,
   assets: Asset[],
-): { proposal: AssetUpdateProposal } | { error: string } {
+): { proposal: AssetUpdateProposal } | { error: string; noChange?: boolean } {
   const rawUpdates = Array.isArray(raw?.updates) ? raw.updates.slice(0, 50) : [];
   if (rawUpdates.length === 0) {
     return { error: 'No changes were provided.' };
@@ -213,11 +213,18 @@ export function buildAssetProposal(
       : 'Screenshot changes';
 
   const merged = new Map<string, AssetUpdate>();
+  const matched = new Map<string, Asset>();
+  const unmatched: string[] = [];
 
   for (const item of rawUpdates) {
     if (!item || typeof item !== 'object') continue;
     const asset = findAsset(item, assets);
-    if (!asset) continue;
+    if (!asset) {
+      const label = String(item.symbol || item.name || '').trim();
+      if (label) unmatched.push(label);
+      continue;
+    }
+    matched.set(asset.id, asset);
 
     const existing = merged.get(asset.id);
     const changes = new Map<AssetChangeField, AssetChange>(
@@ -299,7 +306,22 @@ export function buildAssetProposal(
   }
 
   if (merged.size === 0) {
-    return { error: 'None of the screenshot rows matched an existing holding, or no value changed.' };
+    if (matched.size === 0) {
+      return { error: 'None of the screenshot rows matched an existing holding.' };
+    }
+
+    const labels = [...matched.values()]
+      .slice(0, 5)
+      .map((asset) => `${asset.name} (${asset.symbol})`);
+    const verb = labels.length === 1 ? 'already matches' : 'already match';
+    const unmatchedNote =
+      unmatched.length > 0
+        ? ` These rows did not match: ${unmatched.slice(0, 5).join(', ')}.`
+        : '';
+    return {
+      error: `Those holdings ${verb} the screenshot: ${labels.join(', ')}. No changes needed.${unmatchedNote}`,
+      noChange: true,
+    };
   }
 
   return {

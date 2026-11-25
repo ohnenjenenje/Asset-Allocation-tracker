@@ -397,7 +397,7 @@ export function useAssistant(
                 id: nextId(),
                 role: 'assistant',
                 content: result.error,
-                error: true,
+                ...(result.noChange ? {} : { error: true }),
               },
             ]);
             return;

@@ -312,12 +312,40 @@ describe('buildAssetProposal', () => {
       assets,
     );
     expect('error' in noMatch).toBe(true);
+    if (!('error' in noMatch)) return;
+    expect(noMatch.noChange).toBeUndefined();
+    expect(noMatch.error).toBe('None of the screenshot rows matched an existing holding.');
 
     const noChange = buildAssetProposal(
       { summary: 'x', updates: [{ symbol: 'HDFCBANK.NS', quantity: 10 }] },
       assets,
     );
     expect('error' in noChange).toBe(true);
+    if (!('error' in noChange)) return;
+    expect(noChange.noChange).toBe(true);
+    expect(noChange.error).toContain('already matches the screenshot');
+    expect(noChange.error).toContain('HDFC Bank (HDFCBANK.NS)');
+  });
+
+  it('lists every matched holding when the screenshot is already up to date', () => {
+    const result = buildAssetProposal(
+      {
+        summary: 'US holdings screenshot',
+        updates: [
+          { name: 'HDFC Bank', quantity: 10, entryPrice: 100 },
+          { name: 'Nifty 50 Index Fund', quantity: 125.5, entryPrice: 42.125 },
+          { symbol: 'UNKNOWN', quantity: 1 },
+        ],
+      },
+      assets,
+    );
+
+    expect('error' in result).toBe(true);
+    if (!('error' in result)) return;
+    expect(result.noChange).toBe(true);
+    expect(result.error).toContain('HDFC Bank (HDFCBANK.NS)');
+    expect(result.error).toContain('Nifty 50 Index Fund (MF_140084)');
+    expect(result.error).toContain('These rows did not match: UNKNOWN.');
   });
 
   it('records a manual price separately and de-duplicates repeated rows', () => {
