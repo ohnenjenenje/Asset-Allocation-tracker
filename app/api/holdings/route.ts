@@ -573,6 +573,11 @@ export async function GET(request: Request) {
             if (best) {
               yfSymbol = best;
               console.log(`Found Yahoo symbol via name search: ${yfSymbol}`);
+            } else if (/^0P/i.test(symbol)) {
+              // The sheet symbol is already a Morningstar/Yahoo fund ID. Name
+              // search can miss renamed funds, so retry the exact symbol.
+              yfSymbol = symbol;
+              console.log(`Falling back to the original Morningstar symbol for Yahoo: ${yfSymbol}`);
             } else {
               console.log(`Could not find Yahoo symbol for name: ${cleanName}`);
               skipYahoo = true;
