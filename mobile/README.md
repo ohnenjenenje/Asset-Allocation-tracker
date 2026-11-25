@@ -84,6 +84,7 @@ app/                      routes only
   (tabs)/                 Allocation (home) · Holdings · Insights · Research · Settings
     research/             Signals/Tools shell + gold-silver, india-pe, sectors details
   screener.tsx            stock screener (opened from Research)
+  concentration.tsx       full searchable stock-concentration register
   policy.tsx              sleeve targets, bands and review cadence (modal)
   rebalance.tsx           contribution-first rebalance planner
   asset/new.tsx           add holding (modal)
