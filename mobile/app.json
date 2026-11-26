@@ -52,6 +52,13 @@
     ],
     "experiments": {
       "typedRoutes": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "26adf139-6b6c-4bc9-8f52-2e715291a442"
+      }
+    },
+    "owner": "gowthamleo"
   }
 }
