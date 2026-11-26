@@ -18,7 +18,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: mobile
@@ -41,14 +41,37 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Set up the Android SDK
-        uses: android-actions/setup-android@v3
-
+      # The ubuntu-latest image already ships an Android SDK with API 36 and
+      # build-tools 36.0.0. Do not use android-actions/setup-android: it pulls
+      # the discontinued legacy `tools` package and fails before the build.
       - name: Install the Android SDK packages Expo needs
         working-directory: .
+        env:
+          ANDROID_HOME: /usr/local/lib/android/sdk
+          ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
         run: |
-          yes | sdkmanager --licenses > /dev/null
-          sdkmanager "platforms;android-36" "build-tools;36.0.0"
+          set -euo pipefail
+
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(command -v sdkmanager)"
+          fi
+          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+
+          # Accept licenses so Gradle may auto-install anything else it needs.
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+
+          # Expo 57 / RN 0.86 pins compileSdk 36, build-tools 36.0.0,
+          # NDK 27.1.12297006 and CMake 3.22.1. The image has the first two,
+          # but its default NDK is 27.3, so install the exact versions.
+          "$SDKMANAGER" --install \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;27.1.12297006" \
+            "cmake;3.22.1"
+
+          "$SDKMANAGER" --list_installed
+
 
       - name: Install JavaScript dependencies
         run: npm ci
