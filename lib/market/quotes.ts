@@ -484,6 +484,21 @@ const COINGECKO_IDS: Record<string, string> = {
   XRP: 'ripple',
 };
 
+/**
+ * True for a `-USD` pair whose base ticker is a known crypto asset.
+ *
+ * Yahoo's crypto pairs are not authoritative and can resolve to a different
+ * coin with the same ticker: `XAI-USD` is SideShift Token on Yahoo, while the
+ * Xai blockchain coin that exchanges list under XAI trades at a very different
+ * price. Such pairs must resolve through crypto-native providers or stay
+ * unavailable; they must never fall through to Yahoo.
+ */
+export function isMappedCryptoPair(symbol: string): boolean {
+  const upper = symbol.toUpperCase();
+  if (!upper.endsWith('-USD')) return false;
+  return Boolean(COINGECKO_IDS[upper.slice(0, -4)]);
+}
+
 async function fetchCoinGeckoQuote(
   symbol: string,
 ): Promise<MarketQuote | null> {

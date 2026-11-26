@@ -1,7 +1,11 @@
 import { setDefaultResultOrder } from 'node:dns';
 import { NextResponse } from 'next/server';
 import { GoogleAuth } from 'google-auth-library';
-import { fetchFallbackQuote, fetchYahooChartQuote } from '@/lib/market/quotes';
+import {
+  fetchFallbackQuote,
+  fetchYahooChartQuote,
+  isMappedCryptoPair,
+} from '@/lib/market/quotes';
 import { getNseCapCategories } from '@/lib/market/nseCapCategories';
 import {
   isYahooCoolingDown,
@@ -108,7 +112,15 @@ const safeQuote = async (symbol: string) => {
   // symbols the direct providers cannot resolve.
   let quote = await fetchFallbackQuote(symbol);
 
-  if (!quote && yahooAllowed() && !isYahooCoolingDown()) {
+  // Yahoo resolves some crypto pairs to a different coin with the same ticker
+  // (XAI-USD is SideShift Token there, not the Xai held on exchanges). A wrong
+  // live price is worse than no quote, so keep mapped crypto pairs off Yahoo.
+  if (
+    !quote &&
+    !isMappedCryptoPair(symbol) &&
+    yahooAllowed() &&
+    !isYahooCoolingDown()
+  ) {
     quote = await fetchYahooChartQuote(symbol);
     if (quote) resetYahooFailures();
     else markYahooFailure();
