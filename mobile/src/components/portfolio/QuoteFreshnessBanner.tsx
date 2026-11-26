@@ -1,15 +1,23 @@
 import { Banner } from '@/src/components/ui/Banner';
 import type { ExchangeSyncIssue } from '@/src/features/portfolio/queries';
+import {
+  describeStaleQuotes,
+  type StaleQuote,
+} from '@/src/features/portfolio/quoteFreshness';
 import { formatRelativeTime } from '@/src/lib/format/time';
 
 interface QuoteFreshnessBannerProps {
   staleQuoteCount: number;
+  /** Cached symbols, so the banner can name the holding instead of counting. */
+  staleQuotes?: readonly StaleQuote[];
   exchangeIsCached: boolean;
   /** Exchanges whose balances came from the cache, e.g. `['CoinDCX']`. */
   cachedExchangeNames?: string[];
   exchangeLastSyncedAt: number | null;
   exchangeIssues?: ExchangeSyncIssue[];
   onRefresh?: () => void;
+  /** Opens the single cached holding from the banner. */
+  onOpenStale?: (quote: StaleQuote) => void;
 }
 
 function friendlyExchangeError(message: string): string {
@@ -40,11 +48,13 @@ function issueSummary(issues: ExchangeSyncIssue[] | undefined): string {
  */
 export function QuoteFreshnessBanner({
   staleQuoteCount,
+  staleQuotes,
   exchangeIsCached,
   cachedExchangeNames,
   exchangeLastSyncedAt,
   exchangeIssues,
   onRefresh,
+  onOpenStale,
 }: QuoteFreshnessBannerProps) {
   const issueText = issueSummary(exchangeIssues);
 
@@ -84,13 +94,27 @@ export function QuoteFreshnessBanner({
   }
 
   if (staleQuoteCount > 0) {
+    const cached = staleQuotes ?? [];
+    const single = cached.length === 1 ? cached[0] : null;
+    const openable = single?.assetId && onOpenStale ? single : null;
+
     return (
       <Banner
         tone="warning"
         icon="clock"
-        message={`${staleQuoteCount} ${staleQuoteCount === 1 ? 'price is' : 'prices are'} using a cached value because a live quote was unavailable.`}
-        actionLabel={onRefresh ? 'Refresh' : undefined}
-        onAction={onRefresh}
+        message={
+          cached.length > 0
+            ? describeStaleQuotes(cached)
+            : `${staleQuoteCount} ${
+                staleQuoteCount === 1 ? 'price is' : 'prices are'
+              } using a cached value because a live quote was unavailable.`
+        }
+        actionLabel={
+          openable ? 'View holding' : onRefresh ? 'Refresh' : undefined
+        }
+        onAction={
+          openable ? () => onOpenStale?.(openable) : onRefresh
+        }
       />
     );
   }

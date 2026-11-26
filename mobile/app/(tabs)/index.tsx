@@ -26,6 +26,7 @@ import {
   equitySleeveValue,
 } from '@/src/features/portfolio/concentration';
 import type { PolicyUnmanagedSlice } from '@/src/features/portfolio/policy';
+import { oldestStaleQuoteAsOf } from '@/src/features/portfolio/quoteFreshness';
 import { useAuth } from '@/src/features/auth/AuthProvider';
 import { usePortfolioData } from '@/src/features/portfolio/queries';
 import { formatCompactINR, formatPercent } from '@/src/lib/format/money';
@@ -57,6 +58,7 @@ export default function AllocationHomeScreen() {
     lastSyncedAt,
     quotesAsOf,
     staleQuoteCount,
+    staleQuotes,
     exchangeIsCached,
     cachedExchangeNames,
     exchangeLastSyncedAt,
@@ -99,11 +101,19 @@ export default function AllocationHomeScreen() {
 
   const syncedLabel = lastSyncedAt ? formatRelativeTime(lastSyncedAt) : null;
   const quotesLabel = quotesAsOf ? formatRelativeTime(quotesAsOf) : null;
+  const oldestCachedAt = oldestStaleQuoteAsOf(staleQuotes);
+  const cachedLabel = oldestCachedAt ? formatRelativeTime(oldestCachedAt) : null;
   const subtitle = isRefreshing && syncedLabel
     ? 'Refreshing your allocation…'
     : syncedLabel
       ? `Updated ${syncedLabel} · ${summary.positionCount} holdings${
-          quotesLabel ? ` · quotes ${quotesLabel}` : ''
+          staleQuotes.length > 0
+            ? ` · ${staleQuotes.length} ${
+                staleQuotes.length === 1 ? 'price' : 'prices'
+              }${cachedLabel ? ` from ${cachedLabel}` : ' cached'}`
+            : quotesLabel && quotesLabel !== 'just now'
+              ? ` · oldest quote ${quotesLabel}`
+              : ''
         }`
       : 'Target versus current allocation';
 
@@ -165,11 +175,19 @@ export default function AllocationHomeScreen() {
 
         <QuoteFreshnessBanner
           staleQuoteCount={staleQuoteCount}
+          staleQuotes={staleQuotes}
           exchangeIsCached={exchangeIsCached}
           cachedExchangeNames={cachedExchangeNames}
           exchangeLastSyncedAt={exchangeLastSyncedAt}
           exchangeIssues={exchangeIssues}
           onRefresh={isDemo ? undefined : refetch}
+          onOpenStale={
+            isDemo
+              ? undefined
+              : (quote) => {
+                  if (quote.assetId) router.push(`/asset/${quote.assetId}`);
+                }
+          }
         />
 
         {error ? (

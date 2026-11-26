@@ -24,6 +24,7 @@ import {
 import { demoAssets, demoFundHoldings, demoPrices, screenDemoStocks } from './demo';
 import { mergeFundData } from './merge';
 import { isFundAsset, readCachedExchange } from './normalize';
+import type { StaleQuote } from './quoteFreshness';
 import {
   buildPolicyHistory,
   buildPolicyUpdate,
@@ -473,18 +474,13 @@ export function usePortfolioData() {
     return { ...exchange.prices, ...(pricesQuery.data ?? {}) };
   }, [isDemo, exchange.prices, pricesQuery.data]);
 
-  const quoteFreshness = useMemo(() => {
-    const quotes = Object.values(prices).filter(
-      (quote) => quote.regularMarketPrice != null,
-    );
-    const timestamps = quotes
+  const quotesAsOf = useMemo(() => {
+    const timestamps = Object.values(prices)
+      .filter((quote) => quote.regularMarketPrice != null)
       .map((quote) => quote.asOf)
       .filter((value): value is number => typeof value === 'number' && value > 0);
 
-    return {
-      quotesAsOf: timestamps.length > 0 ? Math.min(...timestamps) : null,
-      staleQuoteCount: quotes.filter((quote) => quote.stale).length,
-    };
+    return timestamps.length > 0 ? Math.min(...timestamps) : null;
   }, [prices]);
   const usdToInr = prices['INR=X']?.regularMarketPrice ?? DEFAULT_USD_TO_INR;
 
@@ -521,6 +517,39 @@ export function usePortfolioData() {
   const idealAllocation = policyConfig.targets;
 
   const summary = useMemo(() => summarize(assets, prices, usdToInr), [assets, prices, usdToInr]);
+
+  /**
+   * Cached quotes the price API could not refresh. Naming them here lets the
+   * freshness banner say which holding is affected instead of only how many.
+   * Oldest first so a single date summarises the group.
+   */
+  const staleQuotes = useMemo<StaleQuote[]>(() => {
+    if (isDemo) return [];
+    const holdingsBySymbol = new Map(
+      summary.holdings.map((holding) => [holding.asset.symbol, holding]),
+    );
+
+    return Object.values(prices)
+      .filter((quote) => quote.stale && quote.regularMarketPrice != null)
+      .map((quote) => {
+        const holding = holdingsBySymbol.get(quote.symbol);
+        return {
+          symbol: quote.symbol,
+          name:
+            holding?.asset.name ||
+            quote.shortName ||
+            (quote.symbol === 'INR=X' ? 'USD/INR rate' : quote.symbol),
+          assetId: holding?.asset.id ?? null,
+          asOf: quote.asOf ?? null,
+        };
+      })
+      .sort((a, b) => {
+        if (a.asOf == null && b.asOf == null) return 0;
+        if (a.asOf == null) return 1;
+        if (b.asOf == null) return -1;
+        return a.asOf - b.asOf;
+      });
+  }, [isDemo, prices, summary.holdings]);
 
   const analytics = useMemo(
     () =>
@@ -582,8 +611,9 @@ export function usePortfolioData() {
     isDemo,
     progress,
     lastSyncedAt: isDemo ? null : snapshotQuery.dataUpdatedAt || null,
-    quotesAsOf: quoteFreshness.quotesAsOf,
-    staleQuoteCount: quoteFreshness.staleQuoteCount,
+    quotesAsOf,
+    staleQuoteCount: staleQuotes.length,
+    staleQuotes,
     exchangeIsCached: exchange.isCached,
     cachedExchangeNames: exchange.cachedExchangeNames,
     exchangeLastSyncedAt: exchange.lastSyncedAt,

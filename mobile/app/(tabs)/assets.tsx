@@ -47,6 +47,7 @@ export default function HoldingsScreen() {
     summary,
     progress,
     staleQuoteCount,
+    staleQuotes,
     exchangeIsCached,
     cachedExchangeNames,
     exchangeLastSyncedAt,
@@ -152,11 +153,19 @@ export default function HoldingsScreen() {
 
       <QuoteFreshnessBanner
         staleQuoteCount={staleQuoteCount}
+        staleQuotes={staleQuotes}
         exchangeIsCached={exchangeIsCached}
         cachedExchangeNames={cachedExchangeNames}
         exchangeLastSyncedAt={exchangeLastSyncedAt}
         exchangeIssues={exchangeIssues}
         onRefresh={isDemo ? undefined : refetch}
+        onOpenStale={
+          isDemo
+            ? undefined
+            : (quote) => {
+                if (quote.assetId) router.push(`/asset/${quote.assetId}`);
+              }
+        }
       />
 
       {progress.active && !isLoading ? (
