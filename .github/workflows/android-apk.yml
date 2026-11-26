@@ -1,0 +1,111 @@
+name: Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/android-apk.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-apk
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up the Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install the Android SDK packages Expo needs
+        working-directory: .
+        run: |
+          yes | sdkmanager --licenses > /dev/null
+          sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Generate the native Android project
+        run: npx expo prebuild --platform android --no-install
+        env:
+          CI: 1
+
+      # The test phone is arm64; building one ABI keeps the APK smaller and the
+      # native step several minutes faster. Add armeabi-v7a if an older device
+      # needs to install it.
+      - name: Build the release APK
+        working-directory: mobile/android
+        run: ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a
+        env:
+          GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx4g
+
+      - name: Prepare the APK
+        working-directory: .
+        run: |
+          cp mobile/android/app/build/outputs/apk/release/app-release.apk asset-tracker-test.apk
+          ls -lh asset-tracker-test.apk
+          sha256sum asset-tracker-test.apk
+
+      - name: Upload the build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: asset-tracker-apk-${{ github.run_number }}
+          path: asset-tracker-test.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish a downloadable release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-${{ github.run_number }}
+          name: Asset Tracker APK #${{ github.run_number }}
+          body: |
+            Android test build from `${{ github.sha }}`.
+
+            - Expo SDK 57 (React Native 0.86)
+            - Release build, JavaScript bundled (no Metro server needed)
+            - Signed with the debug keystore for sideloading
+            - arm64-v8a only
+            - API: https://portfolio-tracker-hjvx.onrender.com
+          files: asset-tracker-test.apk
+          make_latest: true
+
+      - name: Write the job summary
+        run: |
+          {
+            echo "### Android APK built"
+            echo ""
+            echo "Download \`asset-tracker-test.apk\` from the **Releases** page or the run artifacts."
+            echo ""
+            echo '```'
+            sha256sum "$GITHUB_WORKSPACE/asset-tracker-test.apk"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
