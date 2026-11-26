@@ -480,6 +480,7 @@ const COINGECKO_IDS: Record<string, string> = {
   TRX: 'tron',
   USDC: 'usd-coin',
   USDT: 'tether',
+  XAI: 'xai-blockchain',
   XRP: 'ripple',
 };
 
@@ -699,7 +700,14 @@ export async function fetchFallbackQuote(
 
   // US-listed stocks and ETFs.
   if (!upper.includes('.')) {
-    return (await fetchStockAnalysisQuote(upper)) || (await fetchNasdaqQuote(upper));
+    const stock =
+      (await fetchStockAnalysisQuote(upper)) || (await fetchNasdaqQuote(upper));
+    if (stock) return stock;
+
+    // A few crypto tickers are entered without the `-USD` suffix. Only fall
+    // back to CoinGecko after the equity providers miss, so genuine US symbols
+    // keep precedence.
+    if (COINGECKO_IDS[upper]) return fetchCoinGeckoQuote(`${upper}-USD`);
   }
 
   return null;

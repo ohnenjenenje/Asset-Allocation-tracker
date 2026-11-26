@@ -24,6 +24,7 @@ import {
 import { demoAssets, demoFundHoldings, demoPrices, screenDemoStocks } from './demo';
 import { mergeFundData } from './merge';
 import { isFundAsset, readCachedExchange } from './normalize';
+import { mergePriceSources } from './priceMerge';
 import type { StaleQuote } from './quoteFreshness';
 import {
   buildPolicyHistory,
@@ -470,8 +471,9 @@ export function usePortfolioData() {
   const prices = useMemo(() => {
     if (isDemo) return demoPrices;
     // Cached exchange quotes keep last-known values visible while fresh quotes
-    // are loading; live exchange and Yahoo quotes win once they arrive.
-    return { ...exchange.prices, ...(pricesQuery.data ?? {}) };
+    // are loading. A cached sheet quote must not overwrite a live exchange
+    // ticker; the merge helper decides per symbol.
+    return mergePriceSources(exchange.prices, pricesQuery.data);
   }, [isDemo, exchange.prices, pricesQuery.data]);
 
   const quotesAsOf = useMemo(() => {
